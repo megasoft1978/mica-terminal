@@ -1,0 +1,17 @@
+name: macOS build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libvterm
+        run: brew install libvterm pkg-config
+      - name: Run PTY tests
+        run: make test
+      - name: Build app bundle
+        run: make app

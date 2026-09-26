@@ -1,0 +1,439 @@
+#define _DARWIN_C_SOURCE
+#include "mica.h"
+
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <termios.h>
+#include <unistd.h>
+#include <util.h>
+
+#define MICA_HISTORY_BUDGET_BYTES (2u * 1024u * 1024u)
+#define MICA_HISTORY_INITIAL 32
+#define MICA_READ_BUFFER 16384
+
+struct MicaSession {
+    int master_fd;
+    pid_t child_pid;
+    int rows;
+    int cols;
+    bool running;
+    bool cursor_visible;
+    int mouse_mode;
+    int exit_status;
+    uint64_t revision;
+    uint64_t attention_count;
+    bool focus_report;
+    VTerm *vt;
+    VTermScreen *screen;
+    VTermState *state;
+    VTermScreenCell *history;
+    size_t history_capacity;
+    size_t history_start;
+    size_t history_count;
+    size_t view_offset;
+    char *command;
+};
+
+static int history_push(int cols, const VTermScreenCell *cells, void *user);
+static int history_pop(int cols, VTermScreenCell *cells, void *user);
+static int history_clear(void *user);
+
+static VTermScreenCell *allocate_history(size_t capacity, int cols) {
+    if (capacity == 0 || cols <= 0 || capacity > SIZE_MAX / (size_t)cols ||
+        capacity * (size_t)cols > SIZE_MAX / sizeof(VTermScreenCell)) return NULL;
+    return calloc(capacity * (size_t)cols, sizeof(VTermScreenCell));
+}
+
+static size_t history_limit_lines(int cols) {
+    if (cols <= 0 || (size_t)cols > SIZE_MAX / sizeof(VTermScreenCell)) return 0;
+    size_t bytes_per_line = (size_t)cols * sizeof(VTermScreenCell);
+    return MICA_HISTORY_BUDGET_BYTES / bytes_per_line;
+}
+
+static int damage_callback(VTermRect rect, void *user) {
+    (void)rect;
+    MicaSession *session = user;
+    if (session) session->revision++;
+    return 1;
+}
+
+static int property_callback(VTermProp prop, VTermValue *value, void *user) {
+    MicaSession *session = user;
+    if (!session || !value) return 1;
+    if (prop == VTERM_PROP_CURSORVISIBLE) session->cursor_visible = value->boolean != 0;
+    if (prop == VTERM_PROP_MOUSE) session->mouse_mode = value->number;
+    if (prop == VTERM_PROP_FOCUSREPORT) session->focus_report = value->boolean != 0;
+    session->revision++;
+    return 1;
+}
+
+static int bell_callback(void *user) {
+    MicaSession *session = user;
+    if (session) session->attention_count++;
+    return 1;
+}
+
+static int notification_osc(int command, VTermStringFragment fragment, void *user) {
+    MicaSession *session = user;
+    if (session && fragment.final && (command == 9 || command == 99 || command == 777)) {
+        bool notification = true;
+        if (command == 9 && fragment.str && fragment.len >= 2 &&
+            fragment.str[0] == '4' && fragment.str[1] == ';') notification = false;
+        if (command == 777 &&
+            (!fragment.str || fragment.len < 7 || memcmp(fragment.str, "notify;", 7) != 0)) notification = false;
+        if (notification) session->attention_count++;
+    }
+    return 1;
+}
+
+static void write_all_nonblocking(int fd, const char *bytes, size_t length) {
+    while (length > 0) {
+        ssize_t written = write(fd, bytes, length);
+        if (written > 0) {
+            bytes += written;
+            length -= (size_t)written;
+            continue;
+        }
+        if (written < 0 && errno == EINTR) continue;
+        break;
+    }
+}
+
+static void output_callback(const char *bytes, size_t length, void *user) {
+    MicaSession *session = user;
+    if (session && session->master_fd >= 0) write_all_nonblocking(session->master_fd, bytes, length);
+}
+
+static int history_push(int cols, const VTermScreenCell *cells, void *user) {
+    MicaSession *session = user;
+    if (!session || cols <= 0 || (size_t)cols != (size_t)session->cols) return 1;
+    size_t limit = history_limit_lines(session->cols);
+    if (session->history_count == session->history_capacity && session->history_capacity < limit) {
+        size_t next_capacity = session->history_capacity ? session->history_capacity * 2 : MICA_HISTORY_INITIAL;
+        if (next_capacity > limit) next_capacity = limit;
+        VTermScreenCell *grown = allocate_history(next_capacity, session->cols);
+        if (grown) {
+            for (size_t i = 0; i < session->history_count; i++) {
+                size_t old_slot = (session->history_start + i) % session->history_capacity;
+                memcpy(grown + i * (size_t)session->cols,
+                       session->history + old_slot * (size_t)session->cols,
+                       (size_t)session->cols * sizeof(*grown));
+            }
+            free(session->history);
+            session->history = grown;
+            session->history_capacity = next_capacity;
+            session->history_start = 0;
+        }
+    }
+    if (session->history_capacity == 0) return 1;
+    size_t slot;
+    if (session->history_count < session->history_capacity) {
+        slot = (session->history_start + session->history_count) % session->history_capacity;
+        session->history_count++;
+    } else {
+        slot = session->history_start;
+        session->history_start = (session->history_start + 1) % session->history_capacity;
+    }
+    memcpy(session->history + slot * (size_t)session->cols, cells,
+           (size_t)session->cols * sizeof(*cells));
+    if (session->view_offset > 0 && session->view_offset < session->history_count)
+        session->view_offset++;
+    if (session->view_offset > session->history_count) session->view_offset = session->history_count;
+    return 1;
+}
+
+static int history_pop(int cols, VTermScreenCell *cells, void *user) {
+    MicaSession *session = user;
+    if (!session || session->history_count == 0 || cols != session->cols) return 0;
+    size_t slot = (session->history_start + session->history_count - 1) % session->history_capacity;
+    memcpy(cells, session->history + slot * (size_t)session->cols,
+           (size_t)session->cols * sizeof(*cells));
+    session->history_count--;
+    if (session->history_count == 0) session->history_start = 0;
+    return 1;
+}
+
+static int history_clear(void *user) {
+    MicaSession *session = user;
+    if (!session) return 1;
+    free(session->history);
+    session->history = NULL;
+    session->history_capacity = 0;
+    session->history_start = 0;
+    session->history_count = 0;
+    session->view_offset = 0;
+    return 1;
+}
+
+static const VTermScreenCallbacks screen_callbacks = {
+    .damage = damage_callback,
+    .settermprop = property_callback,
+    .bell = bell_callback,
+    .sb_pushline = history_push,
+    .sb_popline = history_pop,
+    .sb_clear = history_clear,
+};
+
+static const VTermStateFallbacks screen_fallbacks = { .osc = notification_osc };
+
+MicaSession *mica_session_create(const char *cwd, const char *command, int rows, int cols) {
+    if (rows < 1 || cols < 1) return NULL;
+    MicaSession *session = calloc(1, sizeof(*session));
+    if (!session) return NULL;
+    session->master_fd = -1;
+    session->child_pid = -1;
+    session->rows = rows;
+    session->cols = cols;
+    session->running = true;
+    session->command = command ? strdup(command) : strdup("/bin/zsh -l");
+    session->vt = vterm_new(rows, cols);
+    if (!session->command || !session->vt) goto fail;
+
+    vterm_set_utf8(session->vt, 1);
+    session->state = vterm_obtain_state(session->vt);
+    session->screen = vterm_obtain_screen(session->vt);
+    vterm_screen_set_callbacks(session->screen, &screen_callbacks, session);
+    vterm_screen_set_unrecognised_fallbacks(session->screen, &screen_fallbacks, session);
+    vterm_screen_set_damage_merge(session->screen, VTERM_DAMAGE_ROW);
+    vterm_screen_enable_reflow(session->screen, true);
+    vterm_screen_enable_altscreen(session->screen, 1);
+    vterm_output_set_callback(session->vt, output_callback, session);
+    vterm_screen_reset(session->screen, 1);
+
+    struct winsize window_size = { .ws_row = (unsigned short)rows, .ws_col = (unsigned short)cols };
+    int master = -1;
+    pid_t pid = forkpty(&master, NULL, NULL, &window_size);
+    if (pid < 0) goto fail;
+    if (pid == 0) {
+        if (cwd && cwd[0] && chdir(cwd) != 0) {
+            dprintf(STDERR_FILENO, "mica: cannot enter %s: %s\r\n", cwd, strerror(errno));
+            _exit(126);
+        }
+        setenv("TERM", "xterm-256color", 1);
+        setenv("COLORTERM", "truecolor", 1);
+        setenv("TERM_PROGRAM", "Mica", 1);
+        setenv("TERM_PROGRAM_VERSION", "0.1.0", 1);
+        setenv("CLICOLOR", "1", 1);
+        if (command) {
+            setenv("MICA_INITIAL_COMMAND", command, 1);
+            if (getenv("MICA_TEST_NO_STARTUP")) {
+                execl("/bin/zsh", "zsh", "-f", "-i", "-c",
+                      "eval \"$MICA_INITIAL_COMMAND\"; mica_status=$?; printf '\\n[command exited: %d]\\n' $mica_status; exec /bin/zsh -f -i",
+                      (char *)NULL);
+            } else {
+                execl("/bin/zsh", "zsh", "-l", "-i", "-c",
+                      "eval \"$MICA_INITIAL_COMMAND\"; mica_status=$?; printf '\\n[command exited: %d]\\n' $mica_status; exec /bin/zsh -l -i",
+                      (char *)NULL);
+            }
+        } else {
+            if (getenv("MICA_TEST_NO_STARTUP")) execl("/bin/zsh", "zsh", "-f", "-i", (char *)NULL);
+            else execl("/bin/zsh", "zsh", "-l", "-i", (char *)NULL);
+        }
+        dprintf(STDERR_FILENO, "mica: cannot start zsh: %s\r\n", strerror(errno));
+        _exit(127);
+    }
+    session->master_fd = master;
+    session->child_pid = pid;
+    int flags = fcntl(master, F_GETFL, 0);
+    if (flags >= 0) fcntl(master, F_SETFL, flags | O_NONBLOCK);
+    return session;
+
+fail:
+    mica_session_destroy(session);
+    return NULL;
+}
+
+void mica_session_destroy(MicaSession *session) {
+    if (!session) return;
+    if (session->master_fd >= 0) close(session->master_fd);
+    if (session->child_pid > 0 && session->running) {
+        kill(-session->child_pid, SIGHUP);
+        kill(session->child_pid, SIGHUP);
+        int status;
+        for (int attempt = 0; attempt < 40; attempt++) {
+            pid_t result = waitpid(session->child_pid, &status, WNOHANG);
+            if (result == session->child_pid || (result < 0 && errno == ECHILD)) break;
+            struct timespec pause = { .tv_sec = 0, .tv_nsec = 5000000 };
+            nanosleep(&pause, NULL);
+        }
+        if (waitpid(session->child_pid, &status, WNOHANG) == 0) {
+            kill(-session->child_pid, SIGKILL);
+            kill(session->child_pid, SIGKILL);
+            (void)waitpid(session->child_pid, &status, 0);
+        }
+    }
+    if (session->vt) vterm_free(session->vt);
+    free(session->history);
+    free(session->command);
+    free(session);
+}
+
+int mica_session_poll(MicaSession *session, int timeout_ms) {
+    if (!session) return -1;
+    if (session->master_fd >= 0) {
+        struct pollfd pfd = { .fd = session->master_fd, .events = POLLIN | POLLHUP | POLLERR };
+        int rc = poll(&pfd, 1, timeout_ms);
+        if (rc > 0 && (pfd.revents & (POLLIN | POLLHUP | POLLERR))) {
+            char buffer[MICA_READ_BUFFER];
+            for (;;) {
+                ssize_t n = read(session->master_fd, buffer, sizeof(buffer));
+                if (n > 0) {
+                    vterm_input_write(session->vt, buffer, (size_t)n);
+                    vterm_screen_flush_damage(session->screen);
+                    continue;
+                }
+                if (n < 0 && errno == EINTR) continue;
+                if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+                if (n == 0 || (n < 0 && errno == EIO)) {
+                    close(session->master_fd);
+                    session->master_fd = -1;
+                }
+                break;
+            }
+        }
+    }
+    if (session->running && session->child_pid > 0) {
+        int status = 0;
+        pid_t result = waitpid(session->child_pid, &status, WNOHANG);
+        if (result == session->child_pid) {
+            session->running = false;
+            session->exit_status = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+        }
+    }
+    return 0;
+}
+
+void mica_session_write(MicaSession *session, const void *bytes, size_t length) {
+    if (session && session->master_fd >= 0 && bytes) write_all_nonblocking(session->master_fd, bytes, length);
+}
+
+void mica_session_key(MicaSession *session, VTermKey key, VTermModifier modifiers) {
+    if (session && session->vt && session->running) vterm_keyboard_key(session->vt, key, modifiers);
+}
+
+void mica_session_text(MicaSession *session, uint32_t codepoint, VTermModifier modifiers) {
+    if (session && session->vt && session->running) vterm_keyboard_unichar(session->vt, codepoint, modifiers);
+}
+
+void mica_session_paste(MicaSession *session, const char *utf8, size_t length) {
+    if (!session || !session->vt || !session->running || !utf8) return;
+    vterm_keyboard_start_paste(session->vt);
+    write_all_nonblocking(session->master_fd, utf8, length);
+    vterm_keyboard_end_paste(session->vt);
+}
+
+void mica_session_mouse(MicaSession *session, int row, int col, int button, bool pressed) {
+    if (session && session->vt && session->running) {
+        vterm_mouse_move(session->vt, row, col, VTERM_MOD_NONE);
+        vterm_mouse_button(session->vt, button, pressed, VTERM_MOD_NONE);
+    }
+}
+
+void mica_session_wheel(MicaSession *session, int row, int col, int direction) {
+    if (!session || !session->vt || !session->running) return;
+    vterm_mouse_move(session->vt, row, col, VTERM_MOD_NONE);
+    vterm_mouse_button(session->vt, direction < 0 ? 4 : 5, true, VTERM_MOD_NONE);
+}
+
+void mica_session_focus(MicaSession *session, bool focused) {
+    if (!session || !session->state) return;
+    if (focused) vterm_state_focus_in(session->state);
+    else vterm_state_focus_out(session->state);
+}
+
+void mica_session_resize(MicaSession *session, int rows, int cols) {
+    if (!session || rows < 1 || cols < 1 || (rows == session->rows && cols == session->cols)) return;
+    if (cols != session->cols) {
+        size_t capacity = session->history_capacity;
+        size_t limit = history_limit_lines(cols);
+        if (capacity > limit) capacity = limit;
+        VTermScreenCell *new_history = capacity ? allocate_history(capacity, cols) : NULL;
+        if (capacity && !new_history) return;
+        size_t kept = session->history_count;
+        if (kept > capacity) kept = capacity;
+        size_t skip = session->history_count - kept;
+        size_t copy_cols = (size_t)(cols < session->cols ? cols : session->cols);
+        for (size_t i = 0; i < kept; i++) {
+            size_t old_slot = (session->history_start + skip + i) % session->history_capacity;
+            memcpy(new_history + i * (size_t)cols,
+                   session->history + old_slot * (size_t)session->cols,
+                   copy_cols * sizeof(*new_history));
+        }
+        free(session->history);
+        session->history = new_history;
+        session->history_capacity = capacity;
+        session->history_count = kept;
+        session->history_start = 0;
+        if (session->view_offset > kept) session->view_offset = kept;
+    }
+    session->rows = rows;
+    session->cols = cols;
+    vterm_set_size(session->vt, rows, cols);
+    struct winsize window_size = { .ws_row = (unsigned short)rows, .ws_col = (unsigned short)cols };
+    if (session->master_fd >= 0) ioctl(session->master_fd, TIOCSWINSZ, &window_size);
+    vterm_screen_flush_damage(session->screen);
+}
+
+void mica_session_scroll(MicaSession *session, int lines) {
+    if (!session) return;
+    if (lines > 0) {
+        size_t n = (size_t)lines;
+        session->view_offset = n > session->history_count - session->view_offset
+            ? session->history_count : session->view_offset + n;
+    } else if (lines < 0) {
+        size_t n = (size_t)(-lines);
+        session->view_offset = n > session->view_offset ? 0 : session->view_offset - n;
+    }
+}
+
+void mica_session_scroll_to_bottom(MicaSession *session) { if (session) session->view_offset = 0; }
+int mica_session_rows(const MicaSession *session) { return session ? session->rows : 0; }
+int mica_session_cols(const MicaSession *session) { return session ? session->cols : 0; }
+int mica_session_view_offset(const MicaSession *session) { return session ? (int)session->view_offset : 0; }
+size_t mica_session_history_lines(const MicaSession *session) { return session ? session->history_count : 0; }
+bool mica_session_is_running(const MicaSession *session) { return session && session->running; }
+bool mica_session_reports_mouse(const MicaSession *session) { return session && session->mouse_mode != VTERM_PROP_MOUSE_NONE; }
+bool mica_session_reports_focus(const MicaSession *session) { return session && session->focus_report; }
+bool mica_session_cursor_visible(const MicaSession *session) { return session && session->cursor_visible; }
+void mica_session_cursor(const MicaSession *session, int *row, int *col) {
+    if (!session || !session->state) return;
+    VTermPos pos = {0, 0};
+    vterm_state_get_cursorpos(session->state, &pos);
+    if (row) *row = pos.row;
+    if (col) *col = pos.col;
+}
+uint64_t mica_session_revision(const MicaSession *session) { return session ? session->revision : 0; }
+uint64_t mica_session_attention_count(const MicaSession *session) { return session ? session->attention_count : 0; }
+pid_t mica_session_pid(const MicaSession *session) { return session ? session->child_pid : -1; }
+const char *mica_session_command(const MicaSession *session) { return session ? session->command : ""; }
+
+bool mica_session_get_cell(const MicaSession *session, int row, int col, MicaCell *cell) {
+    if (!session || !cell || row < 0 || row >= session->rows || col < 0 || col >= session->cols) return false;
+    size_t virtual_row = session->history_count - session->view_offset + (size_t)row;
+    VTermScreenCell source;
+    if (virtual_row < session->history_count) {
+        if (!session->history_capacity || !session->history) return false;
+        size_t slot = (session->history_start + virtual_row) % session->history_capacity;
+        source = session->history[slot * (size_t)session->cols + (size_t)col];
+    } else {
+        VTermPos pos = { .row = (int)(virtual_row - session->history_count), .col = col };
+        if (pos.row < 0 || pos.row >= session->rows || !vterm_screen_get_cell(session->screen, pos, &source))
+            return false;
+    }
+    memcpy(cell->chars, source.chars, sizeof(cell->chars));
+    cell->fg = source.fg;
+    cell->bg = source.bg;
+    vterm_screen_convert_color_to_rgb(session->screen, &cell->fg);
+    vterm_screen_convert_color_to_rgb(session->screen, &cell->bg);
+    cell->attrs = source.attrs;
+    cell->width = source.width;
+    return true;
+}

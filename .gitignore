@@ -1,0 +1,4 @@
+/build/
+/examples/*.mica
+*.core
+.DS_Store
