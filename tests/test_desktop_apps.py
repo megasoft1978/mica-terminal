@@ -26,7 +26,9 @@ def make_base_app(path: Path) -> None:
     (path / "Contents/MacOS").mkdir(parents=True)
     (path / "Contents/Resources").mkdir()
     (path / "Contents/MacOS/Mica").write_bytes(b"shared-mica-executable")
-    (path / "Contents/Resources/Mica.icns").write_bytes(b"mica-icon")
+    (path / "Contents/Resources/Mica.icns").write_bytes(
+        (ROOT / "build/Mica.app/Contents/Resources/Mica.icns").read_bytes()
+    )
     write_plist(path / "Contents/Info.plist", {
         "CFBundleDisplayName": "Mica Terminal",
         "CFBundleExecutable": "Mica",
@@ -95,7 +97,10 @@ def main() -> None:
         assert alpha_info["MicaProjectName"] == "Alpha Project"
         assert alpha_info["MicaProjectLayout"] == str((layout_dir / "alpha.mica").resolve())
         assert beta_info["MicaProjectLayoutName"] == "beta"
-        assert (old_app / "Contents/Resources/Mica.icns").read_bytes() == b"mica-icon"
+        alpha_icon = (old_app / "Contents/Resources/Mica.icns").read_bytes()
+        beta_icon = (output / "Beta.app/Contents/Resources/Mica.icns").read_bytes()
+        assert alpha_icon.startswith(b"icns") and beta_icon.startswith(b"icns")
+        assert alpha_icon != beta_icon, "each project app should have its own marked icon"
         assert (old_app / "Contents/Resources/Scripts/main.scpt").is_file() is False
         try:
             assert (old_app / "Contents/MacOS/Mica").samefile(base_app / "Contents/MacOS/Mica")

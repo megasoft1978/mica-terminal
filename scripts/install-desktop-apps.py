@@ -21,6 +21,8 @@ HOME = Path.home()
 DEFAULT_LAYOUTS = HOME / ".config/mica/layouts"
 DEFAULT_DESKTOP = HOME / "Desktop"
 DEFAULT_BASE_APP = Path(__file__).resolve().parents[1] / "build/Mica.app"
+DEFAULT_PROJECT_ICON_TOOL = Path(__file__).resolve().parents[1] / "build/mica-project-icon"
+DEFAULT_ICON_CONVERTER = Path(__file__).resolve().parent / "build-macos-icon.sh"
 DEFAULT_MANIFEST = HOME / ".config/mica/desktop-apps.json"
 DEFAULT_BACKUPS = HOME / ".local/share/mica/launcher-backups"
 
@@ -125,7 +127,7 @@ def install_bundle(project: dict, base_app: Path, used_ids: set[str], backup_dir
     binary = base_app / "Contents/MacOS/Mica"
     icon = base_app / "Contents/Resources/Mica.icns"
     base_info = read_plist(base_app / "Contents/Info.plist")
-    if not binary.is_file() or not icon.is_file():
+    if not binary.is_file() or not icon.is_file() or not DEFAULT_PROJECT_ICON_TOOL.is_file():
         raise RuntimeError(f"build the base Mica.app before installing project apps: {base_app}")
 
     current_info = None
@@ -165,7 +167,15 @@ def install_bundle(project: dict, base_app: Path, used_ids: set[str], backup_dir
             os.link(binary, contents / "MacOS/Mica")
         except OSError:
             shutil.copy2(binary, contents / "MacOS/Mica")
-        shutil.copy2(icon, contents / "Resources/Mica.icns")
+        project_icon_png = staging_parent / "Mica-project.png"
+        subprocess.run(
+            [str(DEFAULT_PROJECT_ICON_TOOL), str(icon), str(project_icon_png), display_name],
+            check=True,
+        )
+        subprocess.run(
+            [str(DEFAULT_ICON_CONVERTER), str(project_icon_png), str(contents / "Resources/Mica.icns")],
+            check=True,
+        )
         with (contents / "Info.plist").open("wb") as stream:
             plistlib.dump(info, stream, fmt=plistlib.FMT_XML, sort_keys=True)
         (contents / "PkgInfo").write_bytes(b"APPL????")
@@ -274,7 +284,7 @@ def main() -> int:
             print(f"backup copies: {backup_dir}")
             print(f"project manifest: {manifest}")
             print("The original active terminal sessions were left running.")
-    except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
         print(f"desktop app install failed: {exc}", file=sys.stderr)
         return 1
     return 0

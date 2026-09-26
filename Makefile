@@ -4,6 +4,7 @@ BUILD := build
 APP := $(BUILD)/Mica.app
 APP_BIN := $(APP)/Contents/MacOS/Mica
 APP_ICON := $(APP)/Contents/Resources/Mica.icns
+PROJECT_ICON_TOOL := $(BUILD)/mica-project-icon
 VTERM_CFLAGS := $(shell $(PKG_CONFIG) --cflags vterm 2>/dev/null)
 VTERM_LIBS := $(shell $(PKG_CONFIG) --libs vterm 2>/dev/null)
 CFLAGS ?= -O2
@@ -16,7 +17,7 @@ CORE := src/session.c
 
 all: app
 
-app: $(APP_BIN) $(APP_ICON)
+app: $(APP_BIN) $(APP_ICON) $(PROJECT_ICON_TOOL)
 
 $(APP_BIN): src/mica_app.m $(CORE) include/mica.h include/mica_launch.h Info.plist
 	@mkdir -p $(dir $@)
@@ -30,6 +31,10 @@ $(APP_ICON): assets/mica-icon.png scripts/build-macos-icon.sh
 	@mkdir -p $(dir $@)
 	scripts/build-macos-icon.sh $< $@
 
+$(PROJECT_ICON_TOOL): scripts/build-project-icon.m
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(OBJC_WARNINGS) -fobjc-arc -framework Cocoa $< -o $@
+
 $(BUILD)/test-session: tests/test_session.c $(CORE) include/mica.h include/mica_launch.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(C_WARNINGS) $(CPPFLAGS) $(CORE) tests/test_session.c $(VTERM_LIBS) -o $@
@@ -39,11 +44,12 @@ $(BUILD)/test-ui: tests/test_app_ui.m src/mica_app.m $(CORE) include/mica.h incl
 	$(CC) $(CFLAGS) $(OBJC_WARNINGS) -fobjc-arc $(CPPFLAGS) \
 		-framework Cocoa $(CORE) tests/test_app_ui.m $(VTERM_LIBS) -o $@
 
-test: $(BUILD)/test-session $(BUILD)/test-ui
+test: $(BUILD)/test-session $(BUILD)/test-ui $(APP_ICON) $(PROJECT_ICON_TOOL)
 	rm -f $(BUILD)/ui-smoke.png $(BUILD)/ui-smoke-report.txt
 	$(BUILD)/test-session
 	python3 tests/test_layout_importer.py
 	python3 tests/test_desktop_apps.py
+	python3 tests/test_memory_processes.py
 	MICA_UI_SMOKE_IMAGE=$(BUILD)/ui-smoke.png MICA_UI_SMOKE_REPORT=$(BUILD)/ui-smoke-report.txt $(BUILD)/test-ui
 	python3 tests/test_agent_loop.py
 
