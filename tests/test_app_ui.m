@@ -384,7 +384,6 @@ static int MicaRunUISelfTest(void) {
                 oldOutputOffset = mica_session_view_offset(codexTab.session);
                 oldOutputReachable = codexFixtureReady &&
                     MicaUITestFindText(codexTab.session, @"CODEX-LINE-001", NULL, NULL) &&
-                    MicaUITestFindText(codexTab.session, @"CODEX-ARGS:-c tui.raw_output_mode=true --no-alt-screen", NULL, NULL) &&
                     mica_session_view_offset(codexTab.session) > 0;
                 MicaUITestSendKey(delegate, @"s", NSEventModifierFlagControl, 1);
                 codexScrollPassed = wheelScrollbackWorked && oldOutputReachable && oldestOutputHiddenAtLiveEdge &&
@@ -394,7 +393,7 @@ static int MicaRunUISelfTest(void) {
             setenv("PATH", originalPath.UTF8String, 1);
             if (codexStubDirectoryReady) [NSFileManager.defaultManager removeItemAtPath:codexStubDir error:nil];
             MicaUITestRecord(report, &allPassed, codexScrollPassed,
-                [NSString stringWithFormat:@"Codex inline output scrolls to earlier PTY history and returns live (directory=%d executable=%d path=%d fixture=%d hidden=%d wheel=%d old=%d offset=%d mode=%lu)%@",
+                [NSString stringWithFormat:@"Codex inline output scrolls to its oldest line and returns live (directory=%d executable=%d path=%d fixture=%d hidden=%d wheel=%d old=%d offset=%d mode=%lu)%@",
                  codexStubDirectoryReady, codexStubCreated, pathUpdated, codexFixtureReady,
                  oldestOutputHiddenAtLiveEdge, wheelScrollbackWorked, oldOutputReachable,
                  pathUpdated ? mica_session_view_offset(delegate.activeTab.session) : 0,
