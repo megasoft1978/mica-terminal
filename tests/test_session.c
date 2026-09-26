@@ -116,7 +116,9 @@ int main(void) {
     mica_session_scroll_to_bottom(session);
     assert(mica_session_view_offset(session) == 0);
 
-    for (int i = 0; i < 200 && mica_session_reports_mouse(session); i++) mica_session_poll(session, 10);
+    for (int i = 0; i < 500 &&
+         (mica_session_reports_mouse(session) || !screen_contains(session, "DEFAULT-CHECK")); i++)
+        mica_session_poll(session, 10);
     assert(!mica_session_reports_mouse(session));
     assert(screen_contains(session, "DEFAULT-CHECK"));
     assert(screen_contains(session, "row-20"));
