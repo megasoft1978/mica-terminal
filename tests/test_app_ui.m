@@ -308,6 +308,10 @@ static int MicaRunUISelfTest(void) {
             BOOL oldestOutputHiddenAtLiveEdge = NO;
             BOOL wheelScrollbackWorked = NO;
             BOOL oldOutputReachable = NO;
+            NSInteger codexHistoryRows = 0;
+            NSInteger codexRows = 0;
+            NSInteger oldOutputOffset = 0;
+            NSInteger codexPageUpSteps = 0;
             if (pathUpdated) {
                 [delegate addTabWithName:@"Codex scroll" cwd:@"/tmp" command:@MICA_COMMAND_CODEX prefilled:NO];
                 MicaTab *codexTab = delegate.activeTab;
@@ -329,10 +333,18 @@ static int MicaRunUISelfTest(void) {
                 MicaUITestSendWheel(delegate, 24);
                 wheelScrollbackWorked = codexFixtureReady &&
                     mica_session_view_offset(codexTab.session) == 1 && delegate.uiMode == MicaUIModeScroll;
-                for (int page = 0; codexFixtureReady && page < 10 &&
+                codexHistoryRows = (NSInteger)mica_session_history_lines(codexTab.session);
+                codexRows = mica_session_rows(codexTab.session);
+                NSInteger pageSize = MAX(1, codexRows - 1);
+                NSInteger maximumPageUps = (codexHistoryRows + pageSize - 1) / pageSize + 2;
+                for (NSInteger page = 0; codexFixtureReady && page < maximumPageUps &&
                      !MicaUITestFindText(codexTab.session, @"CODEX-LINE-001", NULL, NULL); page++) {
+                    NSInteger previousOffset = mica_session_view_offset(codexTab.session);
                     MicaUITestSendKey(delegate, @"b", NSEventModifierFlagControl, 11);
+                    codexPageUpSteps++;
+                    if (mica_session_view_offset(codexTab.session) == previousOffset) break;
                 }
+                oldOutputOffset = mica_session_view_offset(codexTab.session);
                 oldOutputReachable = codexFixtureReady &&
                     MicaUITestFindText(codexTab.session, @"CODEX-LINE-001", NULL, NULL) &&
                     MicaUITestFindText(codexTab.session, @"CODEX-ARGS:-c tui.raw_output_mode=true --no-alt-screen", NULL, NULL) &&
@@ -350,7 +362,9 @@ static int MicaRunUISelfTest(void) {
                  oldestOutputHiddenAtLiveEdge, wheelScrollbackWorked, oldOutputReachable,
                  pathUpdated ? mica_session_view_offset(delegate.activeTab.session) : 0,
                  (unsigned long)delegate.uiMode,
-                 directoryError ? [NSString stringWithFormat:@" fixture error: %@", directoryError.localizedDescription] : @""]);
+                 [NSString stringWithFormat:@" (rows=%ld history=%ld old-offset=%ld page-ups=%ld)%@",
+                  (long)codexRows, (long)codexHistoryRows, (long)oldOutputOffset, (long)codexPageUpSteps,
+                  directoryError ? [NSString stringWithFormat:@" fixture error: %@", directoryError.localizedDescription] : @""]]);
 
             CGFloat originalFontSize = delegate.terminalView.terminalFont.pointSize;
             MicaUITestSendKey(delegate, @"+", NSEventModifierFlagCommand, 24);
