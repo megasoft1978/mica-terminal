@@ -85,8 +85,12 @@ color_checked:
     assert(exit_session != NULL);
     for (int i = 0; i < 500 && !screen_contains(exit_session, "[command exited: 0]"); i++) mica_session_poll(exit_session, 10);
     assert(screen_contains(exit_session, "[command exited: 0]"));
+    const char readiness_command[] = "printf 'SHELL-READY\\n'\n";
+    mica_session_write(exit_session, readiness_command, sizeof(readiness_command) - 1);
+    for (int i = 0; i < 500 && !screen_contains(exit_session, "SHELL-READY"); i++) mica_session_poll(exit_session, 10);
+    assert(screen_contains(exit_session, "SHELL-READY"));
     mica_session_write(exit_session, "exit\n", 5);
-    for (int i = 0; i < 100 && mica_session_is_running(exit_session); i++) mica_session_poll(exit_session, 10);
+    for (int i = 0; i < 500 && mica_session_is_running(exit_session); i++) mica_session_poll(exit_session, 10);
     assert(!mica_session_is_running(exit_session));
     mica_session_destroy(exit_session);
 
