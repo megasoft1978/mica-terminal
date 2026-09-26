@@ -67,16 +67,22 @@ static NSFont *MicaTerminalFont(CGFloat size) {
 @property(nonatomic, strong) MicaTerminalView *terminalView;
 @property(nonatomic, strong) NSMutableArray<MicaTab *> *tabs;
 @property(nonatomic, assign) NSInteger activeIndex;
+@property(nonatomic, copy) NSString *projectName;
 @property(nonatomic, strong) NSTimer *pollTimer;
 @property(nonatomic, assign) NSInteger attentionRequest;
 - (MicaTab *)activeTab;
 - (NSString *)displayNameForTab:(MicaTab *)tab;
+- (NSString *)windowTitleForTab:(MicaTab *)tab;
 - (void)newTabWithName:(NSString *)name command:(NSString *)command;
 - (void)addTabWithName:(NSString *)name cwd:(NSString *)cwd command:(NSString *)command prefilled:(BOOL)prefilled;
 - (void)closeActiveTab;
 - (void)selectRelativeTab:(NSInteger)delta;
 - (void)selectTabAtIndex:(NSInteger)index;
 - (void)resizeActiveSession;
+- (void)installMenus;
+- (void)updateWindowTitle;
+- (void)loadLaunchConfiguration;
+- (void)loadLaunchConfigurationFromArguments:(NSArray<NSString *> *)arguments bundleInfo:(NSDictionary *)bundleInfo;
 @property(nonatomic, assign) MicaUIMode uiMode;
 @end
 
@@ -237,10 +243,10 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
     NSString *hints = mode == MicaUIModeTab
         ? @"←/h previous   →/l next   1–9 jump   n new   x close   Esc done"
         : (mode == MicaUIModeScroll
-            ? @"↑/↓ scroll   PgUp/PgDn page   ^S or Esc return"
+            ? @"↑/↓, j/k line   ←/→, h/l page   ^F/^B page   Esc live"
             : (scrolled
-                ? @"scrollback   Esc live   ^S scroll mode   ⌘T shell"
-                : @"^T tabs   ^S scroll   ⌘T shell   ⌥⌘C Claude   ⌥⌘X Codex"));
+                ? @"scrollback   Esc live   ^S scroll mode   ⌘Tab switch app"
+                : @"^T tabs   ^S scroll   ⌘T shell   ⌥⌘C Claude   ⌥⌘X Codex   ⌘Tab switch app"));
     NSDictionary *hintAttrs = @{
         NSFontAttributeName: [NSFont systemFontOfSize:11],
         NSForegroundColorAttributeName: MicaColor(0xb8b8b8)
@@ -283,10 +289,12 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
         }
     } else {
         NSInteger lines = 0;
-        if (event.keyCode == 116 || [key isEqualToString:@"h"] || [key isEqualToString:@"k"]) lines = MAX(1, (int)_rows - 1);
-        else if (event.keyCode == 121 || [key isEqualToString:@"l"]) lines = -MAX(1, (int)_rows - 1);
-        else if (event.keyCode == 126 || [key isEqualToString:@"j"]) lines = 1;
-        else if (event.keyCode == 125) lines = -1;
+        if (event.keyCode == 116 || event.keyCode == 123 || [key isEqualToString:@"h"] ||
+            (control && [key isEqualToString:@"b"])) lines = MAX(1, (int)_rows - 1);
+        else if (event.keyCode == 121 || event.keyCode == 124 || [key isEqualToString:@"l"] ||
+            (control && [key isEqualToString:@"f"])) lines = -MAX(1, (int)_rows - 1);
+        else if (event.keyCode == 126 || [key isEqualToString:@"k"]) lines = 1;
+        else if (event.keyCode == 125 || [key isEqualToString:@"j"]) lines = -1;
         else if ([key isEqualToString:@"u"]) lines = MAX(1, (int)_rows / 2);
         else if ([key isEqualToString:@"d"]) lines = -MAX(1, (int)_rows / 2);
         else return YES;
@@ -520,7 +528,7 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
     if (lines == 0) return;
     _scrollRemainder -= lines * 24.0;
     _selecting = NO;
-    if (mica_session_reports_mouse(tab.session)) {
+    if (self.owner.uiMode != MicaUIModeScroll && mica_session_reports_mouse(tab.session)) {
         NSPoint point = [self cellForPoint:[self convertPoint:event.locationInWindow fromView:nil]];
         int direction = lines > 0 ? -1 : 1;
         for (NSInteger i = 0; i < labs(lines); i++) mica_session_wheel(tab.session, (int)point.y, (int)point.x, direction);
@@ -612,10 +620,28 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
 
 - (void)paste:(id)sender {
     (void)sender;
-    NSString *text = [NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeString];
-    if (!text || !self.owner.activeTab.session) return;
+    MicaTab *tab = self.owner.activeTab;
+    if (!tab.session) return;
+    NSString *testPasteboardName = NSProcessInfo.processInfo.environment[@"MICA_TEST_PASTEBOARD_NAME"];
+    NSPasteboard *pasteboard = testPasteboardName.length
+        ? [NSPasteboard pasteboardWithName:testPasteboardName]
+        : NSPasteboard.generalPasteboard;
+    NSArray<NSPasteboardType> *imageTypes = @[
+        NSPasteboardTypePNG, NSPasteboardTypeTIFF, @"public.jpeg"
+    ];
+    for (NSPasteboardType imageType in imageTypes) {
+        if ([pasteboard.types containsObject:imageType]) {
+            // Claude Code and other agent TUIs read image data from the OS
+            // clipboard when they receive Ctrl+V. Cmd+V is Mica's native paste key.
+            mica_session_text(tab.session, 'v', VTERM_MOD_CTRL);
+            [self setNeedsDisplay:YES];
+            return;
+        }
+    }
+    NSString *text = [pasteboard stringForType:NSPasteboardTypeString];
+    if (!text) return;
     NSData *bytes = [text dataUsingEncoding:NSUTF8StringEncoding];
-    mica_session_paste(self.owner.activeTab.session, bytes.bytes, bytes.length);
+    mica_session_paste(tab.session, bytes.bytes, bytes.length);
     [self setNeedsDisplay:YES];
 }
 
@@ -623,7 +649,71 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
 - (void)viewDidChangeBackingProperties { [super viewDidChangeBackingProperties]; [self.owner resizeActiveSession]; }
 @end
 
+static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, NSDictionary *bundleInfo,
+                                                     NSString *defaultCwd) {
+    id bundledProjectName = bundleInfo[@"MicaProjectName"];
+    NSString *projectName = [bundledProjectName isKindOfClass:NSString.class] ? bundledProjectName : @"";
+    id bundledLayoutPath = bundleInfo[@"MicaProjectLayout"];
+    NSString *layoutPath = [bundledLayoutPath isKindOfClass:NSString.class] ? bundledLayoutPath : @"";
+    NSString *cwd = defaultCwd.length ? defaultCwd : NSFileManager.defaultManager.currentDirectoryPath;
+    NSString *command = @"";
+    for (NSUInteger i = 1; i + 1 < args.count; i++) {
+        if ([args[i] isEqualToString:@"--layout"]) layoutPath = args[++i];
+        else if ([args[i] isEqualToString:@"--cwd"]) cwd = args[++i];
+        else if ([args[i] isEqualToString:@"--command"]) command = args[++i];
+    }
+
+    NSMutableArray<NSDictionary *> *tabs = [NSMutableArray array];
+    if (layoutPath.length) {
+        NSString *contents = [NSString stringWithContentsOfFile:layoutPath encoding:NSUTF8StringEncoding error:nil];
+        [contents enumerateLinesUsingBlock:^(NSString *line, BOOL *stop) {
+            (void)stop;
+            if (!line.length || [line hasPrefix:@"#"]) return;
+            NSArray<NSString *> *parts = [line componentsSeparatedByString:@"\t"];
+            if (parts.count < 2) return;
+            NSString *name = parts[0];
+            NSString *tabCwd = parts[1].length ? parts[1] : cwd;
+            NSMutableString *tabCommand = [NSMutableString string];
+            for (NSUInteger i = 2; i < parts.count; i++) {
+                if (i > 2) [tabCommand appendString:@"\t"];
+                [tabCommand appendString:parts[i]];
+            }
+            [tabs addObject:@{
+                @"name": name,
+                @"cwd": tabCwd,
+                @"command": tabCommand,
+                @"prefilled": @YES
+            }];
+        }];
+    }
+    BOOL layoutLoaded = tabs.count > 0;
+    if (!layoutLoaded) {
+        [tabs addObject:@{
+            @"name": @"Shell",
+            @"cwd": cwd,
+            @"command": command,
+            @"prefilled": @NO
+        }];
+    }
+    return @{
+        @"projectName": projectName,
+        @"layoutPath": layoutPath,
+        @"cwd": cwd,
+        @"command": command,
+        @"tabs": tabs,
+        @"layoutLoaded": @(layoutLoaded),
+        @"activeIndex": @0
+    };
+}
+
 @implementation MicaAppDelegate
+- (NSString *)windowTitleForTab:(MicaTab *)tab {
+    NSString *tabName = tab ? [self displayNameForTab:tab] : @"Mica";
+    if (self.projectName.length)
+        return [NSString stringWithFormat:@"%@ — %@ — Mica", tabName, self.projectName];
+    return [NSString stringWithFormat:@"%@ — Mica Terminal", tabName];
+}
+
 - (MicaTab *)activeTab {
     if (self.activeIndex < 0 || self.activeIndex >= (NSInteger)self.tabs.count) return nil;
     return self.tabs[(NSUInteger)self.activeIndex];
@@ -634,6 +724,10 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
     return [NSString stringWithFormat:@"%@ · %@", tab.name, tab.terminalTitle];
 }
 
+- (void)updateWindowTitle {
+    if (self.window) self.window.title = [self windowTitleForTab:self.activeTab];
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     (void)notification;
     self.tabs = [NSMutableArray array];
@@ -641,6 +735,7 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
     self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(120, 120, 1100, 700)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
         backing:NSBackingStoreBuffered defer:NO];
+    self.projectName = nil;
     self.window.title = @"Mica Terminal";
     self.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     self.window.minSize = NSMakeSize(600, 300);
@@ -691,33 +786,24 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
 }
 
 - (void)loadLaunchConfiguration {
-    NSArray<NSString *> *args = NSProcessInfo.processInfo.arguments;
-    NSString *layoutPath = nil;
-    NSString *cwd = NSFileManager.defaultManager.currentDirectoryPath;
-    NSString *command = nil;
-    for (NSUInteger i = 1; i + 1 < args.count; i++) {
-        if ([args[i] isEqualToString:@"--layout"]) layoutPath = args[++i];
-        else if ([args[i] isEqualToString:@"--cwd"]) cwd = args[++i];
-        else if ([args[i] isEqualToString:@"--command"]) command = args[++i];
+    [self loadLaunchConfigurationFromArguments:NSProcessInfo.processInfo.arguments
+                                    bundleInfo:NSBundle.mainBundle.infoDictionary];
+}
+
+- (void)loadLaunchConfigurationFromArguments:(NSArray<NSString *> *)args bundleInfo:(NSDictionary *)bundleInfo {
+    NSDictionary *configuration = MicaResolveLaunchConfiguration(args, bundleInfo,
+        NSFileManager.defaultManager.currentDirectoryPath);
+    NSString *projectName = configuration[@"projectName"];
+    self.projectName = projectName.length ? projectName : nil;
+    NSArray<NSDictionary *> *tabSpecs = configuration[@"tabs"];
+    for (NSDictionary *spec in tabSpecs) {
+        NSString *command = [spec[@"command"] length] ? spec[@"command"] : nil;
+        [self addTabWithName:spec[@"name"] cwd:spec[@"cwd"] command:command
+                   prefilled:[spec[@"prefilled"] boolValue]];
     }
-    if (layoutPath) {
-        NSString *contents = [NSString stringWithContentsOfFile:layoutPath encoding:NSUTF8StringEncoding error:nil];
-        [contents enumerateLinesUsingBlock:^(NSString *line, BOOL *stop) {
-            (void)stop;
-            if (!line.length || [line hasPrefix:@"#"]) return;
-            NSArray<NSString *> *parts = [line componentsSeparatedByString:@"\t"];
-            if (parts.count < 2) return;
-            NSString *name = parts[0];
-            NSString *tabCwd = parts[1].length ? parts[1] : cwd;
-            NSMutableString *tabCommand = [NSMutableString string];
-            for (NSUInteger i = 2; i < parts.count; i++) {
-                if (i > 2) [tabCommand appendString:@"\t"];
-                [tabCommand appendString:parts[i]];
-            }
-            [self addTabWithName:name cwd:tabCwd command:tabCommand.length ? tabCommand : nil prefilled:YES];
-        }];
-    }
-    if (!self.tabs.count) [self addTabWithName:@"Shell" cwd:cwd command:command prefilled:NO];
+    if ([configuration[@"layoutLoaded"] boolValue] && self.tabs.count > 1)
+        [self selectTabAtIndex:[configuration[@"activeIndex"] integerValue]];
+    [self updateWindowTitle];
     [self.terminalView setNeedsDisplay:YES];
 }
 
@@ -743,7 +829,7 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
     [self.tabs addObject:tab];
     self.activeIndex = (NSInteger)self.tabs.count - 1;
     if (NSApp.isActive) mica_session_focus(tab.session, true);
-    self.window.title = [NSString stringWithFormat:@"%@ — Mica Terminal", [self displayNameForTab:tab]];
+    [self updateWindowTitle];
     [self resizeActiveSession];
     [self.terminalView setNeedsDisplay:YES];
 }
@@ -774,7 +860,7 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
     MicaTab *tab = self.activeTab;
     if (NSApp.isActive) mica_session_focus(tab.session, true);
     tab.needsAttention = NO;
-    self.window.title = [NSString stringWithFormat:@"%@ — Mica Terminal", [self displayNameForTab:tab]];
+    [self updateWindowTitle];
     [self resizeActiveSession];
 }
 
@@ -793,7 +879,7 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
     MicaTab *tab = self.activeTab;
     tab.needsAttention = NO;
     if (NSApp.isActive) mica_session_focus(tab.session, true);
-    self.window.title = [NSString stringWithFormat:@"%@ — Mica Terminal", [self displayNameForTab:tab]];
+    [self updateWindowTitle];
     [self resizeActiveSession];
 }
 
@@ -808,8 +894,7 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
             : nil;
         if (terminalTitle != tab.terminalTitle && ![terminalTitle isEqualToString:tab.terminalTitle]) {
             tab.terminalTitle = terminalTitle;
-            if (tab == self.activeTab)
-                self.window.title = [NSString stringWithFormat:@"%@ — Mica Terminal", [self displayNameForTab:tab]];
+            if (tab == self.activeTab) [self updateWindowTitle];
             redraw = YES;
         }
         uint64_t attentionCount = mica_session_attention_count(tab.session);
@@ -848,6 +933,7 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
 - (void)windowDidResize:(NSNotification *)notification { (void)notification; [self resizeActiveSession]; }
 @end
 
+#ifndef MICA_APP_NO_MAIN
 int main(int argc, const char *argv[]) {
     (void)argc; (void)argv;
     @autoreleasepool {
@@ -859,3 +945,4 @@ int main(int argc, const char *argv[]) {
     }
     return 0;
 }
+#endif

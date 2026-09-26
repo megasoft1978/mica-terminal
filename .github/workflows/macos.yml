@@ -11,7 +11,15 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install libvterm
         run: brew install libvterm pkg-config
-      - name: Run PTY tests
-        run: make test
-      - name: Build app bundle
-        run: make app
+      - name: Validate tests and app bundle
+        run: make validate
+      - name: Upload AppKit smoke results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mica-ui-smoke
+          path: |
+            build/ui-smoke.png
+            build/ui-smoke-report.txt
+          if-no-files-found: ignore
+          retention-days: 7

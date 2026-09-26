@@ -12,7 +12,7 @@ OBJC_WARNINGS := -Wall -Wextra -Wno-deprecated-declarations
 CPPFLAGS := -Iinclude $(VTERM_CFLAGS)
 CORE := src/session.c
 
-.PHONY: all app test clean run memory import-layouts
+.PHONY: all app test validate clean run memory import-layouts desktop-apps install-desktop-apps
 
 all: app
 
@@ -34,9 +34,24 @@ $(BUILD)/test-session: tests/test_session.c $(CORE) include/mica.h include/mica_
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(C_WARNINGS) $(CPPFLAGS) $(CORE) tests/test_session.c $(VTERM_LIBS) -o $@
 
-test: $(BUILD)/test-session
+$(BUILD)/test-ui: tests/test_app_ui.m src/mica_app.m $(CORE) include/mica.h include/mica_launch.h
+	@mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) $(OBJC_WARNINGS) -fobjc-arc $(CPPFLAGS) \
+		-framework Cocoa $(CORE) tests/test_app_ui.m $(VTERM_LIBS) -o $@
+
+test: $(BUILD)/test-session $(BUILD)/test-ui
+	rm -f $(BUILD)/ui-smoke.png $(BUILD)/ui-smoke-report.txt
 	$(BUILD)/test-session
 	python3 tests/test_layout_importer.py
+	python3 tests/test_desktop_apps.py
+	MICA_UI_SMOKE_IMAGE=$(BUILD)/ui-smoke.png MICA_UI_SMOKE_REPORT=$(BUILD)/ui-smoke-report.txt $(BUILD)/test-ui
+	python3 tests/test_agent_loop.py
+
+validate:
+	$(MAKE) test
+	$(MAKE) app
+	plutil -lint $(APP)/Contents/Info.plist
+	git diff --check
 
 run: app
 	$(APP_BIN) $(ARGS)
@@ -46,6 +61,12 @@ memory:
 
 import-layouts:
 	@scripts/import-zellij-layouts.py "$${ZELLIJ_LAYOUTS:-$$HOME/.config/zellij/layouts}" "$${MICA_LAYOUTS:-$$HOME/.config/mica/layouts}"
+
+desktop-apps: app
+	python3 scripts/install-desktop-apps.py
+
+install-desktop-apps: app
+	python3 scripts/install-desktop-apps.py --install
 
 clean:
 	rm -rf $(BUILD)

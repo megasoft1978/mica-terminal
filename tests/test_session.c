@@ -348,6 +348,7 @@ color_checked:
     history_bytes = mica_session_history_lines(history_session) * 160u * sizeof(VTermScreenCell);
     assert(history_bytes <= MICA_HISTORY_LIMIT_BYTES);
     mica_session_destroy(history_session);
+    printf("scrollback allocation stays within %u bytes per session\n", MICA_HISTORY_LIMIT_BYTES);
 
     char profile_template[] = "/tmp/mica-profile-test-XXXXXX";
     char *profile_dir = mkdtemp(profile_template);
