@@ -2,3 +2,5 @@
 /examples/*.mica
 *.core
 .DS_Store
+__pycache__/
+*.py[cod]

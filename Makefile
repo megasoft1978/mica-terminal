@@ -3,6 +3,7 @@ PKG_CONFIG ?= pkg-config
 BUILD := build
 APP := $(BUILD)/Mica.app
 APP_BIN := $(APP)/Contents/MacOS/Mica
+APP_ICON := $(APP)/Contents/Resources/Mica.icns
 VTERM_CFLAGS := $(shell $(PKG_CONFIG) --cflags vterm 2>/dev/null)
 VTERM_LIBS := $(shell $(PKG_CONFIG) --libs vterm 2>/dev/null)
 CFLAGS ?= -O2
@@ -15,9 +16,9 @@ CORE := src/session.c
 
 all: app
 
-app: $(APP_BIN)
+app: $(APP_BIN) $(APP_ICON)
 
-$(APP_BIN): src/mica_app.m $(CORE) include/mica.h
+$(APP_BIN): src/mica_app.m $(CORE) include/mica.h include/mica_launch.h Info.plist
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(OBJC_WARNINGS) -fobjc-arc $(CPPFLAGS) \
 		-framework Cocoa $(CORE) src/mica_app.m $(VTERM_LIBS) -o $@
@@ -25,12 +26,17 @@ $(APP_BIN): src/mica_app.m $(CORE) include/mica.h
 	@cp Info.plist $(APP)/Contents/Info.plist
 	@touch $(APP)
 
-$(BUILD)/test-session: tests/test_session.c $(CORE) include/mica.h
+$(APP_ICON): assets/mica-icon.png scripts/build-macos-icon.sh
+	@mkdir -p $(dir $@)
+	scripts/build-macos-icon.sh $< $@
+
+$(BUILD)/test-session: tests/test_session.c $(CORE) include/mica.h include/mica_launch.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(C_WARNINGS) $(CPPFLAGS) $(CORE) tests/test_session.c $(VTERM_LIBS) -o $@
 
 test: $(BUILD)/test-session
 	$(BUILD)/test-session
+	python3 tests/test_layout_importer.py
 
 run: app
 	$(APP_BIN) $(ARGS)

@@ -7,6 +7,8 @@
 #include <sys/types.h>
 #include <vterm.h>
 
+#define MICA_HISTORY_LIMIT_BYTES (2u * 1024u * 1024u)
+
 typedef struct MicaSession MicaSession;
 
 typedef struct {
@@ -18,6 +20,7 @@ typedef struct {
 } MicaCell;
 
 MicaSession *mica_session_create(const char *cwd, const char *command, int rows, int cols);
+MicaSession *mica_session_create_prefilled(const char *cwd, const char *command, int rows, int cols);
 void mica_session_destroy(MicaSession *session);
 int mica_session_poll(MicaSession *session, int timeout_ms);
 void mica_session_write(MicaSession *session, const void *bytes, size_t length);
@@ -28,6 +31,7 @@ void mica_session_mouse(MicaSession *session, int row, int col, int button, bool
 void mica_session_wheel(MicaSession *session, int row, int col, int direction);
 void mica_session_focus(MicaSession *session, bool focused);
 void mica_session_resize(MicaSession *session, int rows, int cols);
+void mica_session_resize_pixels(MicaSession *session, int rows, int cols, int pixel_width, int pixel_height);
 void mica_session_scroll(MicaSession *session, int lines);
 void mica_session_scroll_to_bottom(MicaSession *session);
 int mica_session_rows(const MicaSession *session);

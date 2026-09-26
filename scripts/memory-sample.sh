@@ -4,12 +4,12 @@ set -eu
 echo "Per-process RSS sample (MiB):"
 ps -axo pid,rss,comm,args | awk '
 NR == 1 { next }
-/(mica-terminal|Mica\.app\/Contents\/MacOS\/Mica|\/zellij| zellij |\/Alacritty\.app\/|\/claude([[:space:]]|$)|\/codex([[:space:]]|$))/ {
+tolower($3) ~ /\/(ps|awk)$/ { next }
+/(Mica\.app\/Contents\/MacOS\/Mica|\/zellij([[:space:]]|$)| zellij([[:space:]]|$)|[Aa]lacritty\.app\/Contents\/MacOS\/alacritty|\/bin\/alacritty([[:space:]]|$)|\/claude([[:space:]]|$)|\/codex([[:space:]]|$))/ {
   rss = $2 / 1024
-  cmd = $4
   if ($0 ~ /Mica\.app\/Contents\/MacOS\/Mica/) group = "Mica"
+  else if ($0 ~ /[Aa]lacritty\.app\/Contents\/MacOS\/alacritty|\/bin\/alacritty([[:space:]]|$)/) group = "Alacritty"
   else if ($0 ~ /zellij/) group = "Zellij"
-  else if ($0 ~ /Alacritty/) group = "Alacritty"
   else if ($0 ~ /claude/) group = "Claude Code"
   else if ($0 ~ /codex/) group = "Codex"
   else next
@@ -24,8 +24,14 @@ END {
 
 if command -v footprint >/dev/null 2>&1; then
   printf '\nApple physical footprint samples:\n'
-  ps -axo pid,comm,args | awk '/Mica\.app\/Contents\/MacOS\/Mica/ { print $1 }' | while IFS= read -r pid; do
+  ps -axo pid,comm,args | awk '
+    NR == 1 || tolower($2) ~ /\/(ps|awk)$/ { next }
+    /Mica\.app\/Contents\/MacOS\/Mica/ { print $1, "Mica"; next }
+    /[Aa]lacritty\.app\/Contents\/MacOS\/alacritty|\/bin\/alacritty([[:space:]]|$)/ { print $1, "Alacritty"; next }
+    /zellij/ { print $1, "Zellij" }
+  ' | while read -r pid group; do
     [ -n "$pid" ] || continue
+    printf '%-10s ' "$group"
     footprint -p "$pid" 2>/dev/null | sed -n '2p'
   done
 fi

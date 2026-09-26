@@ -3,8 +3,10 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -15,16 +17,24 @@
 #include <unistd.h>
 #include <util.h>
 
-#define MICA_HISTORY_BUDGET_BYTES (2u * 1024u * 1024u)
 #define MICA_HISTORY_INITIAL 32
 #define MICA_READ_BUFFER 16384
 #define MICA_TITLE_MAX_BYTES 512
+
+static const uint32_t mica_ansi_palette[16] = {
+    0x1e1e1e, 0xf48771, 0x90c978, 0xf5d67a,
+    0x57c7ff, 0xc792ea, 0x89ddff, 0xd4d4d4,
+    0x4a4a4a, 0xff5370, 0xc3e88d, 0xffcb6b,
+    0x82aaff, 0xc792ea, 0x89ddff, 0xffffff,
+};
 
 struct MicaSession {
     int master_fd;
     pid_t child_pid;
     int rows;
     int cols;
+    int pixel_width;
+    int pixel_height;
     bool running;
     bool cursor_visible;
     int mouse_mode;
@@ -46,7 +56,43 @@ struct MicaSession {
     size_t pending_input_capacity;
     char *command;
     char *title;
+    char *startup_dir;
 };
+
+static void configure_terminal_colors(MicaSession *session) {
+    for (int index = 0; index < 16; index++) {
+        uint32_t rgb = mica_ansi_palette[index];
+        VTermColor color;
+        vterm_color_rgb(&color, (uint8_t)(rgb >> 16), (uint8_t)(rgb >> 8), (uint8_t)rgb);
+        vterm_state_set_palette_color(session->state, index, &color);
+    }
+    VTermColor foreground, background;
+    vterm_color_rgb(&foreground, 0xd4, 0xd4, 0xd4);
+    vterm_color_rgb(&background, 0x1e, 0x1e, 0x1e);
+    vterm_state_set_default_colors(session->state, &foreground, &background);
+}
+
+static uint8_t xterm_cube_component(unsigned value) {
+    return value == 0 ? 0 : (uint8_t)(55 + 40 * value);
+}
+
+static void convert_screen_color(const MicaSession *session, VTermColor *color) {
+    if (VTERM_COLOR_IS_INDEXED(color) && color->indexed.idx >= 16) {
+        unsigned index = color->indexed.idx;
+        if (index < 232) {
+            unsigned cube = index - 16;
+            vterm_color_rgb(color,
+                xterm_cube_component(cube / 36),
+                xterm_cube_component((cube / 6) % 6),
+                xterm_cube_component(cube % 6));
+        } else {
+            uint8_t gray = (uint8_t)(8 + 10 * (index - 232));
+            vterm_color_rgb(color, gray, gray, gray);
+        }
+        return;
+    }
+    vterm_screen_convert_color_to_rgb(session->screen, color);
+}
 
 static int history_push(int cols, const VTermScreenCell *cells, void *user);
 static int history_pop(int cols, VTermScreenCell *cells, void *user);
@@ -80,7 +126,87 @@ static VTermScreenCell *allocate_history(size_t capacity, int cols) {
 static size_t history_limit_lines(int cols) {
     if (cols <= 0 || (size_t)cols > SIZE_MAX / sizeof(VTermScreenCell)) return 0;
     size_t bytes_per_line = (size_t)cols * sizeof(VTermScreenCell);
-    return MICA_HISTORY_BUDGET_BYTES / bytes_per_line;
+    return MICA_HISTORY_LIMIT_BYTES / bytes_per_line;
+}
+
+static bool write_startup_file(const char *directory, const char *name, const char *contents) {
+    char path[1024];
+    int length = snprintf(path, sizeof(path), "%s/%s", directory, name);
+    if (length < 0 || (size_t)length >= sizeof(path)) return false;
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) return false;
+    size_t remaining = strlen(contents);
+    const char *cursor = contents;
+    while (remaining > 0) {
+        ssize_t written = write(fd, cursor, remaining);
+        if (written > 0) {
+            cursor += written;
+            remaining -= (size_t)written;
+        } else if (written < 0 && errno == EINTR) {
+            continue;
+        } else {
+            close(fd);
+            return false;
+        }
+    }
+    return close(fd) == 0;
+}
+
+static char *create_prefill_startup_dir(void) {
+    char template[] = "/tmp/mica-zsh-XXXXXX";
+    char *directory = mkdtemp(template);
+    if (!directory) return NULL;
+    static const char startup[] =
+        "original=\"$MICA_ORIGINAL_ZDOTDIR\"\n"
+        "export ZDOTDIR=\"$original\"\n"
+        "[[ -r \"$original/.zshenv\" ]] && source \"$original/.zshenv\"\n"
+        "export ZDOTDIR=\"$MICA_ZSH_WRAPPER\"\n";
+    static const char profile[] =
+        "original=\"$MICA_ORIGINAL_ZDOTDIR\"\n"
+        "export ZDOTDIR=\"$original\"\n"
+        "[[ -r \"$original/.zprofile\" ]] && source \"$original/.zprofile\"\n"
+        "export ZDOTDIR=\"$MICA_ZSH_WRAPPER\"\n";
+    static const char interactive[] =
+        "original=\"$MICA_ORIGINAL_ZDOTDIR\"\n"
+        "export ZDOTDIR=\"$original\"\n"
+        "[[ -r \"$original/.zshrc\" ]] && source \"$original/.zshrc\"\n"
+        "export ZDOTDIR=\"$MICA_ZSH_WRAPPER\"\n"
+        "[[ -n $HISTFILE ]] || HISTFILE=\"$original/.zsh_history\"\n"
+        "if [[ -n $MICA_INITIAL_COMMAND ]]; then\n"
+        "    print -z -- \"$MICA_INITIAL_COMMAND\"\n"
+        "    unset MICA_INITIAL_COMMAND\n"
+        "fi\n";
+    static const char login[] =
+        "original=\"$MICA_ORIGINAL_ZDOTDIR\"\n"
+        "export ZDOTDIR=\"$original\"\n"
+        "[[ -r \"$original/.zlogin\" ]] && source \"$original/.zlogin\"\n"
+        "export ZDOTDIR=\"$MICA_ZSH_WRAPPER\"\n";
+    if (!write_startup_file(directory, ".zshenv", startup) ||
+        !write_startup_file(directory, ".zprofile", profile) ||
+        !write_startup_file(directory, ".zshrc", interactive) ||
+        !write_startup_file(directory, ".zlogin", login)) {
+        char path[1024];
+        const char *names[] = { ".zshenv", ".zprofile", ".zshrc", ".zlogin" };
+        for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+            int length = snprintf(path, sizeof(path), "%s/%s", directory, names[i]);
+            if (length > 0 && (size_t)length < sizeof(path)) unlink(path);
+        }
+        rmdir(directory);
+        return NULL;
+    }
+    return strdup(directory);
+}
+
+static void remove_prefill_startup_dir(char *directory) {
+    if (!directory) return;
+    char path[1024];
+    const char *names[] = { ".zshenv", ".zprofile", ".zshrc", ".zlogin" };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        int length = snprintf(path, sizeof(path), "%s/%s", directory, names[i]);
+        if (length > 0 && (size_t)length < sizeof(path)) unlink(path);
+    }
+    rmdir(directory);
+    free(directory);
 }
 
 static int damage_callback(VTermRect rect, void *user) {
@@ -273,7 +399,8 @@ static const VTermScreenCallbacks screen_callbacks = {
 
 static const VTermStateFallbacks screen_fallbacks = { .osc = notification_osc };
 
-MicaSession *mica_session_create(const char *cwd, const char *command, int rows, int cols) {
+static MicaSession *session_create(const char *cwd, const char *command, int rows, int cols,
+                                   bool prefilled) {
     if (rows < 1 || cols < 1) return NULL;
     MicaSession *session = calloc(1, sizeof(*session));
     if (!session) return NULL;
@@ -283,8 +410,9 @@ MicaSession *mica_session_create(const char *cwd, const char *command, int rows,
     session->cols = cols;
     session->running = true;
     session->command = command ? strdup(command) : strdup("/bin/zsh -l");
+    if (prefilled && command) session->startup_dir = create_prefill_startup_dir();
     session->vt = vterm_new(rows, cols);
-    if (!session->command || !session->vt) goto fail;
+    if (!session->command || !session->vt || (prefilled && command && !session->startup_dir)) goto fail;
 
     vterm_set_utf8(session->vt, 1);
     session->state = vterm_obtain_state(session->vt);
@@ -296,6 +424,8 @@ MicaSession *mica_session_create(const char *cwd, const char *command, int rows,
     vterm_screen_enable_altscreen(session->screen, 1);
     vterm_output_set_callback(session->vt, output_callback, session);
     vterm_screen_reset(session->screen, 1);
+    configure_terminal_colors(session);
+    vterm_input_write(session->vt, "\x1b[0m", 4);
 
     struct winsize window_size = { .ws_row = (unsigned short)rows, .ws_col = (unsigned short)cols };
     int master = -1;
@@ -311,9 +441,20 @@ MicaSession *mica_session_create(const char *cwd, const char *command, int rows,
         setenv("TERM_PROGRAM", "Mica", 1);
         setenv("TERM_PROGRAM_VERSION", "0.1.0", 1);
         setenv("CLICOLOR", "1", 1);
+        if (session->startup_dir) {
+            const char *original_zdotdir = getenv("ZDOTDIR");
+            if (!original_zdotdir || !original_zdotdir[0]) original_zdotdir = getenv("HOME");
+            if (!original_zdotdir || !original_zdotdir[0]) original_zdotdir = ".";
+            setenv("MICA_ORIGINAL_ZDOTDIR", original_zdotdir, 1);
+            setenv("MICA_ZSH_WRAPPER", session->startup_dir, 1);
+            setenv("MICA_INITIAL_COMMAND", command, 1);
+            setenv("ZDOTDIR", session->startup_dir, 1);
+            execl("/bin/zsh", "zsh", "-l", "-i", (char *)NULL);
+        }
         if (command) {
             setenv("MICA_INITIAL_COMMAND", command, 1);
-            if (getenv("MICA_TEST_NO_STARTUP")) {
+            const char *test_mode = getenv("MICA_TEST_NO_STARTUP");
+            if (test_mode && strcmp(test_mode, "1") == 0) {
                 execl("/bin/zsh", "zsh", "-f", "-i", "-c",
                       "eval \"$MICA_INITIAL_COMMAND\"; mica_status=$?; printf '\\n[command exited: %d]\\n' $mica_status; exec /bin/zsh -f -i",
                       (char *)NULL);
@@ -323,7 +464,8 @@ MicaSession *mica_session_create(const char *cwd, const char *command, int rows,
                       (char *)NULL);
             }
         } else {
-            if (getenv("MICA_TEST_NO_STARTUP")) execl("/bin/zsh", "zsh", "-f", "-i", (char *)NULL);
+            const char *test_mode = getenv("MICA_TEST_NO_STARTUP");
+            if (test_mode && strcmp(test_mode, "1") == 0) execl("/bin/zsh", "zsh", "-f", "-i", (char *)NULL);
             else execl("/bin/zsh", "zsh", "-l", "-i", (char *)NULL);
         }
         dprintf(STDERR_FILENO, "mica: cannot start zsh: %s\r\n", strerror(errno));
@@ -338,6 +480,14 @@ MicaSession *mica_session_create(const char *cwd, const char *command, int rows,
 fail:
     mica_session_destroy(session);
     return NULL;
+}
+
+MicaSession *mica_session_create(const char *cwd, const char *command, int rows, int cols) {
+    return session_create(cwd, command, rows, cols, false);
+}
+
+MicaSession *mica_session_create_prefilled(const char *cwd, const char *command, int rows, int cols) {
+    return session_create(cwd, command, rows, cols, true);
 }
 
 void mica_session_destroy(MicaSession *session) {
@@ -364,6 +514,7 @@ void mica_session_destroy(MicaSession *session) {
     clear_pending_input(session);
     free(session->command);
     free(session->title);
+    remove_prefill_startup_dir(session->startup_dir);
     free(session);
 }
 
@@ -411,7 +562,15 @@ void mica_session_write(MicaSession *session, const void *bytes, size_t length) 
 }
 
 void mica_session_key(MicaSession *session, VTermKey key, VTermModifier modifiers) {
-    if (session && session->vt && session->running) vterm_keyboard_key(session->vt, key, modifiers);
+    if (!session || !session->vt || !session->running) return;
+    /* Match the user's Alacritty binding used by Claude Code for multiline input. */
+    if (key == VTERM_KEY_ENTER &&
+        (modifiers & (VTERM_MOD_SHIFT | VTERM_MOD_ALT | VTERM_MOD_CTRL)) == VTERM_MOD_SHIFT) {
+        static const char shift_enter[] = "\033\r";
+        write_nonblocking(session, shift_enter, sizeof(shift_enter) - 1);
+        return;
+    }
+    vterm_keyboard_key(session->vt, key, modifiers);
 }
 
 void mica_session_text(MicaSession *session, uint32_t codepoint, VTermModifier modifiers) {
@@ -445,7 +604,15 @@ void mica_session_focus(MicaSession *session, bool focused) {
 }
 
 void mica_session_resize(MicaSession *session, int rows, int cols) {
-    if (!session || rows < 1 || cols < 1 || (rows == session->rows && cols == session->cols)) return;
+    if (!session) return;
+    mica_session_resize_pixels(session, rows, cols, session->pixel_width, session->pixel_height);
+}
+
+void mica_session_resize_pixels(MicaSession *session, int rows, int cols, int pixel_width, int pixel_height) {
+    if (!session || rows < 1 || cols < 1 || pixel_width < 0 || pixel_height < 0) return;
+    bool grid_changed = rows != session->rows || cols != session->cols;
+    bool pixels_changed = pixel_width != session->pixel_width || pixel_height != session->pixel_height;
+    if (!grid_changed && !pixels_changed) return;
     if (cols != session->cols) {
         size_t capacity = session->history_capacity;
         size_t limit = history_limit_lines(cols);
@@ -471,10 +638,17 @@ void mica_session_resize(MicaSession *session, int rows, int cols) {
     }
     session->rows = rows;
     session->cols = cols;
-    vterm_set_size(session->vt, rows, cols);
-    struct winsize window_size = { .ws_row = (unsigned short)rows, .ws_col = (unsigned short)cols };
+    session->pixel_width = pixel_width;
+    session->pixel_height = pixel_height;
+    if (grid_changed) vterm_set_size(session->vt, rows, cols);
+    struct winsize window_size = {
+        .ws_row = (unsigned short)rows,
+        .ws_col = (unsigned short)cols,
+        .ws_xpixel = (unsigned short)(pixel_width > USHRT_MAX ? USHRT_MAX : pixel_width),
+        .ws_ypixel = (unsigned short)(pixel_height > USHRT_MAX ? USHRT_MAX : pixel_height),
+    };
     if (session->master_fd >= 0) ioctl(session->master_fd, TIOCSWINSZ, &window_size);
-    vterm_screen_flush_damage(session->screen);
+    if (grid_changed) vterm_screen_flush_damage(session->screen);
 }
 
 void mica_session_scroll(MicaSession *session, int lines) {
@@ -527,8 +701,12 @@ bool mica_session_get_cell(const MicaSession *session, int row, int col, MicaCel
     memcpy(cell->chars, source.chars, sizeof(cell->chars));
     cell->fg = source.fg;
     cell->bg = source.bg;
-    vterm_screen_convert_color_to_rgb(session->screen, &cell->fg);
-    vterm_screen_convert_color_to_rgb(session->screen, &cell->bg);
+    bool default_fg = VTERM_COLOR_IS_DEFAULT_FG(&cell->fg);
+    bool default_bg = VTERM_COLOR_IS_DEFAULT_BG(&cell->bg);
+    convert_screen_color(session, &cell->fg);
+    convert_screen_color(session, &cell->bg);
+    if (default_fg) cell->fg.type |= VTERM_COLOR_DEFAULT_FG;
+    if (default_bg) cell->bg.type |= VTERM_COLOR_DEFAULT_BG;
     cell->attrs = source.attrs;
     cell->width = source.width;
     return true;
