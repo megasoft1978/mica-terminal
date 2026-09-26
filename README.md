@@ -33,7 +33,7 @@ Mica imports the current tab-per-session part of Zellij layouts. Run `make impor
 
 ## Tests and agent loop
 
-`make test` exercises a real PTY and libvterm with scrollback, ANSI colors, alternate screen, mouse mode, notification sequences, focus reporting, and terminal resizing. Scrollback allocates only when needed and stays under 2 MiB per session. `make app` builds the macOS bundle. `scripts/import-zellij-layouts.py` converts local KDL layouts. `scripts/memory-sample.sh` reports RSS and Mica's Apple physical footprint where available; summed RSS can double-count shared pages.
+`make test` exercises a real PTY and libvterm with scrollback, ANSI colors, wide Unicode cells, large clipboard pastes, alternate screen, mouse mode, notification sequences, focus reporting, and terminal resizing. Scrollback allocates only when needed and stays under 2 MiB per session; input that is waiting for a busy PTY is queued and released as it drains. `make app` builds the macOS bundle. `scripts/import-zellij-layouts.py` converts local KDL layouts. `scripts/memory-sample.sh` reports RSS and Mica's Apple physical footprint where available; summed RSS can double-count shared pages.
 
 To ask Codex to fix test/build issues in a bounded loop using GPT-6 Luna:
 

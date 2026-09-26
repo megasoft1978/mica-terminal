@@ -39,6 +39,10 @@ struct MicaSession {
     size_t history_start;
     size_t history_count;
     size_t view_offset;
+    char *pending_input;
+    size_t pending_input_offset;
+    size_t pending_input_length;
+    size_t pending_input_capacity;
     char *command;
 };
 
@@ -94,22 +98,75 @@ static int notification_osc(int command, VTermStringFragment fragment, void *use
     return 1;
 }
 
-static void write_all_nonblocking(int fd, const char *bytes, size_t length) {
-    while (length > 0) {
-        ssize_t written = write(fd, bytes, length);
+static void clear_pending_input(MicaSession *session) {
+    free(session->pending_input);
+    session->pending_input = NULL;
+    session->pending_input_offset = 0;
+    session->pending_input_length = 0;
+    session->pending_input_capacity = 0;
+}
+
+static void flush_pending_input(MicaSession *session) {
+    if (!session || session->master_fd < 0) return;
+    while (session->pending_input_offset < session->pending_input_length) {
+        ssize_t written = write(session->master_fd,
+                               session->pending_input + session->pending_input_offset,
+                               session->pending_input_length - session->pending_input_offset);
         if (written > 0) {
-            bytes += written;
-            length -= (size_t)written;
+            session->pending_input_offset += (size_t)written;
             continue;
         }
         if (written < 0 && errno == EINTR) continue;
-        break;
+        if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
+        clear_pending_input(session);
+        return;
     }
+    clear_pending_input(session);
+}
+
+static void write_nonblocking(MicaSession *session, const char *bytes, size_t length) {
+    if (!session || session->master_fd < 0 || !bytes || length == 0) return;
+
+    if (session->pending_input_length == 0) {
+        while (length > 0) {
+            ssize_t written = write(session->master_fd, bytes, length);
+            if (written > 0) {
+                bytes += written;
+                length -= (size_t)written;
+                continue;
+            }
+            if (written < 0 && errno == EINTR) continue;
+            if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+            return;
+        }
+        if (length == 0) return;
+    }
+
+    size_t queued = session->pending_input_length - session->pending_input_offset;
+    if (session->pending_input_offset > 0 && queued > 0)
+        memmove(session->pending_input, session->pending_input + session->pending_input_offset, queued);
+    session->pending_input_offset = 0;
+    session->pending_input_length = queued;
+    if (length > SIZE_MAX - queued) return;
+    size_t needed = queued + length;
+    if (needed > session->pending_input_capacity) {
+        size_t capacity = session->pending_input_capacity ? session->pending_input_capacity : 4096;
+        while (capacity < needed) {
+            if (capacity > SIZE_MAX / 2) { capacity = needed; break; }
+            capacity *= 2;
+        }
+        char *grown = realloc(session->pending_input, capacity);
+        if (!grown) return;
+        session->pending_input = grown;
+        session->pending_input_capacity = capacity;
+    }
+    memcpy(session->pending_input + queued, bytes, length);
+    session->pending_input_length = needed;
 }
 
 static void output_callback(const char *bytes, size_t length, void *user) {
     MicaSession *session = user;
-    if (session && session->master_fd >= 0) write_all_nonblocking(session->master_fd, bytes, length);
+    write_nonblocking(session, bytes, length);
 }
 
 static int history_push(int cols, const VTermScreenCell *cells, void *user) {
@@ -272,6 +329,7 @@ void mica_session_destroy(MicaSession *session) {
     }
     if (session->vt) vterm_free(session->vt);
     free(session->history);
+    clear_pending_input(session);
     free(session->command);
     free(session);
 }
@@ -279,8 +337,11 @@ void mica_session_destroy(MicaSession *session) {
 int mica_session_poll(MicaSession *session, int timeout_ms) {
     if (!session) return -1;
     if (session->master_fd >= 0) {
-        struct pollfd pfd = { .fd = session->master_fd, .events = POLLIN | POLLHUP | POLLERR };
+        short events = POLLIN | POLLHUP | POLLERR;
+        if (session->pending_input_length > session->pending_input_offset) events |= POLLOUT;
+        struct pollfd pfd = { .fd = session->master_fd, .events = events };
         int rc = poll(&pfd, 1, timeout_ms);
+        if (rc > 0 && (pfd.revents & POLLOUT)) flush_pending_input(session);
         if (rc > 0 && (pfd.revents & (POLLIN | POLLHUP | POLLERR))) {
             char buffer[MICA_READ_BUFFER];
             for (;;) {
@@ -295,6 +356,7 @@ int mica_session_poll(MicaSession *session, int timeout_ms) {
                 if (n == 0 || (n < 0 && errno == EIO)) {
                     close(session->master_fd);
                     session->master_fd = -1;
+                    clear_pending_input(session);
                 }
                 break;
             }
@@ -312,7 +374,7 @@ int mica_session_poll(MicaSession *session, int timeout_ms) {
 }
 
 void mica_session_write(MicaSession *session, const void *bytes, size_t length) {
-    if (session && session->master_fd >= 0 && bytes) write_all_nonblocking(session->master_fd, bytes, length);
+    write_nonblocking(session, bytes, length);
 }
 
 void mica_session_key(MicaSession *session, VTermKey key, VTermModifier modifiers) {
@@ -326,7 +388,7 @@ void mica_session_text(MicaSession *session, uint32_t codepoint, VTermModifier m
 void mica_session_paste(MicaSession *session, const char *utf8, size_t length) {
     if (!session || !session->vt || !session->running || !utf8) return;
     vterm_keyboard_start_paste(session->vt);
-    write_all_nonblocking(session->master_fd, utf8, length);
+    write_nonblocking(session, utf8, length);
     vterm_keyboard_end_paste(session->vt);
 }
 
@@ -389,7 +451,7 @@ void mica_session_scroll(MicaSession *session, int lines) {
         session->view_offset = n > session->history_count - session->view_offset
             ? session->history_count : session->view_offset + n;
     } else if (lines < 0) {
-        size_t n = (size_t)(-lines);
+        size_t n = (size_t)(-(int64_t)lines);
         session->view_offset = n > session->view_offset ? 0 : session->view_offset - n;
     }
 }

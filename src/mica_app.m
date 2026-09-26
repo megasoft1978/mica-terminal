@@ -48,6 +48,10 @@ static NSMenuItem *AddMenuItem(NSMenu *menu, NSString *title, SEL selector, NSSt
     return item;
 }
 
+static BOOL CellIsContinuation(MicaCell cell) {
+    return cell.width == 0 || cell.chars[0] > 0x10ffff;
+}
+
 @implementation MicaTerminalView {
     BOOL _selecting;
     NSPoint _selectionStart;
@@ -79,6 +83,7 @@ static NSMenuItem *AddMenuItem(NSMenu *menu, NSString *title, SEL selector, NSSt
     NSUInteger length = 0;
     for (NSUInteger i = 0; i < VTERM_MAX_CHARS_PER_CELL && cell.chars[i]; i++) {
         uint32_t value = cell.chars[i];
+        if (value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff)) continue;
         if (value <= 0xffff) units[length++] = (unichar)value;
         else {
             value -= 0x10000;
@@ -186,7 +191,7 @@ static NSMenuItem *AddMenuItem(NSMenu *menu, NSString *title, SEL selector, NSSt
             BOOL hasBackground = selected || !VTERM_COLOR_IS_DEFAULT_BG(&cell.bg);
             NSRect cellRect = [self cellRectAtRow:row col:col];
             if (hasBackground) { [bg setFill]; NSRectFill(cellRect); }
-            if (cell.width == 0) continue;
+            if (CellIsContinuation(cell)) continue;
             NSString *glyph = [self stringForCell:cell];
             if ([glyph isEqualToString:@" "]) continue;
             NSFont *font = self.terminalFont;
@@ -362,7 +367,8 @@ static NSMenuItem *AddMenuItem(NSMenu *menu, NSString *title, SEL selector, NSSt
         NSMutableString *line = [NSMutableString string];
         for (NSInteger col = first; col <= last; col++) {
             MicaCell cell;
-            if (mica_session_get_cell(self.owner.activeTab.session, (int)row, (int)col, &cell)) [line appendString:[self stringForCell:cell]];
+            if (mica_session_get_cell(self.owner.activeTab.session, (int)row, (int)col, &cell) && !CellIsContinuation(cell))
+                [line appendString:[self stringForCell:cell]];
         }
         while ([line hasSuffix:@" "]) [line deleteCharactersInRange:NSMakeRange(line.length - 1, 1)];
         [output appendString:line];

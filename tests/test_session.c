@@ -2,6 +2,9 @@
 #include "mica.h"
 
 #include <assert.h>
+#include <errno.h>
+#include <limits.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -48,6 +51,9 @@ int main(void) {
     mica_session_scroll(session, 4);
     assert(mica_session_view_offset(session) == 4);
     assert(screen_contains(session, "row-"));
+    mica_session_scroll(session, INT_MIN);
+    assert(mica_session_view_offset(session) == 0);
+    mica_session_scroll(session, 4);
     mica_session_scroll_to_bottom(session);
     assert(mica_session_view_offset(session) == 0);
 
@@ -81,6 +87,45 @@ color_checked:
 
     mica_session_destroy(session);
 
+    MicaSession *unicode_session = mica_session_create("/tmp", "printf 'WIDE-界🙂\\n'; sleep 1", 6, 80);
+    assert(unicode_session != NULL);
+    for (int i = 0; i < 200 && !screen_contains(unicode_session, "WIDE-"); i++)
+        mica_session_poll(unicode_session, 10);
+    assert(screen_contains(unicode_session, "WIDE-"));
+    bool wide_cell_checked = false;
+    for (int row = 0; row < mica_session_rows(unicode_session); row++) {
+        for (int col = 0; col + 1 < mica_session_cols(unicode_session); col++) {
+            MicaCell cell, continuation;
+            if (!mica_session_get_cell(unicode_session, row, col, &cell) || cell.chars[0] != 0x754c) continue;
+            assert(cell.width == 2);
+            assert(mica_session_get_cell(unicode_session, row, col + 1, &continuation));
+            assert(continuation.width == 0 || continuation.chars[0] > 0x10ffff);
+            wide_cell_checked = true;
+        }
+    }
+    assert(wide_cell_checked);
+    mica_session_destroy(unicode_session);
+
+    const size_t paste_length = 256 * 1024;
+    MicaSession *paste_session = mica_session_create("/tmp",
+        "stty -echo -icanon -isig -ixon; printf 'PASTE-READY\\n'; "
+        "dd bs=4096 count=64 of=/dev/null 2>/dev/null; "
+        "printf 'LARGE-PASTE-DONE\\n'; sleep 1",
+        6, 80);
+    assert(paste_session != NULL);
+    for (int i = 0; i < 500 && !screen_contains(paste_session, "PASTE-READY"); i++)
+        mica_session_poll(paste_session, 10);
+    assert(screen_contains(paste_session, "PASTE-READY"));
+    char *paste = malloc(paste_length);
+    assert(paste != NULL);
+    memset(paste, 'x', paste_length);
+    mica_session_paste(paste_session, paste, paste_length);
+    free(paste);
+    for (int i = 0; i < 1000 && !screen_contains(paste_session, "LARGE-PASTE-DONE"); i++)
+        mica_session_poll(paste_session, 10);
+    assert(screen_contains(paste_session, "LARGE-PASTE-DONE"));
+    mica_session_destroy(paste_session);
+
     MicaSession *exit_session = mica_session_create("/tmp", "printf 'EXIT-READY\\n'; sleep 0.1", 6, 80);
     assert(exit_session != NULL);
     for (int i = 0; i < 500 && !screen_contains(exit_session, "[command exited: 0]"); i++) mica_session_poll(exit_session, 10);
@@ -104,6 +149,35 @@ color_checked:
     mica_session_focus(focus_session, false);
     mica_session_focus(focus_session, true);
     mica_session_destroy(focus_session);
+
+    MicaSession *compat_session = mica_session_create("/tmp",
+        "printf '%s|%s\\n' \"$TERM\" \"$COLORTERM\"; "
+        "printf '\\033[38;2;12;34;56mTRUECOLOR\\033[0m\\n'; sleep 1",
+        6, 80);
+    assert(compat_session != NULL);
+    for (int i = 0; i < 200 && !screen_contains(compat_session, "TRUECOLOR"); i++)
+        mica_session_poll(compat_session, 10);
+    assert(screen_contains(compat_session, "xterm-256color|truecolor"));
+    bool truecolor_checked = false;
+    for (int row = 0; row < mica_session_rows(compat_session); row++) {
+        for (int col = 0; col < mica_session_cols(compat_session); col++) {
+            MicaCell cell;
+            if (!mica_session_get_cell(compat_session, row, col, &cell) || cell.chars[0] != 'T') continue;
+            assert(VTERM_COLOR_IS_RGB(&cell.fg));
+            assert(cell.fg.rgb.red == 12 && cell.fg.rgb.green == 34 && cell.fg.rgb.blue == 56);
+            truecolor_checked = true;
+        }
+    }
+    assert(truecolor_checked);
+    mica_session_destroy(compat_session);
+
+    MicaSession *cleanup_session = mica_session_create("/tmp", "sleep 30", 6, 80);
+    assert(cleanup_session != NULL);
+    pid_t cleanup_pid = mica_session_pid(cleanup_session);
+    assert(cleanup_pid > 0);
+    mica_session_destroy(cleanup_session);
+    errno = 0;
+    assert(kill(cleanup_pid, 0) == -1 && errno == ESRCH);
 
     puts("session tests passed");
     return 0;
