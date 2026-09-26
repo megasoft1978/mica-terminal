@@ -18,6 +18,7 @@
 #define MICA_HISTORY_BUDGET_BYTES (2u * 1024u * 1024u)
 #define MICA_HISTORY_INITIAL 32
 #define MICA_READ_BUFFER 16384
+#define MICA_TITLE_MAX_BYTES 512
 
 struct MicaSession {
     int master_fd;
@@ -44,11 +45,31 @@ struct MicaSession {
     size_t pending_input_length;
     size_t pending_input_capacity;
     char *command;
+    char *title;
 };
 
 static int history_push(int cols, const VTermScreenCell *cells, void *user);
 static int history_pop(int cols, VTermScreenCell *cells, void *user);
 static int history_clear(void *user);
+
+static char *copy_title(VTermStringFragment fragment) {
+    if (!fragment.str || fragment.len == 0) return strdup("");
+    size_t length = fragment.len;
+    if (length > MICA_TITLE_MAX_BYTES) {
+        length = MICA_TITLE_MAX_BYTES;
+        while (length > 0 && (((unsigned char)fragment.str[length] & 0xc0) == 0x80)) length--;
+    }
+    char *title = malloc(length + 1);
+    if (!title) return NULL;
+    size_t copied = 0;
+    for (size_t i = 0; i < length; i++) {
+        unsigned char byte = (unsigned char)fragment.str[i];
+        if (byte < 0x20 || byte == 0x7f) continue;
+        title[copied++] = (char)byte;
+    }
+    title[copied] = '\0';
+    return title;
+}
 
 static VTermScreenCell *allocate_history(size_t capacity, int cols) {
     if (capacity == 0 || cols <= 0 || capacity > SIZE_MAX / (size_t)cols ||
@@ -75,6 +96,17 @@ static int property_callback(VTermProp prop, VTermValue *value, void *user) {
     if (prop == VTERM_PROP_CURSORVISIBLE) session->cursor_visible = value->boolean != 0;
     if (prop == VTERM_PROP_MOUSE) session->mouse_mode = value->number;
     if (prop == VTERM_PROP_FOCUSREPORT) session->focus_report = value->boolean != 0;
+    if (prop == VTERM_PROP_TITLE) {
+        char *title = copy_title(value->string);
+        if (title) {
+            if (!session->title || strcmp(session->title, title) != 0) {
+                free(session->title);
+                session->title = title;
+            } else {
+                free(title);
+            }
+        }
+    }
     session->revision++;
     return 1;
 }
@@ -331,6 +363,7 @@ void mica_session_destroy(MicaSession *session) {
     free(session->history);
     clear_pending_input(session);
     free(session->command);
+    free(session->title);
     free(session);
 }
 
@@ -476,6 +509,7 @@ uint64_t mica_session_revision(const MicaSession *session) { return session ? se
 uint64_t mica_session_attention_count(const MicaSession *session) { return session ? session->attention_count : 0; }
 pid_t mica_session_pid(const MicaSession *session) { return session ? session->child_pid : -1; }
 const char *mica_session_command(const MicaSession *session) { return session ? session->command : ""; }
+const char *mica_session_title(const MicaSession *session) { return session && session->title ? session->title : ""; }
 
 bool mica_session_get_cell(const MicaSession *session, int row, int col, MicaCell *cell) {
     if (!session || !cell || row < 0 || row >= session->rows || col < 0 || col >= session->cols) return false;

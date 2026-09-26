@@ -8,6 +8,7 @@ static const CGFloat kFontSizeDefault = 13.0;
 @property(nonatomic, copy) NSString *name;
 @property(nonatomic, copy) NSString *cwd;
 @property(nonatomic, copy) NSString *command;
+@property(nonatomic, copy) NSString *terminalTitle;
 @property(nonatomic, assign) MicaSession *session;
 @property(nonatomic, assign) uint64_t revision;
 @property(nonatomic, assign) uint64_t attentionCount;
@@ -34,6 +35,7 @@ static const CGFloat kFontSizeDefault = 13.0;
 @property(nonatomic, strong) NSTimer *pollTimer;
 @property(nonatomic, assign) NSInteger attentionRequest;
 - (MicaTab *)activeTab;
+- (NSString *)displayNameForTab:(MicaTab *)tab;
 - (void)newTabWithName:(NSString *)name command:(NSString *)command;
 - (void)closeActiveTab;
 - (void)selectRelativeTab:(NSInteger)delta;
@@ -124,7 +126,7 @@ static BOOL CellIsContinuation(MicaCell cell) {
 
 - (NSString *)labelForTab:(MicaTab *)tab active:(BOOL)active {
     NSString *marker = tab.needsAttention ? @"! " : (active ? @"● " : @"");
-    return [NSString stringWithFormat:@"%@%@", marker, tab.name];
+    return [NSString stringWithFormat:@"%@%@", marker, [self.owner displayNameForTab:tab]];
 }
 
 - (NSPoint)cellForPoint:(NSPoint)point {
@@ -231,10 +233,10 @@ static BOOL CellIsContinuation(MicaCell cell) {
         NSString *key = event.charactersIgnoringModifiers.lowercaseString;
         if ([key isEqualToString:@"t"]) { [self.owner newTabWithName:@"Shell" command:nil]; return; }
         if ([key isEqualToString:@"w"]) { [self.owner closeActiveTab]; return; }
-        if (option && (flags & NSEventModifierFlagShift) && [key isEqualToString:@"c"]) { [self.owner newTabWithName:@"Claude Code (resumed)" command:@"unset CLAUDECODE; yowork --continue"]; return; }
-        if (option && (flags & NSEventModifierFlagShift) && [key isEqualToString:@"x"]) { [self.owner newTabWithName:@"Codex (resumed)" command:@"codex resume --last"]; return; }
-        if (option && [key isEqualToString:@"c"]) { [self.owner newTabWithName:@"Claude Code" command:@"unset CLAUDECODE; yowork"]; return; }
-        if (option && [key isEqualToString:@"x"]) { [self.owner newTabWithName:@"Codex" command:@"codex"]; return; }
+        if (option && (flags & NSEventModifierFlagShift) && [key isEqualToString:@"c"]) { [self.owner newTabWithName:@"Claude Code (resumed)" command:@"unset CLAUDECODE; export CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1; yowork --continue"]; return; }
+        if (option && (flags & NSEventModifierFlagShift) && [key isEqualToString:@"x"]) { [self.owner newTabWithName:@"Codex (resumed)" command:@"codex resume -c tui.raw_output_mode=true --no-alt-screen --last"]; return; }
+        if (option && [key isEqualToString:@"c"]) { [self.owner newTabWithName:@"Claude Code" command:@"unset CLAUDECODE; export CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1; yowork"]; return; }
+        if (option && [key isEqualToString:@"x"]) { [self.owner newTabWithName:@"Codex" command:@"codex -c tui.raw_output_mode=true --no-alt-screen"]; return; }
         if ([key isEqualToString:@"c"]) { if (_selecting) [self copySelection:nil]; else mica_session_text(tab.session, 'c', VTERM_MOD_CTRL); return; }
         if ([key isEqualToString:@"v"]) { [self paste:nil]; return; }
         if ((flags & NSEventModifierFlagShift) && event.keyCode == 30) { [self.owner selectRelativeTab:1]; return; }
@@ -399,6 +401,11 @@ static BOOL CellIsContinuation(MicaCell cell) {
     return self.tabs[(NSUInteger)self.activeIndex];
 }
 
+- (NSString *)displayNameForTab:(MicaTab *)tab {
+    if (!tab.terminalTitle.length) return tab.name;
+    return [NSString stringWithFormat:@"%@ · %@", tab.name, tab.terminalTitle];
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     (void)notification;
     self.tabs = [NSMutableArray array];
@@ -503,7 +510,7 @@ static BOOL CellIsContinuation(MicaCell cell) {
     [self.tabs addObject:tab];
     self.activeIndex = (NSInteger)self.tabs.count - 1;
     if (NSApp.isActive) mica_session_focus(tab.session, true);
-    self.window.title = [NSString stringWithFormat:@"%@ — Mica Terminal", tab.name];
+    self.window.title = [NSString stringWithFormat:@"%@ — Mica Terminal", [self displayNameForTab:tab]];
     [self resizeActiveSession];
     [self.terminalView setNeedsDisplay:YES];
 }
@@ -516,10 +523,10 @@ static BOOL CellIsContinuation(MicaCell cell) {
 
 - (void)resizeActiveSession { [self.terminalView setNeedsDisplay:YES]; }
 - (void)newShell:(id)sender { (void)sender; [self newTabWithName:@"Shell" command:nil]; }
-- (void)newClaude:(id)sender { (void)sender; [self newTabWithName:@"Claude Code" command:@"unset CLAUDECODE; yowork"]; }
-- (void)newCodex:(id)sender { (void)sender; [self newTabWithName:@"Codex" command:@"codex"]; }
-- (void)resumeClaude:(id)sender { (void)sender; [self newTabWithName:@"Claude Code (resumed)" command:@"unset CLAUDECODE; yowork --continue"]; }
-- (void)resumeCodex:(id)sender { (void)sender; [self newTabWithName:@"Codex (resumed)" command:@"codex resume --last"]; }
+- (void)newClaude:(id)sender { (void)sender; [self newTabWithName:@"Claude Code" command:@"unset CLAUDECODE; export CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1; yowork"]; }
+- (void)newCodex:(id)sender { (void)sender; [self newTabWithName:@"Codex" command:@"codex -c tui.raw_output_mode=true --no-alt-screen"]; }
+- (void)resumeClaude:(id)sender { (void)sender; [self newTabWithName:@"Claude Code (resumed)" command:@"unset CLAUDECODE; export CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1; yowork --continue"]; }
+- (void)resumeCodex:(id)sender { (void)sender; [self newTabWithName:@"Codex (resumed)" command:@"codex resume -c tui.raw_output_mode=true --no-alt-screen --last"]; }
 - (void)closeTab:(id)sender { (void)sender; [self closeActiveTab]; }
 - (void)nextTab:(id)sender { (void)sender; [self selectRelativeTab:1]; }
 - (void)previousTab:(id)sender { (void)sender; [self selectRelativeTab:-1]; }
@@ -533,7 +540,7 @@ static BOOL CellIsContinuation(MicaCell cell) {
     MicaTab *tab = self.activeTab;
     if (NSApp.isActive) mica_session_focus(tab.session, true);
     tab.needsAttention = NO;
-    self.window.title = [NSString stringWithFormat:@"%@ — Mica Terminal", tab.name];
+    self.window.title = [NSString stringWithFormat:@"%@ — Mica Terminal", [self displayNameForTab:tab]];
     [self resizeActiveSession];
 }
 
@@ -551,7 +558,7 @@ static BOOL CellIsContinuation(MicaCell cell) {
     MicaTab *tab = self.activeTab;
     tab.needsAttention = NO;
     if (NSApp.isActive) mica_session_focus(tab.session, true);
-    self.window.title = [NSString stringWithFormat:@"%@ — Mica Terminal", tab.name];
+    self.window.title = [NSString stringWithFormat:@"%@ — Mica Terminal", [self displayNameForTab:tab]];
     [self resizeActiveSession];
 }
 
@@ -560,6 +567,16 @@ static BOOL CellIsContinuation(MicaCell cell) {
     BOOL redraw = NO;
     for (MicaTab *tab in self.tabs) {
         mica_session_poll(tab.session, 0);
+        const char *rawTitle = mica_session_title(tab.session);
+        NSString *terminalTitle = rawTitle[0]
+            ? [[NSString alloc] initWithBytes:rawTitle length:strlen(rawTitle) encoding:NSUTF8StringEncoding]
+            : nil;
+        if (terminalTitle != tab.terminalTitle && ![terminalTitle isEqualToString:tab.terminalTitle]) {
+            tab.terminalTitle = terminalTitle;
+            if (tab == self.activeTab)
+                self.window.title = [NSString stringWithFormat:@"%@ — Mica Terminal", [self displayNameForTab:tab]];
+            redraw = YES;
+        }
         uint64_t attentionCount = mica_session_attention_count(tab.session);
         if (attentionCount != tab.attentionCount) {
             tab.attentionCount = attentionCount;

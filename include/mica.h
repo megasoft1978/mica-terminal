@@ -44,5 +44,6 @@ uint64_t mica_session_revision(const MicaSession *session);
 uint64_t mica_session_attention_count(const MicaSession *session);
 pid_t mica_session_pid(const MicaSession *session);
 const char *mica_session_command(const MicaSession *session);
+const char *mica_session_title(const MicaSession *session);
 
 #endif

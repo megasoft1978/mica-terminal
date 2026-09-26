@@ -23,8 +23,8 @@ Mica imports the current tab-per-session part of Zellij layouts. Run `make impor
 
 ## Controls
 
-- `⌘T`: new shell tab; `⌥⌘C`: Claude Code tab; `⌥⌘X`: Codex tab.
-- `⇧⌥⌘C`: continue the latest Claude Code session through the existing `yowork` alias; `⇧⌥⌘X`: resume the latest Codex session.
+- `⌘T`: new shell tab; `⌥⌘C`: Claude Code tab; `⌥⌘X`: Codex tab. The Claude and Codex shortcuts use inline rendering so their transcripts stay in Mica scrollback; Codex also starts in its copy-friendly raw output mode (`Alt-R` toggles it).
+- `⇧⌥⌘C`: continue the latest Claude Code session through the existing `yowork` alias; `⇧⌥⌘X`: resume the latest Codex session. Mica displays terminal titles from agent CLIs beside each tab name to make parallel sessions easier to distinguish.
 - `⌘W`: close the active tab; `⌘⇧[` / `⌘⇧]`: switch tabs.
 - `⌘C` copies a selection, or sends Ctrl-C when there is no selection; `⌘V` pastes.
 - Drag to select text. Use the mouse wheel or `⇧Page Up` / `⇧Page Down` for terminal scrollback. When an application enables mouse reporting, the wheel is sent to that app.

@@ -151,6 +151,7 @@ color_checked:
     mica_session_destroy(focus_session);
 
     MicaSession *compat_session = mica_session_create("/tmp",
+        "printf '\\033]2;Codex Mica test\\007'; "
         "printf '%s|%s\\n' \"$TERM\" \"$COLORTERM\"; "
         "printf '\\033[38;2;12;34;56mTRUECOLOR\\033[0m\\n'; sleep 1",
         6, 80);
@@ -158,6 +159,7 @@ color_checked:
     for (int i = 0; i < 200 && !screen_contains(compat_session, "TRUECOLOR"); i++)
         mica_session_poll(compat_session, 10);
     assert(screen_contains(compat_session, "xterm-256color|truecolor"));
+    assert(strcmp(mica_session_title(compat_session), "Codex Mica test") == 0);
     bool truecolor_checked = false;
     for (int row = 0; row < mica_session_rows(compat_session); row++) {
         for (int col = 0; col < mica_session_cols(compat_session); col++) {
