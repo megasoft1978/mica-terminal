@@ -39,8 +39,10 @@ struct MicaSession {
     bool cursor_visible;
     int mouse_mode;
     int exit_status;
+    int command_exit_status;
     uint64_t revision;
     uint64_t attention_count;
+    uint64_t command_completion_count;
     bool focus_report;
     VTerm *vt;
     VTermScreen *screen;
@@ -245,6 +247,27 @@ static int bell_callback(void *user) {
 
 static int notification_osc(int command, VTermStringFragment fragment, void *user) {
     MicaSession *session = user;
+    static const char completion_prefix[] = "mica;command-finished;";
+    if (session && command == 777 && fragment.final && fragment.str &&
+        fragment.len > (int)(sizeof(completion_prefix) - 1) &&
+        memcmp(fragment.str, completion_prefix, sizeof(completion_prefix) - 1) == 0) {
+        int status = 0;
+        bool valid = true;
+        for (int i = (int)(sizeof(completion_prefix) - 1); i < fragment.len; i++) {
+            unsigned char byte = (unsigned char)fragment.str[i];
+            if (byte < '0' || byte > '9' || status > 25 || (status == 25 && byte > '5')) {
+                valid = false;
+                break;
+            }
+            status = status * 10 + (byte - '0');
+        }
+        if (valid) {
+            session->command_exit_status = status;
+            session->command_completion_count++;
+            session->revision++;
+        }
+        return 1;
+    }
     if (session && fragment.final && (command == 9 || command == 99 || command == 777)) {
         bool notification = true;
         if (command == 9 && fragment.str && fragment.len >= 2 &&
@@ -409,7 +432,7 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
     session->rows = rows;
     session->cols = cols;
     session->running = true;
-    session->command = command ? strdup(command) : strdup("/bin/zsh -l");
+    session->command = command ? strdup(command) : strdup("/bin/zsh -l -i");
     if (prefilled && command) session->startup_dir = create_prefill_startup_dir();
     session->vt = vterm_new(rows, cols);
     if (!session->command || !session->vt || (prefilled && command && !session->startup_dir)) goto fail;
@@ -456,11 +479,11 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
             const char *test_mode = getenv("MICA_TEST_NO_STARTUP");
             if (test_mode && strcmp(test_mode, "1") == 0) {
                 execl("/bin/zsh", "zsh", "-f", "-i", "-c",
-                      "eval \"$MICA_INITIAL_COMMAND\"; mica_status=$?; printf '\\n[command exited: %d]\\n' $mica_status; exec /bin/zsh -f -i",
+                      "eval \"$MICA_INITIAL_COMMAND\"; mica_status=$?; printf '\\n[command exited: %d]\\n' \"$mica_status\"; printf '\\033]777;mica;command-finished;%d\\033\\\\' \"$mica_status\"; exec /bin/zsh -f -i",
                       (char *)NULL);
             } else {
                 execl("/bin/zsh", "zsh", "-l", "-i", "-c",
-                      "eval \"$MICA_INITIAL_COMMAND\"; mica_status=$?; printf '\\n[command exited: %d]\\n' $mica_status; exec /bin/zsh -l -i",
+                      "eval \"$MICA_INITIAL_COMMAND\"; mica_status=$?; printf '\\n[command exited: %d]\\n' \"$mica_status\"; printf '\\033]777;mica;command-finished;%d\\033\\\\' \"$mica_status\"; exec /bin/zsh -l -i",
                       (char *)NULL);
             }
         } else {
@@ -563,7 +586,7 @@ void mica_session_write(MicaSession *session, const void *bytes, size_t length) 
 
 void mica_session_key(MicaSession *session, VTermKey key, VTermModifier modifiers) {
     if (!session || !session->vt || !session->running) return;
-    /* Match the user's Alacritty binding used by Claude Code for multiline input. */
+    /* Keep Shift-Return distinct from Return for multiline input. */
     if (key == VTERM_KEY_ENTER &&
         (modifiers & (VTERM_MOD_SHIFT | VTERM_MOD_ALT | VTERM_MOD_CTRL)) == VTERM_MOD_SHIFT) {
         static const char shift_enter[] = "\033\r";
@@ -669,6 +692,9 @@ int mica_session_cols(const MicaSession *session) { return session ? session->co
 int mica_session_view_offset(const MicaSession *session) { return session ? (int)session->view_offset : 0; }
 size_t mica_session_history_lines(const MicaSession *session) { return session ? session->history_count : 0; }
 bool mica_session_is_running(const MicaSession *session) { return session && session->running; }
+int mica_session_exit_status(const MicaSession *session) { return session && !session->running ? session->exit_status : -1; }
+uint64_t mica_session_command_completion_count(const MicaSession *session) { return session ? session->command_completion_count : 0; }
+int mica_session_command_exit_status(const MicaSession *session) { return session ? session->command_exit_status : -1; }
 bool mica_session_reports_mouse(const MicaSession *session) { return session && session->mouse_mode != VTERM_PROP_MOUSE_NONE; }
 bool mica_session_reports_focus(const MicaSession *session) { return session && session->focus_report; }
 bool mica_session_cursor_visible(const MicaSession *session) { return session && session->cursor_visible; }

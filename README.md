@@ -1,56 +1,95 @@
 # Mica Terminal
 
-Mica is a small native macOS terminal workspace for the project sessions currently launched through Zellij. Its PTY/session manager and terminal integration are C; a compact AppKit view handles drawing and macOS input. Terminal escape parsing is provided by `libvterm`. The macOS app uses a Zellij-style tab strip and status bar with the active Alacritty dark palette, and includes an original Mica app icon.
+<p align="center">
+  <img src="assets/mica-icon.png" alt="Mica Terminal icon" width="128">
+</p>
 
-The terminal defaults match the configured Alacritty foreground, background, and 16 ANSI colors. Indexed 256-color sequences use the xterm color cube and grayscale ramp, and 24-bit truecolor is supported. Mica starts with JetBrains Mono at 16 pt to match Alacritty, uses the system fallback if that font is unavailable, and groups emoji modifiers and joined glyphs for macOS emoji rendering.
+<p align="center">
+  <a href="https://github.com/megasoft1978/mica-terminal/actions/workflows/macos.yml"><img src="https://github.com/megasoft1978/mica-terminal/actions/workflows/macos.yml/badge.svg" alt="macOS build"></a>
+</p>
 
-## Build and run
+A lightweight, native macOS terminal workspace for shell and coding-agent sessions. Mica's session manager and bounded scrollback are written in C, terminal parsing uses `libvterm`, and a small AppKit frontend draws the interface.
 
-Requires Xcode Command Line Tools, Homebrew `libvterm`, and a login shell (`zsh` by default).
+## Features
+
+- Project windows, terminal tabs, and keyboard-driven navigation.
+- macOS light/dark appearance, system accent colors, and readable interface text.
+- ANSI, 256-color, and truecolor support; Unicode and emoji rendering.
+- Scrollback allocated on demand, capped at 2 MiB per session.
+- Optional Claude Code and Codex launch and resume shortcuts configured per project.
+- Agent completion status with an exit code, tab indicator, and Dock attention for background work.
+- `⌘V` text paste and image-paste routing to the foreground CLI.
+- Per-project macOS app identities and marked icons for Dock and Spaces.
+- Bounded local test-and-repair loop for ongoing development.
+
+## Build
+
+Requires macOS 13 or newer, Xcode Command Line Tools, Homebrew, `libvterm`, and `pkg-config`.
 
 ```sh
+xcode-select --install # if needed
 brew install libvterm pkg-config
 make validate
 open build/Mica.app
 ```
 
-To start Mica in a project directory:
+Start a terminal in a directory or run a command:
 
 ```sh
-open build/Mica.app --args --cwd /path/to/project
+open build/Mica.app --args --cwd "$PWD"
+open build/Mica.app --args --cwd "$PWD" --command "git status"
 ```
-
-Mica imports the current tab-per-session part of Zellij layouts. Run `make import-layouts` to generate private launch files under `~/.config/mica/layouts` from `~/.config/zellij/layouts`; launch one with `open build/Mica.app --args --layout ~/.config/mica/layouts/traqly.mica`. The generated files stay in your user config and are not included in the public source repository. Each imported tab opens a login zsh with the original startup files and leaves its layout command at the prompt for review; press Return to run it. This preserves the behavior of your existing `prefill.sh` wrapper and keeps commands that stop containers or processes from running on launch. Agent tabs started from Mica's shortcuts still launch immediately.
-
-The Desktop applets that currently launch one Zellij session per project can be replaced by native Mica apps while keeping their names and Desktop positions. `make desktop-apps` previews the detected launchers; `make install-desktop-apps` installs one Mica app bundle per project, updates the matching `launch-*.sh` scripts, and saves the original applets and scripts under `~/.local/share/mica/launcher-backups/`. Each bundle carries its own macOS application identity and project layout, so macOS can track it independently in the Dock, App Switcher, and Spaces. Its icon keeps the Mica artwork and adds a colored initials badge for that project. The bundles hard-link the same executable when they are on one volume, avoiding duplicate binary files; each open app still has its own process memory. This removes the separate Alacritty and Zellij processes from those launches while retaining distinct project windows. Re-running the install target updates the app bundles and icons from a new Mica build. Use `make memory` to compare the live per-process footprint after opening the same project layouts in both versions.
 
 ## Controls
 
-- `⌘T`: new shell tab; `⌥⌘C`: Claude Code tab; `⌥⌘X`: Codex tab. The Claude and Codex shortcuts use inline rendering so their transcripts stay in Mica scrollback; Codex also starts in its copy-friendly raw output mode (`Alt-R` toggles it).
-- `⇧⌥⌘C`: continue the latest Claude Code session through the existing `yowork` alias; `⇧⌥⌘X`: resume the latest Codex session. Mica displays terminal titles from agent CLIs beside each tab name to make parallel sessions easier to distinguish.
-- `⌘W`: close the active tab; `⌘⇧[` / `⌘⇧]`: switch tabs.
-- `Ctrl-T` opens the Zellij-style tab mode: arrows or `h/j/k/l` move, `1`–`9` jump, `n` creates a shell, and `x` closes the current tab. `Ctrl-S` opens scroll mode; arrows or `j/k` move by line, arrows or `h/l` move by a screen, `Ctrl-B`/`Ctrl-F` page, and `u/d` move half a screen. `Ctrl-S`, `Ctrl-C`, or Escape returns to the live view.
-- `⌘C` copies a selection, or sends Ctrl-C when there is no selection; `⌘V` pastes clipboard text. When the clipboard contains a PNG, TIFF, or JPEG image, `⌘V` forwards Ctrl-V to the foreground TUI so Claude Code can insert its image chip.
-- Drag to select text. Use the mouse wheel or `⇧Page Up` / `⇧Page Down` for terminal scrollback. Press Escape to return to the live view. When an application such as Yazi or Lazygit enables mouse reporting, the wheel is sent to that app in normal mode; in `Ctrl-S` scroll mode the wheel always moves Mica's scrollback. Hold Option while clicking and dragging to select text instead. `⇧Return` keeps the existing Alacritty binding used for multiline agent input.
-- `⌘+` / `⌘-` changes font size.
-- Agent BEL and notification sequences mark a tab with `!`; Mica asks macOS for Dock attention when a background session needs you.
+| Shortcut | Action |
+| --- | --- |
+| `⌘T` / `⌘W` | New shell tab / close tab |
+| `⌘⇧[` / `⌘⇧]` | Previous / next tab |
+| `Ctrl-T` | Tab navigation mode (`h/j/k/l`, arrows, `1`–`9`, `n`, `x`) |
+| `Ctrl-S` | Scroll mode; arrows or `j/k` scroll lines, `h/l` or `Ctrl-B/F` scroll pages, `u/d` scroll half pages |
+| `Escape` or `Ctrl-C` | Return from scrollback to live output |
+| `⌥⌘C` / `⇧⌥⌘C` | Start / resume Claude Code |
+| `⌥⌘X` / `⇧⌥⌘X` | Start / resume Codex |
+| `⌘C` / `⌘V` | Copy selection / paste text or route an image to the active CLI |
+| `⌘+` / `⌘-` | Increase / decrease font size |
 
-## Tests and agent loop
+Mica sets `TERM=xterm-256color`, `COLORTERM=truecolor`, and `TERM_PROGRAM=Mica`. Image paste forwards `Ctrl-V` to the active CLI, which reads the image from the macOS clipboard. Mica opens zsh by default. Agent shortcuts run only commands configured in that project's local layout; when no command is set, the shortcut opens a zsh tab.
 
-`make test` exercises a real PTY and libvterm with ANSI, 256-color and truecolor output; emoji, skin-tone, joined and flag Unicode sequences; scrollback limits; wide Unicode cells; text and image clipboard paste; alternate screen; SGR mouse-wheel events; notifications; focus reporting; Shift+Return; grid and pixel resizing; staged layout commands; and fake Claude/Codex launchers. These launch tests use local stubs and do not contact either service. The AppKit smoke test drives Zellij-style tab and scroll shortcuts, checks independent per-project layout and PTY startup, tests text and image clipboard routing, scrolls through older output from a fake Codex launch using Mica's inline command, changes the font, renders a window to `build/ui-smoke.png`, and checks that truecolor and emoji pixels appear. Its text report is `build/ui-smoke-report.txt`. `make validate` runs those tests, builds the app and icon, lints the app plist, and checks the diff for whitespace errors. Scrollback allocates only when needed and stays under 2 MiB per session; input that is waiting for a busy PTY is queued and released as it drains. `scripts/import-zellij-layouts.py` converts local KDL layouts. `scripts/memory-sample.sh` reports per-process RSS and Apple physical footprint for all Mica project apps, Zellij, and Alacritty where available; summed RSS can double-count shared pages.
+When a configured command finishes, Mica shows its exit status. A background tab gets a marker, and Mica requests Dock attention if the app is unfocused.
 
-To ask Codex to fix test/build issues in a bounded loop using GPT-6 Luna:
+## Project apps and layouts
+
+Mica reads project layouts from `~/.config/mica/layouts/`. Each `.mica` file contains tab-separated tab names, working directories, and optional startup commands. Add optional agent commands with these keys:
+
+```text
+agent.claude.start<TAB>your command
+agent.claude.resume<TAB>your command
+agent.codex.start<TAB>your command
+agent.codex.resume<TAB>your command
+```
+
+Replace `<TAB>` with a tab character; Mica keeps the rest of the line as the shell command. These files stay in your user configuration and are ignored by Git. Commands run in the project directory through a login zsh.
+
+`make desktop-apps` previews matching Desktop project launchers. `make install-desktop-apps` installs one Mica app per project, gives each app its own bundle identity and colored initials icon, and routes its launcher script to the right layout. Original launchers and scripts are backed up under `~/.local/share/mica/launcher-backups/`. Project apps share one executable file when they are on the same volume; each running app still uses its own process memory.
+
+## Memory and testing
+
+Run `make memory` to sample live RSS and macOS physical footprint. Compare the same projects, tabs, and agent workloads; summed RSS can count shared pages more than once. The current samples are not a controlled before/after benchmark, so no memory-savings percentage is claimed. See [`docs/MEMORY-BASELINE.md`](docs/MEMORY-BASELINE.md).
+
+Run `make test` for PTY, terminal rendering, clipboard, layout, app identity, icon, completion, and agent-loop tests. `make validate` also builds the app and checks its property list. The automated agent tests use local stubs and do not contact Claude or Codex.
+
+Before the final interactive check, run `make preflight`. It repeats the full build and test validation. To check installed command line tools in the login shell without starting a session, pass their executable names, for example `scripts/check-agent-clis.sh claude codex`.
+
+For bounded automated repair passes, run:
 
 ```sh
 scripts/agent-loop.sh 3
 ```
 
-This calls the configured Codex service through the local CLI, using workspace-write access to this project only. It sends the latest validation log, UI smoke report, and rendered smoke-test screenshot to each repair pass, then reruns `make validate`. The loop itself is covered by a test using local fake `make` and `codex` commands; the test never makes a model request. The loop does not publish or push changes. Set `MICA_AGENT_MODEL` to override the model name.
+This uses the local Codex CLI with `gpt-6-luna` by default (`MICA_AGENT_MODEL` overrides it). It requires an authenticated CLI session, can edit the checkout, and does not commit or push changes.
 
-Use `scripts/check-agent-clis.sh` to verify that Claude Code and Codex are on `PATH` and report their installed versions. The automated PTY suite does not call either service or use account credentials.
+## Notes
 
-For optional Claude Code notification hooks and Codex notification settings, see [`docs/AGENT-NOTIFICATIONS.md`](docs/AGENT-NOTIFICATIONS.md).
-
-## Current baseline
-
-The initial process snapshot is recorded in [`docs/MEMORY-BASELINE.md`](docs/MEMORY-BASELINE.md). Repeat the same project, tab count, scrollback, and workload with `make memory` before drawing conclusions about improvements.
+- See [`docs/AGENT-NOTIFICATIONS.md`](docs/AGENT-NOTIFICATIONS.md) for optional agent notifications.
+- See [`AGENT_LOOP.md`](AGENT_LOOP.md) for the automated iteration instructions.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Filter ps output to the terminal and agent executables Mica replaces."""
+"""Summarize Mica and configured coding-agent process memory."""
 
 from __future__ import annotations
 
@@ -15,10 +15,6 @@ def classify(executable: str) -> str | None:
     name = os.path.basename(normalized)
     if re.search(r"\.app/contents/macos/mica$", normalized):
         return "Mica"
-    if name == "alacritty":
-        return "Alacritty"
-    if name == "zellij":
-        return "Zellij"
     if name == "claude":
         return "Claude Code"
     if name == "codex" and ".app/contents/macos/" not in normalized:

@@ -1,6 +1,5 @@
 #define _DARWIN_C_SOURCE
 #include "mica.h"
-#include "mica_launch.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -227,6 +226,7 @@ color_checked:
     mica_session_write(exit_session, "exit\n", 5);
     for (int i = 0; i < 500 && mica_session_is_running(exit_session); i++) mica_session_poll(exit_session, 10);
     assert(!mica_session_is_running(exit_session));
+    assert(mica_session_exit_status(exit_session) == 0);
     mica_session_destroy(exit_session);
 
     MicaSession *focus_session = mica_session_create("/tmp",
@@ -242,7 +242,8 @@ color_checked:
 
     MicaSession *compat_session = mica_session_create("/tmp",
         "printf '\\033]2;Codex Mica test\\007'; "
-        "printf '%s|%s\\n' \"$TERM\" \"$COLORTERM\"; "
+        "printf '%s|%s|%s|%s|%s\\n' \"$TERM\" \"$COLORTERM\" \"$TERM_PROGRAM\" "
+        "\"$TERM_PROGRAM_VERSION\" \"$CLICOLOR\"; "
         "printf '\\033[38;2;12;34;56mTRUECOLOR\\033[0m\\n'; "
         "printf '\\033[38;5;196mANSI256-RED\\033[0m\\n'; "
         "printf '\\033[48;5;25mBG256-BLUE\\033[0m\\n'; "
@@ -251,7 +252,7 @@ color_checked:
     assert(compat_session != NULL);
     for (int i = 0; i < 200 && !screen_contains(compat_session, "QGRAY244"); i++)
         mica_session_poll(compat_session, 10);
-    assert(screen_contains(compat_session, "xterm-256color|truecolor"));
+    assert(screen_contains(compat_session, "xterm-256color|truecolor|Mica|0.1.0|1"));
     assert(strcmp(mica_session_title(compat_session), "Codex Mica test") == 0);
     bool truecolor_checked = false;
     for (int row = 0; row < mica_session_rows(compat_session); row++) {
@@ -353,6 +354,8 @@ color_checked:
     char profile_template[] = "/tmp/mica-profile-test-XXXXXX";
     char *profile_dir = mkdtemp(profile_template);
     assert(profile_dir != NULL);
+    char canonical_profile_dir[PATH_MAX];
+    assert(realpath(profile_dir, canonical_profile_dir) != NULL);
     char bin_dir[PATH_MAX], zprofile_path[PATH_MAX], zshrc_path[PATH_MAX];
     char zlogin_path[PATH_MAX], claude_path[PATH_MAX], codex_path[PATH_MAX], test_path[PATH_MAX * 2];
     assert(snprintf(bin_dir, sizeof(bin_dir), "%s/bin", profile_dir) > 0);
@@ -364,14 +367,13 @@ color_checked:
     assert(snprintf(codex_path, sizeof(codex_path), "%s/codex", bin_dir) > 0);
     assert(snprintf(test_path, sizeof(test_path), "%s:/usr/bin:/bin", bin_dir) > 0);
     write_test_file(zprofile_path, "export MICA_PROFILE_MARKER=login\n", 0600);
-    write_test_file(zshrc_path,
-        "alias yowork='CLAUDE_CONFIG_DIR=~/.claude-work claude --dangerously-skip-permissions'\n", 0600);
+    write_test_file(zshrc_path, "export MICA_RC_MARKER=interactive\n", 0600);
     write_test_file(zlogin_path, "export MICA_LOGIN_MARKER=loaded\n", 0600);
     write_test_file(claude_path,
         "#!/bin/sh\n"
         "if [ -n \"$CLAUDECODE\" ]; then nested=set; else nested=unset; fi\n"
-        "printf 'MICA-CLAUDE:%s|%s|%s|%s|%s\\n' \"$CLAUDE_CONFIG_DIR\" "
-        "\"$CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN\" \"$nested\" \"$MICA_PROFILE_MARKER\" \"$*\"\n", 0700);
+        "printf 'MICA-CLAUDE:%s|%s|%s|%s|%s|%s\\n' \"$MICA_PROFILE_MARKER\" "
+        "\"$MICA_RC_MARKER\" \"$MICA_LOGIN_MARKER\" \"$*\" \"$PWD\" \"$nested\"\n", 0700);
     write_test_file(codex_path,
         "#!/bin/sh\nprintf 'MICA-CODEX:%s|%s|%s\\n' \"$MICA_PROFILE_MARKER\" \"$MICA_LOGIN_MARKER\" \"$*\"\n",
         0700);
@@ -383,31 +385,48 @@ color_checked:
     assert(setenv("PATH", test_path, 1) == 0);
     assert(setenv("MICA_TEST_NO_STARTUP", "0", 1) == 0);
     assert(setenv("CLAUDECODE", "outer", 1) == 0);
-    MicaSession *prefilled_claude = mica_session_create_prefilled("/tmp", MICA_COMMAND_CLAUDE_RESUME, 8, 120);
+    MicaSession *prefilled_claude = mica_session_create_prefilled(profile_dir, "claude --continue", 8, 120);
     assert(prefilled_claude != NULL);
-    for (int i = 0; i < 500 && !screen_contains(prefilled_claude, "yowork --continue"); i++)
+    for (int i = 0; i < 500 && !screen_contains(prefilled_claude, "claude --continue"); i++)
         mica_session_poll(prefilled_claude, 10);
-    assert(screen_contains(prefilled_claude, "yowork --continue"));
+    assert(screen_contains(prefilled_claude, "claude --continue"));
     assert(!screen_contains(prefilled_claude, "MICA-CLAUDE:"));
     mica_session_key(prefilled_claude, VTERM_KEY_ENTER, VTERM_MOD_NONE);
     for (int i = 0; i < 500 && !screen_contains(prefilled_claude, "MICA-CLAUDE:"); i++)
         mica_session_poll(prefilled_claude, 10);
-    const char *home = getenv("HOME");
-    assert(home != NULL);
     char expected_claude[PATH_MAX + 192];
     assert(snprintf(expected_claude, sizeof(expected_claude),
-        "MICA-CLAUDE:%s/.claude-work|1|unset|login|--dangerously-skip-permissions --continue", home) > 0);
+        "MICA-CLAUDE:login|interactive|loaded|--continue|%s|set", canonical_profile_dir) > 0);
     assert(screen_contains(prefilled_claude, expected_claude));
     mica_session_destroy(prefilled_claude);
 
-    MicaSession *codex_session = mica_session_create("/tmp", MICA_COMMAND_CODEX_RESUME, 8, 120);
+    MicaSession *claude_session = mica_session_create(profile_dir, "claude --start", 8, 120);
+    assert(claude_session != NULL);
+    char expected_claude_start[PATH_MAX + 192];
+    assert(snprintf(expected_claude_start, sizeof(expected_claude_start),
+        "MICA-CLAUDE:login|interactive|loaded|--start|%s|set", canonical_profile_dir) > 0);
+    for (int i = 0; i < 500 && !screen_contains(claude_session, expected_claude_start); i++)
+        mica_session_poll(claude_session, 10);
+    assert(screen_contains(claude_session, expected_claude_start));
+    mica_session_destroy(claude_session);
+
+    MicaSession *codex_session = mica_session_create(profile_dir, "codex resume --last", 8, 120);
     assert(codex_session != NULL);
-    const char *expected_codex =
-        "MICA-CODEX:login|loaded|resume -c tui.raw_output_mode=true --no-alt-screen --last";
+    const char *expected_codex = "MICA-CODEX:login|loaded|resume --last";
     for (int i = 0; i < 500 && !screen_contains(codex_session, expected_codex); i++)
         mica_session_poll(codex_session, 10);
     assert(screen_contains(codex_session, expected_codex));
     mica_session_destroy(codex_session);
+
+    MicaSession *completion_session = mica_session_create(profile_dir, "sleep 0.05; false", 8, 120);
+    assert(completion_session != NULL);
+    for (int i = 0; i < 500 && mica_session_command_completion_count(completion_session) == 0; i++)
+        mica_session_poll(completion_session, 10);
+    assert(mica_session_is_running(completion_session));
+    assert(mica_session_command_completion_count(completion_session) == 1);
+    assert(mica_session_command_exit_status(completion_session) == 1);
+    assert(mica_session_attention_count(completion_session) == 0);
+    mica_session_destroy(completion_session);
     restore_env("ZDOTDIR", saved_zdotdir);
     restore_env("PATH", saved_path);
     restore_env("MICA_TEST_NO_STARTUP", saved_test_mode);

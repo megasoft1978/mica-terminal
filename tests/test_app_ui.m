@@ -59,6 +59,28 @@ static void MicaUITestRecord(NSMutableString *report, BOOL *allPassed, BOOL pass
     if (!passed) *allPassed = NO;
 }
 
+static BOOL MicaUITestExitTabs(NSArray<MicaTab *> *tabs) {
+    for (MicaTab *tab in tabs) {
+        if (!mica_session_is_running(tab.session)) continue;
+        mica_session_write(tab.session, "exit\n", 5);
+    }
+    for (int attempt = 0; attempt < 500; attempt++) {
+        BOOL running = NO;
+        for (MicaTab *tab in tabs) {
+            mica_session_poll(tab.session, 10);
+            running = running || mica_session_is_running(tab.session);
+        }
+        if (!running) return YES;
+        usleep(10000);
+    }
+    for (MicaTab *tab in tabs) {
+        if (mica_session_is_running(tab.session))
+            fprintf(stderr, "[WARN] PTY still running at UI teardown: %s (pid=%d command=%s)\n",
+                    tab.name.UTF8String, (int)mica_session_pid(tab.session), mica_session_command(tab.session));
+    }
+    return NO;
+}
+
 static void MicaUITestSendKey(MicaAppDelegate *delegate, NSString *characters,
                               NSEventModifierFlags modifiers, unsigned short keyCode) {
     NSEvent *event = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
@@ -226,7 +248,7 @@ static int MicaRunUISelfTest(void) {
             MicaUITestSendKey(delegate, @"\033", 0, 53);
             MicaUITestRecord(report, &allPassed, scrollBindings && delegate.uiMode == MicaUIModeNormal &&
                              mica_session_view_offset(fixtureTab.session) == 0,
-                             [NSString stringWithFormat:@"Zellij scroll keys match line, page, half-page, Ctrl-F/Ctrl-B and live return (rows=%d history=%ld expected-page=%ld, k=%ld j=%ld up=%ld down=%ld h=%ld l=%ld left=%ld right=%ld ^B=%ld ^F=%ld PgUp=%ld PgDn=%ld u=%ld d=%ld)",
+                             [NSString stringWithFormat:@"Mica scroll keys match line, page, half-page, Ctrl-F/Ctrl-B and live return (rows=%d history=%ld expected-page=%ld, k=%ld j=%ld up=%ld down=%ld h=%ld l=%ld left=%ld right=%ld ^B=%ld ^F=%ld PgUp=%ld PgDn=%ld u=%ld d=%ld)",
                               mica_session_rows(fixtureTab.session), (long)historyLines, (long)pageLines,
                               (long)kOffset, (long)jOffset, (long)upOffset, (long)downOffset,
                               (long)hOffset, (long)lOffset, (long)leftOffset, (long)rightOffset,
@@ -236,20 +258,33 @@ static int MicaRunUISelfTest(void) {
             NSPasteboard *testPasteboard = [NSPasteboard pasteboardWithName:@"MicaUITestClipboard"];
             setenv("MICA_TEST_PASTEBOARD_NAME", "MicaUITestClipboard", 1);
             [testPasteboard clearContents];
-            [testPasteboard setString:@"MICA-CLIPBOARD-TEXT" forType:NSPasteboardTypeString];
+            [testPasteboard setString:@"printf 'MICA-CLIPBOARD-OUTPUT-%s\\n' EXECUTED"
+                               forType:NSPasteboardTypeString];
             [delegate selectTabAtIndex:0];
             MicaUITestSendKey(delegate, @"v", NSEventModifierFlagCommand, 9);
             BOOL textPasteWorked = NO;
             for (int attempt = 0; attempt < 100; attempt++) {
                 mica_session_poll(fixtureTab.session, 0);
-                if (MicaUITestFindText(fixtureTab.session, @"MICA-CLIPBOARD-TEXT", NULL, NULL)) {
+                if (MicaUITestFindText(fixtureTab.session, @"MICA-CLIPBOARD-OUTPUT-%s", NULL, NULL)) {
                     textPasteWorked = YES;
                     break;
                 }
                 usleep(10000);
             }
             MicaUITestRecord(report, &allPassed, textPasteWorked,
-                             @"Command-V pastes clipboard text into the active PTY");
+                             @"Command-V inserts clipboard text at the active shell prompt");
+            BOOL pastedCommandRan = NO;
+            if (textPasteWorked) MicaUITestSendKey(delegate, @"\r", 0, 36);
+            for (int attempt = 0; attempt < 100; attempt++) {
+                mica_session_poll(fixtureTab.session, 0);
+                if (MicaUITestFindText(fixtureTab.session, @"MICA-CLIPBOARD-OUTPUT-EXECUTED", NULL, NULL)) {
+                    pastedCommandRan = YES;
+                    break;
+                }
+                usleep(10000);
+            }
+            MicaUITestRecord(report, &allPassed, pastedCommandRan,
+                             @"Return executes the pasted command and leaves the shell ready");
 
             NSString *imageRouteCommand = @"old=$(stty -g); stty raw -echo; printf 'IMAGE-ROUTE-READY\\n'; "
                 "dd bs=1 count=1 2>/dev/null | od -An -tu1; stty \"$old\"; printf 'IMAGE-ROUTE-OK\\n'";
@@ -313,12 +348,14 @@ static int MicaRunUISelfTest(void) {
             NSInteger oldOutputOffset = 0;
             NSInteger codexPageUpSteps = 0;
             if (pathUpdated) {
-                [delegate addTabWithName:@"Codex scroll" cwd:@"/tmp" command:@MICA_COMMAND_CODEX prefilled:NO];
+                NSString *codexLaunchCommand = @"codex -c tui.raw_output_mode=true --no-alt-screen";
+                delegate.agentCommands = @{@"codex.start": codexLaunchCommand};
+                [delegate newCodex:nil];
                 MicaTab *codexTab = delegate.activeTab;
                 [delegate.terminalView updateGridSize];
                 for (int attempt = 0; attempt < 600; attempt++) {
                     mica_session_poll(codexTab.session, 0);
-                    if (strcmp(mica_session_command(codexTab.session), MICA_COMMAND_CODEX) == 0 &&
+                    if (strcmp(mica_session_command(codexTab.session), codexLaunchCommand.UTF8String) == 0 &&
                         MicaUITestFindText(codexTab.session, @"CODEX-LIVE-READY", NULL, NULL) &&
                         mica_session_reports_mouse(codexTab.session) &&
                         mica_session_history_lines(codexTab.session) > (size_t)mica_session_rows(codexTab.session)) {
@@ -447,24 +484,39 @@ static int MicaRunUISelfTest(void) {
         char projectLayoutDirectory[] = "/tmp/mica-project-layouts-XXXXXX";
         NSString *projectLayoutRoot = mkdtemp(projectLayoutDirectory)
             ? [NSString stringWithUTF8String:projectLayoutDirectory] : nil;
-        NSString *projectALayout = [projectLayoutRoot stringByAppendingPathComponent:@"traqly.mica"];
-        NSString *projectBLayout = [projectLayoutRoot stringByAppendingPathComponent:@"codex.mica"];
-        NSString *projectALayoutContents = @"# Mica layout v1\nClaude Code 1\t/tmp\tprintf 'PROJECT-A-PREFILLED'\nShell\t/tmp\t\n";
-        NSString *projectBLayoutContents = @"# Mica layout v1\nCodex\t/tmp\tprintf 'PROJECT-B-PREFILLED'\nShell\t/tmp\t\n";
+        NSString *projectALayout = [projectLayoutRoot stringByAppendingPathComponent:@"alpha.mica"];
+        NSString *projectBLayout = [projectLayoutRoot stringByAppendingPathComponent:@"beta.mica"];
+        NSString *agentLayout = [projectLayoutRoot stringByAppendingPathComponent:@"agent.mica"];
+        NSString *projectALayoutContents = @"# Mica layout v1\n"
+            "agent.claude.start\tprintf 'PROJECT-A-CLAUDE-START'\n"
+            "agent.claude.resume\tprintf 'PROJECT-A-CLAUDE-RESUME'\n"
+            "agent.codex.start\tprintf 'PROJECT-A-CODEX-START'\n"
+            "agent.codex.resume\tprintf 'PROJECT-A-CODEX-RESUME'\n"
+            "Claude Code 1\t/tmp\tprintf 'PROJECT-A-PREFILLED'\nShell\t/tmp\t\n";
+        NSString *projectBLayoutContents = @"# Mica layout v1\n"
+            "agent.claude.start\tprintf 'PROJECT-B-CLAUDE-START'\n"
+            "agent.codex.start\tprintf 'PROJECT-B-CODEX-START'\n"
+            "Codex\t/tmp\tprintf 'PROJECT-B-PREFILLED'\nShell\t/tmp\t\n";
+        NSString *agentLayoutContents = @"# Mica layout v1\n"
+            "agent.claude.start\tprintf 'PROJECT-A-CLAUDE-START'\n"
+            "agent.claude.resume\tprintf 'PROJECT-A-CLAUDE-RESUME'\n";
         NSError *projectLayoutError = nil;
         BOOL projectLayoutsWritten = projectLayoutRoot &&
             [projectALayoutContents writeToFile:projectALayout atomically:YES encoding:NSUTF8StringEncoding error:&projectLayoutError] &&
-            [projectBLayoutContents writeToFile:projectBLayout atomically:YES encoding:NSUTF8StringEncoding error:&projectLayoutError];
+            [projectBLayoutContents writeToFile:projectBLayout atomically:YES encoding:NSUTF8StringEncoding error:&projectLayoutError] &&
+            [agentLayoutContents writeToFile:agentLayout atomically:YES encoding:NSUTF8StringEncoding error:&projectLayoutError];
         NSDictionary *projectA = @{};
         NSDictionary *projectB = @{};
         if (projectLayoutsWritten) {
             projectA = MicaResolveLaunchConfiguration(@[@"mica", @"--layout", projectALayout],
-                @{@"MicaProjectName": @"Traqly", @"MicaProjectLayout": projectBLayout}, @"/tmp");
+                @{@"MicaProjectName": @"Project Alpha", @"MicaProjectLayout": projectBLayout}, @"/tmp");
             projectB = MicaResolveLaunchConfiguration(@[@"mica"],
-                @{@"MicaProjectName": @"Codex", @"MicaProjectLayout": projectBLayout}, @"/tmp");
+                @{@"MicaProjectName": @"Project Beta", @"MicaProjectLayout": projectBLayout}, @"/tmp");
         }
         NSArray<NSDictionary *> *projectATabs = projectA[@"tabs"];
         NSArray<NSDictionary *> *projectBTabs = projectB[@"tabs"];
+        NSDictionary<NSString *, NSString *> *projectAAgentCommands = projectA[@"agentCommands"];
+        NSDictionary<NSString *, NSString *> *projectBAgentCommands = projectB[@"agentCommands"];
         NSDictionary *projectAFirstTab = projectATabs.firstObject;
         NSDictionary *projectBFirstTab = projectBTabs.firstObject;
         MicaAppDelegate *projectATitle = [[MicaAppDelegate alloc] init];
@@ -483,18 +535,73 @@ static int MicaRunUISelfTest(void) {
             [projectBFirstTab[@"name"] isEqualToString:@"Codex"] &&
             [projectAFirstTab[@"command"] isEqualToString:@"printf 'PROJECT-A-PREFILLED'"] &&
             [projectBFirstTab[@"command"] isEqualToString:@"printf 'PROJECT-B-PREFILLED'"] &&
-            [projectA[@"projectName"] isEqualToString:@"Traqly"] &&
-            [projectB[@"projectName"] isEqualToString:@"Codex"] &&
-            [[projectATitle windowTitleForTab:projectATitleTab] containsString:@"Traqly"] &&
-            [[projectBTitle windowTitleForTab:projectBTitleTab] containsString:@"Codex"] &&
+            [projectAAgentCommands[@"claude.start"] isEqualToString:@"printf 'PROJECT-A-CLAUDE-START'"] &&
+            [projectAAgentCommands[@"claude.resume"] isEqualToString:@"printf 'PROJECT-A-CLAUDE-RESUME'"] &&
+            [projectAAgentCommands[@"codex.start"] isEqualToString:@"printf 'PROJECT-A-CODEX-START'"] &&
+            [projectAAgentCommands[@"codex.resume"] isEqualToString:@"printf 'PROJECT-A-CODEX-RESUME'"] &&
+            [projectBAgentCommands[@"claude.start"] isEqualToString:@"printf 'PROJECT-B-CLAUDE-START'"] &&
+            [projectBAgentCommands[@"codex.start"] isEqualToString:@"printf 'PROJECT-B-CODEX-START'"] &&
+            [projectA[@"projectName"] isEqualToString:@"Project Alpha"] &&
+            [projectB[@"projectName"] isEqualToString:@"Project Beta"] &&
+            [[projectATitle windowTitleForTab:projectATitleTab] containsString:@"Project Alpha"] &&
+            [[projectBTitle windowTitleForTab:projectBTitleTab] containsString:@"Project Beta"] &&
             [projectA[@"activeIndex"] integerValue] == 0 &&
             [projectB[@"activeIndex"] integerValue] == 0;
         MicaUITestRecord(report, &allPassed, projectAppsIndependent,
-                         [NSString stringWithFormat:@"per-project bundles resolve separate layouts, project titles and first tabs (A=%lu/%@ B=%lu/%@)%@",
+                         [NSString stringWithFormat:@"per-project layouts resolve separate tabs, agent commands and window titles (A=%lu/%@ B=%lu/%@)%@",
                           (unsigned long)projectATabs.count, projectAFirstTab[@"name"],
                           (unsigned long)projectBTabs.count, projectBFirstTab[@"name"],
                           projectLayoutError ? [NSString stringWithFormat:@" error: %@", projectLayoutError.localizedDescription] : @""]);
+
+        MicaAppDelegate *layoutDelegate = [[MicaAppDelegate alloc] init];
+        layoutDelegate.tabs = [NSMutableArray array];
+        layoutDelegate.activeIndex = 0;
+        if (projectLayoutsWritten)
+            [layoutDelegate loadLaunchConfigurationFromArguments:@[@"mica", @"--layout", agentLayout]
+                                                      bundleInfo:@{}];
+        [layoutDelegate newClaude:nil];
+        MicaTab *configuredAgentTab = layoutDelegate.activeTab;
+        [layoutDelegate selectTabAtIndex:0];
+        BOOL configuredAgentStarted = NO;
+        for (int attempt = 0; projectLayoutsWritten && attempt < 300; attempt++) {
+            [layoutDelegate pollSessions:nil];
+            if (configuredAgentTab.completedCommand) {
+                configuredAgentStarted = MicaUITestFindText(configuredAgentTab.session,
+                    @"PROJECT-A-CLAUDE-START", NULL, NULL) &&
+                    configuredAgentTab.completionStatus == 0 && configuredAgentTab.needsAttention;
+                break;
+            }
+            usleep(10000);
+        }
+        [layoutDelegate resumeClaude:nil];
+        MicaTab *configuredResumeTab = layoutDelegate.activeTab;
+        BOOL resumeCommandConfigured =
+            [configuredResumeTab.command isEqualToString:@"printf 'PROJECT-A-CLAUDE-RESUME'"];
+        if (layoutDelegate.attentionRequest != 0)
+            [NSApp cancelUserAttentionRequest:layoutDelegate.attentionRequest];
+        BOOL layoutSessionsExited = MicaUITestExitTabs(layoutDelegate.tabs);
+        layoutDelegate.tabs = [NSMutableArray array];
+        MicaUITestRecord(report, &allPassed, configuredAgentStarted && resumeCommandConfigured && layoutSessionsExited,
+                         @"layout agent command starts in a real PTY, reports completion, has a separate resume command, and closes cleanly");
+
+        MicaAppDelegate *unconfiguredDelegate = [[MicaAppDelegate alloc] init];
+        unconfiguredDelegate.tabs = [NSMutableArray array];
+        unconfiguredDelegate.activeIndex = 0;
+        [unconfiguredDelegate addTabWithName:@"Shell" cwd:@"/tmp" command:nil prefilled:NO];
+        [unconfiguredDelegate newClaude:nil];
+        BOOL unconfiguredAgentUsesShell =
+            [unconfiguredDelegate.activeTab.name isEqualToString:@"Shell"] &&
+            [[NSString stringWithUTF8String:mica_session_command(unconfiguredDelegate.activeTab.session)]
+                isEqualToString:@"/bin/zsh -l -i"];
+        BOOL unconfiguredSessionExited = MicaUITestExitTabs(unconfiguredDelegate.tabs);
+        unconfiguredDelegate.tabs = [NSMutableArray array];
+        MicaUITestRecord(report, &allPassed, unconfiguredAgentUsesShell && unconfiguredSessionExited,
+                         @"agent shortcuts open a plain zsh tab when no local command is configured and close cleanly");
         if (projectLayoutRoot) [[NSFileManager defaultManager] removeItemAtPath:projectLayoutRoot error:nil];
+
+        BOOL primarySessionsExited = MicaUITestExitTabs(delegate.tabs);
+        MicaUITestRecord(report, &allPassed, primarySessionsExited,
+                         @"all UI smoke PTYs accept normal shell exit during teardown");
 
         NSString *reportPath = NSProcessInfo.processInfo.environment[@"MICA_UI_SMOKE_REPORT"] ?: @"build/ui-smoke-report.txt";
         BOOL reportSaved = [report writeToFile:reportPath atomically:YES encoding:NSUTF8StringEncoding error:nil];

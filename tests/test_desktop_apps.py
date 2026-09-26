@@ -61,7 +61,8 @@ def main() -> None:
         (old_app / "Contents/Resources/Scripts").mkdir(parents=True)
         (old_app / "Contents/Resources/Scripts/main.scpt").write_bytes(b"old launcher script")
         launch_script = root / "launch-alpha.sh"
-        launch_script.write_text("#!/bin/zsh\nzellij delete-session alpha -f\n", encoding="utf-8")
+        original_launcher = "#!/bin/zsh\nprintf 'OLD-LAUNCHER\\n'\n"
+        launch_script.write_text(original_launcher, encoding="utf-8")
 
         projects = [
             {
@@ -114,8 +115,7 @@ def main() -> None:
         INSTALLER.migrate_launch_script(projects[0], backups, True)
         new_script = launch_script.read_text(encoding="utf-8")
         assert "open -n" in new_script and "Alpha.app" in new_script
-        assert "zellij" not in new_script.lower() and "alacritty" not in new_script.lower()
-        assert (backups / "launch-alpha.sh").read_text(encoding="utf-8").find("zellij delete-session") >= 0
+        assert (backups / "launch-alpha.sh").read_text(encoding="utf-8") == original_launcher
 
     print("desktop app packaging tests passed")
 

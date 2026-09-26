@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install one Mica app bundle per existing Zellij project launcher on macOS."""
+"""Install one Mica app bundle for each configured project on macOS."""
 
 from __future__ import annotations
 
