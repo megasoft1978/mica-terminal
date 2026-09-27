@@ -90,6 +90,6 @@ make validate   # run tests, build, and check the app bundle
 make memory     # sample memory use for running Mica processes
 ```
 
-Tests use local fixtures and never send prompts to Codex or Claude Code. GitHub Actions runs `make validate` on macOS and uploads the UI smoke report when available.
+Tests use local fixtures and never send prompts to Codex or Claude Code. To run the macOS CI checks, open **Actions → macOS build → Run workflow**. The workflow runs `make validate` and uploads the UI smoke report when available.
 
 Version `0.0.1`, revision `23`.
