@@ -112,6 +112,18 @@ static void MicaUITestLaunchSpeechHelper(MicaVoiceController *controller) {
 }
 
 static BOOL MicaUITestExitTabs(NSArray<MicaTab *> *tabs) {
+    // Let finite fixture commands release stdin before typing `exit`; otherwise
+    // their output can appear ready while the shell still owns the PTY.
+    for (int attempt = 0; attempt < 500; attempt++) {
+        BOOL commandRunning = NO;
+        for (MicaTab *tab in tabs) {
+            mica_session_poll(tab.session, 10);
+            const char *command = mica_session_current_command(tab.session);
+            commandRunning = commandRunning || (command && command[0]);
+        }
+        if (!commandRunning) break;
+        usleep(10000);
+    }
     for (MicaTab *tab in tabs) {
         if (!mica_session_is_running(tab.session)) continue;
         mica_session_write(tab.session, "exit\n", 5);
@@ -407,6 +419,22 @@ static int MicaRunUISelfTest(void) {
             }
             usleep(10000);
         }
+        // Seeing the marker does not mean the fixture command has returned to
+        // zsh yet. Wait until both prompts are ready before sending dictation.
+        BOOL voiceTabsAtPrompt = NO;
+        for (int attempt = 0; attempt < 300; attempt++) {
+            BOOL commandsFinished = YES;
+            for (MicaTab *tab in voiceDelegate.tabs) {
+                mica_session_poll(tab.session, 0);
+                commandsFinished = commandsFinished &&
+                    mica_session_command_completion_count(tab.session) > 0;
+            }
+            if (commandsFinished) {
+                voiceTabsAtPrompt = YES;
+                break;
+            }
+            MicaUITestRunLoopFor(0.01);
+        }
         [voiceDelegate selectTabAtIndex:0];
         MicaUITestSendFlags(voiceDelegate, NSEventModifierFlagOption, 58);
         MicaUITestSendFlags(voiceDelegate, 0, 58);
@@ -426,10 +454,10 @@ static int MicaRunUISelfTest(void) {
             voiceDelegate.voiceTargetTab == voiceTargetTab;
         MicaUITestSendFlags(voiceDelegate, 0, 58);
         BOOL optionReleaseFinishedOnce = pushToTalkProbe.pushToTalkFinishes == 1;
-        MicaUITestRecord(report, &allPassed, voiceTabsReady && quickOptionTapIgnored &&
+        MicaUITestRecord(report, &allPassed, voiceTabsReady && voiceTabsAtPrompt && quickOptionTapIgnored &&
             optionChordIgnored && heldOptionStartedOnce && optionReleaseFinishedOnce,
-            [NSString stringWithFormat:@"left Option hold starts dictation once, release finishes, and taps/chords are ignored (ready=%d quick=%d chord=%d starts=%lu finishes=%lu)",
-                voiceTabsReady, quickOptionTapIgnored, optionChordIgnored,
+            [NSString stringWithFormat:@"left Option hold starts dictation once, release finishes, and taps/chords are ignored (ready=%d prompt=%d quick=%d chord=%d starts=%lu finishes=%lu)",
+                voiceTabsReady, voiceTabsAtPrompt, quickOptionTapIgnored, optionChordIgnored,
                 (unsigned long)pushToTalkProbe.pushToTalkStarts,
                 (unsigned long)pushToTalkProbe.pushToTalkFinishes]);
 
