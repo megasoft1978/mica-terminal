@@ -854,17 +854,46 @@ static int MicaRunUISelfTest(void) {
                 shortGraphemeTitle]);
         char removedFolderTemplate[] = "/tmp/mica-missing-cwd-XXXXXX";
         char *removedFolderRoot = mkdtemp(removedFolderTemplate);
-        NSString *removedFolder = removedFolderRoot
-            ? [NSString stringWithFormat:@"%s/deleted-project", removedFolderRoot] : nil;
+        NSString *removedParentFolder = removedFolderRoot
+            ? [NSString stringWithFormat:@"%s/removed-parent", removedFolderRoot] : nil;
+        NSString *removedFolder = removedParentFolder
+            ? [removedParentFolder stringByAppendingPathComponent:@"deleted-project"] : nil;
         if (removedFolder) [[NSFileManager defaultManager] createDirectoryAtPath:removedFolder
-            withIntermediateDirectories:NO attributes:nil error:nil];
-        if (removedFolder) [[NSFileManager defaultManager] removeItemAtPath:removedFolder error:nil];
-        NSString *recoveredFolder = removedFolder ? MicaUsableWorkingDirectory(removedFolder) : nil;
-        NSString *expectedFolder = removedFolderRoot
-            ? [NSString stringWithUTF8String:removedFolderRoot] : nil;
-        MicaUITestRecord(report, &allPassed, [recoveredFolder isEqualToString:expectedFolder],
-            [NSString stringWithFormat:@"a deleted project folder falls back to its nearest readable parent (resolved=%@ expected=%@)",
-                recoveredFolder, expectedFolder]);
+            withIntermediateDirectories:YES attributes:nil error:nil];
+        if (removedParentFolder) [[NSFileManager defaultManager] removeItemAtPath:removedParentFolder error:nil];
+        char canonicalExpectedFolder[PATH_MAX] = {0};
+        NSString *expectedFolder = removedFolderRoot && realpath(removedFolderRoot, canonicalExpectedFolder)
+            ? [NSString stringWithUTF8String:canonicalExpectedFolder] : nil;
+        MicaSession *directoryFallbackSession = removedFolder
+            ? mica_session_create([[removedFolder stringByAppendingString:@"/"] fileSystemRepresentation], NULL, 12, 80)
+            : NULL;
+        BOOL recoveredFolder = NO;
+        char recoveredPath[4096] = {0};
+        for (int attempt = 0; directoryFallbackSession && attempt < 200; attempt++) {
+            mica_session_poll(directoryFallbackSession, 10);
+            if (mica_session_working_directory(directoryFallbackSession, recoveredPath,
+                                               sizeof(recoveredPath))) {
+                NSString *actualFolder = [NSString stringWithUTF8String:recoveredPath];
+                if ([actualFolder isEqualToString:expectedFolder]) {
+                    recoveredFolder = YES;
+                    break;
+                }
+            }
+            MicaUITestRunLoopFor(0.01);
+        }
+        MicaUITestRecord(report, &allPassed, recoveredFolder,
+            [NSString stringWithFormat:@"a deleted multi-level project path with a trailing slash falls back to its existing parent (resolved=%s expected=%@)",
+                recoveredPath, expectedFolder]);
+        BOOL fallbackNoticeVisible = NO;
+        for (int attempt = 0; directoryFallbackSession && attempt < 100 && !fallbackNoticeVisible; attempt++) {
+            mica_session_poll(directoryFallbackSession, 10);
+            fallbackNoticeVisible = MicaUITestFindTextAcrossWrappedRows(
+                directoryFallbackSession, @"cannot enter");
+            if (!fallbackNoticeVisible) MicaUITestRunLoopFor(0.01);
+        }
+        MicaUITestRecord(report, &allPassed, fallbackNoticeVisible,
+            @"a recovered project folder prints an explanation in its terminal");
+        if (directoryFallbackSession) mica_session_destroy(directoryFallbackSession);
         if (removedFolderRoot) rmdir(removedFolderRoot);
 
         [delegate.terminalView updateGridSize];

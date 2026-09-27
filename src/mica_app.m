@@ -334,28 +334,9 @@ static NSString *MicaTruncatedText(NSString *text, CGFloat width, NSDictionary *
     return [[text substringToIndex:end] stringByAppendingString:ellipsis];
 }
 
-static NSString *MicaUsableWorkingDirectory(NSString *requestedPath) {
-    NSString *candidate = requestedPath.length ? requestedPath.stringByStandardizingPath : NSHomeDirectory();
-    NSFileManager *fileManager = NSFileManager.defaultManager;
-    NSString *original = candidate;
-    while (candidate.length > 1) {
-        BOOL isDirectory = NO;
-        if ([fileManager fileExistsAtPath:candidate isDirectory:&isDirectory] && isDirectory &&
-            [fileManager isReadableFileAtPath:candidate] && [fileManager isExecutableFileAtPath:candidate]) {
-            if (![candidate isEqualToString:original])
-                MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:
-                    @"requested folder is missing or inaccessible; using nearest readable parent requested=%@ resolved=%@",
-                    original, candidate]);
-            return candidate;
-        }
-        NSString *parent = candidate.stringByDeletingLastPathComponent;
-        if ([parent isEqualToString:candidate]) break;
-        candidate = parent;
-    }
-    NSString *home = NSHomeDirectory();
-    MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:
-        @"requested folder and parents are inaccessible; using home requested=%@ resolved=%@", original, home]);
-    return home;
+static NSString *MicaStandardizedWorkingDirectory(NSString *requestedPath) {
+    if (requestedPath.length) return requestedPath.stringByStandardizingPath;
+    return NSFileManager.defaultManager.currentDirectoryPath;
 }
 
 static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *attributes) {
@@ -1806,7 +1787,10 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     [self.terminalView clearSelection];
     MicaTab *tab = [[MicaTab alloc] init];
     tab.name = name.length ? name : @"Terminal";
-    tab.cwd = MicaUsableWorkingDirectory(cwd.length ? cwd : NSFileManager.defaultManager.currentDirectoryPath);
+    // Do not probe Desktop/Documents access synchronously on AppKit's main
+    // thread. macOS privacy checks can wait for user consent; the PTY child
+    // resolves the requested path after the window and tabs are on screen.
+    tab.cwd = MicaStandardizedWorkingDirectory(cwd);
     tab.command = command;
     tab.session = prefilled
         ? mica_session_create_prefilled(tab.cwd.fileSystemRepresentation, command.UTF8String, 24, 80)

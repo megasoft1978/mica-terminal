@@ -48,7 +48,7 @@ def make_base_app(path: Path) -> None:
         "CFBundleIdentifier": "com.megasoft78.mica-terminal",
         "CFBundleName": "Mica",
         "CFBundlePackageType": "APPL",
-        "LSMinimumSystemVersion": "13.0",
+        "LSMinimumSystemVersion": "14.0",
         "NSMicrophoneUsageDescription": "Dictation microphone test notice",
         "NSDesktopFolderUsageDescription": "Project folder access test notice",
         "NSDocumentsFolderUsageDescription": "Project folder access test notice",

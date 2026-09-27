@@ -10,8 +10,8 @@
 	<key>CFBundleName</key><string>Mica</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>CFBundleShortVersionString</key><string>0.0.1</string>
-	<key>CFBundleVersion</key><string>22</string>
-	<key>LSMinimumSystemVersion</key><string>13.0</string>
+	<key>CFBundleVersion</key><string>23</string>
+	<key>LSMinimumSystemVersion</key><string>14.0</string>
 	<key>NSHighResolutionCapable</key><true/>
 	<key>NSMicrophoneUsageDescription</key><string>Mica uses the microphone only when you start dictation, so it can show and insert a live transcript.</string>
 	<key>NSDesktopFolderUsageDescription</key><string>Mica needs access to the project folder you opened so its terminal sessions and development tools can read and update project files.</string>

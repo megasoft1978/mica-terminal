@@ -1,5 +1,7 @@
 CC := clang
 PKG_CONFIG ?= pkg-config
+MACOSX_DEPLOYMENT_TARGET ?= 14.0
+MACOSX_VERSION_FLAG := -mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET)
 BUILD := build
 APP := $(BUILD)/Mica.app
 APP_BIN := $(APP)/Contents/MacOS/Mica
@@ -28,7 +30,7 @@ app: $(APP_BIN) $(APP_ICON) $(PROJECT_ICON_TOOL) $(VOICE_BINARY) $(APP_VOICE_HEL
 
 $(APP_BIN): src/mica_app.m src/mica_voice_controller.m src/mica_voice_controller.h src/mica_diagnostics.m src/mica_diagnostics.h $(CORE) include/mica.h Info.plist
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(OBJC_WARNINGS) -fobjc-arc $(CPPFLAGS) \
+	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(OBJC_WARNINGS) -fobjc-arc $(CPPFLAGS) \
 		-framework Cocoa -framework AVFoundation $(CORE) src/mica_diagnostics.m src/mica_voice_controller.m src/mica_app.m $(VTERM_LIBS) -o $@
 	@mkdir -p $(APP)/Contents
 	@cp Info.plist $(APP)/Contents/Info.plist
@@ -61,16 +63,16 @@ $(APP_ICON): assets/mica-icon.png scripts/build-macos-icon.sh scripts/png-to-icn
 
 $(PROJECT_ICON_TOOL): scripts/build-project-icon.m
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(OBJC_WARNINGS) -fobjc-arc -framework Cocoa $< -o $@
+	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(OBJC_WARNINGS) -fobjc-arc -framework Cocoa $< -o $@
 
 $(BUILD)/test-session: tests/test_session.c $(CORE) include/mica.h
 	@mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) $(C_WARNINGS) $(CPPFLAGS) $(CORE) tests/test_session.c $(VTERM_LIBS) -o $@
+	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(C_WARNINGS) $(CPPFLAGS) $(CORE) tests/test_session.c $(VTERM_LIBS) -o $@
 
 
 $(BUILD)/test-ui: tests/test_app_ui.m src/mica_app.m src/mica_voice_controller.m src/mica_voice_controller.h src/mica_diagnostics.m src/mica_diagnostics.h $(CORE) include/mica.h
 	@mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) $(OBJC_WARNINGS) -fobjc-arc $(CPPFLAGS) \
+	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(OBJC_WARNINGS) -fobjc-arc $(CPPFLAGS) \
 		-framework Cocoa -framework AVFoundation $(CORE) src/mica_diagnostics.m src/mica_voice_controller.m tests/test_app_ui.m $(VTERM_LIBS) -o $@
 
 test: $(BUILD)/test-session $(BUILD)/test-ui $(APP_ICON) $(PROJECT_ICON_TOOL)

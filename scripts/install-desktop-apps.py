@@ -160,7 +160,7 @@ def install_bundle(
         "CFBundleIdentifier": identifier,
         "CFBundleName": display_name,
         "CFBundlePackageType": "APPL",
-        "LSMinimumSystemVersion": "13.0",
+        "LSMinimumSystemVersion": "14.0",
         "NSPrincipalClass": "NSApplication",
         "MicaProjectName": display_name,
         "MicaProjectLayoutName": project["layout_name"],

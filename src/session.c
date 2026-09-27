@@ -602,6 +602,52 @@ static const VTermScreenCallbacks screen_callbacks = {
     .sb_clear = history_clear,
 };
 
+static bool change_to_requested_directory(const char *requested) {
+    if (!requested || !requested[0] || chdir(requested) == 0) return true;
+    int original_error = errno;
+    char *candidate = strdup(requested);
+    if (!candidate) {
+        dprintf(STDERR_FILENO, "mica: could not resolve the requested folder; using the home folder\r\n");
+        candidate = strdup("");
+    }
+
+    while (candidate && candidate[0]) {
+        size_t length;
+        length = strlen(candidate);
+        while (length > 1 && candidate[length - 1] == '/') candidate[--length] = '\0';
+        char *separator = strrchr(candidate, '/');
+        if (!separator) {
+            candidate[0] = '.';
+            candidate[1] = '\0';
+        } else if (separator == candidate) {
+            candidate[1] = '\0';
+        } else {
+            *separator = '\0';
+        }
+
+        if (chdir(candidate) == 0) {
+            char resolved[PATH_MAX];
+            const char *fallback = getcwd(resolved, sizeof(resolved)) ? resolved : candidate;
+            dprintf(STDERR_FILENO, "mica: cannot enter %s: %s; using %s\r\n",
+                    requested, strerror(original_error), fallback);
+            free(candidate);
+            return true;
+        }
+        if (strcmp(candidate, ".") == 0 || strcmp(candidate, "/") == 0) break;
+    }
+    free(candidate);
+
+    const char *home = getenv("HOME");
+    if (home && home[0] && chdir(home) == 0) {
+        dprintf(STDERR_FILENO, "mica: cannot enter %s: %s; using %s\r\n",
+                requested, strerror(original_error), home);
+        return true;
+    }
+    dprintf(STDERR_FILENO, "mica: cannot enter %s or a parent folder: %s\r\n",
+            requested, strerror(original_error));
+    return false;
+}
+
 static const VTermStateFallbacks screen_fallbacks = { .osc = notification_osc };
 
 static MicaSession *session_create(const char *cwd, const char *command, int rows, int cols,
@@ -642,10 +688,7 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
             terminal_settings.c_iflag &= (tcflag_t)~(IXON | IXOFF);
             (void)tcsetattr(STDIN_FILENO, TCSANOW, &terminal_settings);
         }
-        if (cwd && cwd[0] && chdir(cwd) != 0) {
-            dprintf(STDERR_FILENO, "mica: cannot enter %s: %s\r\n", cwd, strerror(errno));
-            _exit(126);
-        }
+        if (!change_to_requested_directory(cwd)) _exit(126);
         setenv("TERM", "xterm-256color", 1);
         setenv("COLORTERM", "truecolor", 1);
         setenv("TERM_PROGRAM", "Mica", 1);

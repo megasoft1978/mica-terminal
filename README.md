@@ -1,10 +1,12 @@
 # Mica Terminal
 
-Mica is a native macOS terminal for working across project folders and command-line tools such as Claude Code, Codex, and zsh. Each tab is a regular zsh session. Mica uses `libvterm` to render terminal output and keeps scrollback in memory only as it is needed.
+**A macOS terminal for keeping project shells, coding agents, and tools together.**
 
-## Install and open
+Each tab is a normal interactive `zsh` session. Run Codex, Claude Code, `lazygit`, or any other command in the folder you choose. Mica uses `libvterm` to render terminal interfaces and grows scrollback only as output needs it.
 
-Mica requires macOS 13 or later for terminal use. Dictation requires macOS 14 or later and a microphone. To build from source, install Xcode Command Line Tools and Homebrew, then run:
+## Get started
+
+Mica requires macOS 14 or later. Install Xcode Command Line Tools and Homebrew, then:
 
 ```sh
 brew install libvterm pkg-config
@@ -12,71 +14,82 @@ make app
 open build/Mica.app --args --cwd "$PWD"
 ```
 
-This opens a shell in the current folder. `--command` runs the given command as the session starts:
+This opens a shell in the current directory. To run a command immediately and return to a shell when it exits:
 
 ```sh
 open build/Mica.app --args --cwd "$PWD" --command "git status"
 ```
 
-For commands you want to inspect before running, use a project layout or create a project instance below. Those commands are placed at the prompt; press Return to run them.
+Use a project layout when you want commands ready at their prompts for review before you press Return.
 
-## Everyday use
+## Work across tabs
 
-- Click a tab or use `⌘1`–`⌘8` to switch tabs. `⌘9` selects the last tab.
-- `⌘T` opens a zsh tab in the selected tab's folder. `⌘W` closes the selected tab.
-- `⌘⇧P` opens the tab picker. Use arrows or `1`–`9`, then Return to select.
-- `⌘⇧S` opens scrollback navigation. Use arrows or `j`/`k`; press Esc to return to live output.
-- `⌘C` copies selected text; `⌘V` pastes. Dropping a file into the terminal inserts its shell-quoted path without running it.
-- Select long output and press `⌘⌥F` to fold it. Click the folded row to expand it.
-- `⌘+` and `⌘-` change the terminal text size.
+| Action | Shortcut |
+| --- | --- |
+| Switch to tab 1–8 | `⌘1`–`⌘8` |
+| Switch to the last tab | `⌘9` |
+| Open a shell in this tab’s folder | `⌘T` |
+| Close the current tab | `⌘W` |
+| Choose a tab | `⌘⇧P` |
+| Browse scrollback | `⌘⇧S` |
+| Copy and paste | `⌘C` / `⌘V` |
+| Fold selected output | `⌘⌥F`, then click to expand |
+| Resize terminal text | `⌘+` / `⌘−` |
 
-The tab bar shares the window width across tabs and offers a menu for tabs that do not fit. Hover over a tab to see its full title, command, folder, and recent activity. Claude Code and Codex titles follow their current visible action. The footer shows the selected tab's folder and current activity. Hold the left Option key to dictate; the footer also shows the numbered-tab and new-tab shortcuts.
+Click a tab to select it. Tabs share the available window width; when there are more tabs than fit, use the overflow menu. Hover over a tab for its full title and details. Codex and Claude Code tabs show their current activity. The status bar shows the selected tab’s folder or current task. Drag a file into the terminal to insert its quoted path without running it.
 
-## Set up a project
+## Create a project app
 
-Run `make new-instance` to create a project layout and a separate Mica app in `~/Desktop/`. The setup asks for a project name, folder, and optional startup command. Leave the command blank for a plain shell; otherwise it appears at the prompt for review before you press Return. Each project app can run alongside other Mica instances.
+To make a separate Mica app for a project, run:
 
-You can also create a tab layout by adding one tab per line to a `.mica` file. Separate the tab name, folder, and optional command with tab characters:
-
-```text
-Shell<TAB>/Users/me/Projects/work<TAB>
-Claude<TAB>/Users/me/Projects/work<TAB>claude
-Codex<TAB>/Users/me/Projects/work<TAB>codex
-Git<TAB>/Users/me/Projects/work<TAB>lazygit
+```sh
+make new-instance
 ```
 
-Open it with:
+The prompts ask for a name, project folder, and optional startup command. Mica creates a project layout and app on your Desktop. An optional command is placed at the shell prompt; press Return when you are ready to run it. You can open several project apps at once.
+
+The **Mica → New Instance** menu item opens another general Mica window. `make new-instance` creates a named project app; these are different actions.
+
+You can also define tabs in a `.mica` layout file, with one tab per line and tab-separated fields for name, folder, and optional command:
+
+```text
+Shell	/Users/me/Projects/work
+Claude Code	/Users/me/Projects/work	claude
+Codex	/Users/me/Projects/work	codex
+Git	/Users/me/Projects/work	lazygit
+```
+
+Open the layout with:
 
 ```sh
 open build/Mica.app --args --layout "$HOME/.config/mica/layouts/work.mica"
 ```
 
-Layout commands are prefilled at their shell prompts and wait for Return. The Git tab uses [lazygit](https://github.com/jesseduffield/lazygit); install it with `brew install lazygit`. Exiting a shell closes its tab and the remaining tabs resize to fill the window.
+Layout commands wait at their prompts until you press Return. The Git example uses [lazygit](https://github.com/jesseduffield/lazygit), which you can install with `brew install lazygit`. When a shell exits, Mica closes that tab and resizes the remaining tabs.
 
-Mica loads your zsh setup, aliases, and plugins. If completion is not already enabled in that setup, Mica enables zsh's built-in context-aware completion for its sessions without editing your shell startup files.
+Mica loads your zsh configuration, aliases, and plugins. It enables zsh’s built-in completion when your configuration has not already enabled completion; it does not edit your shell startup files.
 
-## Dictation
+## Dictate into the current shell
 
-Hold the **left Option (⌥)** key, speak in English or Italian, and release it to finish. Mica displays the live transcript, then inserts the raw result into the shell that was selected when dictation began. It does not press Return, so you can review or edit the text before running it. Press Esc to cancel.
+Hold the **left Option (⌥)** key while speaking, then release it. Mica shows the live transcript and inserts the final text into the shell that was active when you started. It does not press Return, so you can review or edit the text before running it. Press `Esc` to cancel.
 
-Speech recognition runs locally with FluidAudio's multilingual Parakeet Ultra model. The first use downloads about 630 MB; the model stays cached on disk and loads only when dictation starts. No separate AI cleanup model runs on the transcript. Audio is processed locally. The speech model is licensed CC BY 4.0 and attributed to Moondream and NVIDIA; FluidAudio is Apache 2.0. Notices are included in the app and listed in [`voice/THIRD_PARTY_NOTICES.md`](voice/THIRD_PARTY_NOTICES.md).
+Speech recognition runs locally using FluidAudio and the multilingual Parakeet Ultra model. The first use downloads about 630 MB and requires an internet connection; Mica loads the cached model only when dictation starts. Transcripts are inserted as recognized, with no separate text-cleanup model. Dictation requires microphone access. Model and library license details are in [`voice/THIRD_PARTY_NOTICES.md`](voice/THIRD_PARTY_NOTICES.md), bundled with the app.
 
-## Logs and memory
+## Troubleshooting and memory
 
-Choose **Help → Open Diagnostic Logs** to open `~/Library/Logs/Mica/`. The plain-text launch log records the app revision, tab folders, shell start and exit results, dictation stages, helper exit status, and peak helper memory. It does not record shell command text, transcripts, or audio. Logs are capped at 1 MiB. macOS crash reports are in `~/Library/Logs/DiagnosticReports/`.
+Choose **Help → Open Diagnostic Logs** to open `~/Library/Logs/Mica/`. Logs include the app revision, tab folders, session start and exit, and dictation stages and memory measurements. They do not include recorded audio or transcript text. Logs are capped at 1 MiB. macOS crash reports are in `~/Library/Logs/DiagnosticReports/`.
 
-Mica caps scrollback at 2 MiB per session and allocates it as needed. The speech model is not loaded until dictation starts. Use `make memory` to sample the memory used by a running Mica instance and its child processes; results depend on the number of tabs, window size, scrollback, and running commands. [`docs/MEMORY-BASELINE.md`](docs/MEMORY-BASELINE.md) records measured snapshots and explains how to compare like-for-like workloads.
+Mica’s terminal and dictation require macOS 14 or later. Scrollback is allocated as needed and capped at 2 MiB per session. The speech model stays unloaded until dictation starts. Run `make memory` to sample Mica and child-process memory; results depend on your tabs, window size, terminal history, shell setup, and running commands. [`docs/MEMORY-BASELINE.md`](docs/MEMORY-BASELINE.md) describes the available snapshots and their limits.
 
-## Build and checks
+## Build and validate
 
 ```sh
 make test       # PTY, UI, project-app, memory-limit, and local CLI-fixture checks
-make app        # build Mica and its local speech helper
-make validate   # run tests, build the app, and check the app bundle
-make test-voice # build the speech helper
+make app        # build the app and local speech helper
+make validate   # run tests, build, and check the app bundle
 make memory     # sample memory use for running Mica processes
 ```
 
-Tests use local fixtures and do not send prompts to Claude Code or Codex. The macOS CI workflow runs `make validate` and uploads the UI smoke report and screenshot.
+Tests use local fixtures and never send prompts to Codex or Claude Code. GitHub Actions runs `make validate` on macOS and uploads the UI smoke report when available.
 
-Version `0.0.1`, revision `22`.
+Version `0.0.1`, revision `23`.
