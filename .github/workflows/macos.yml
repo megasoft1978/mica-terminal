@@ -8,14 +8,14 @@ jobs:
   build:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install libvterm
         run: brew install libvterm pkg-config
       - name: Validate tests and app bundle
         run: make validate
       - name: Upload AppKit smoke results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mica-ui-smoke
           path: |
