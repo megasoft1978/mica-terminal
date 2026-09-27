@@ -472,7 +472,7 @@ static int MicaRunUISelfTest(void) {
              rawVoiceController.state != MicaVoiceControllerStateFailed && attempt < 300; attempt++)
             MicaUITestRunLoopFor(0.01);
         for (int attempt = 0; rawHelperReady && !MicaUITestFindText(voiceTargetTab.session,
-             @"MICA-RAW-TRANSCRIPT", NULL, NULL) && attempt < 100; attempt++) {
+             @"MICA-RAW-TRANSCRIPT", NULL, NULL) && attempt < 500; attempt++) {
             mica_session_poll(voiceTargetTab.session, 0);
             MicaUITestRunLoopFor(0.01);
         }

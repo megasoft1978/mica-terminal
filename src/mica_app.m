@@ -564,7 +564,9 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     int pixelHeight = (int)lrint(area.size.height * scale);
     BOOL gridChanged = cols != _cols || rows != _rows || _sizedSession != tab.session;
     BOOL pixelSizeChanged = pixelWidth != _pixelWidth || pixelHeight != _pixelHeight;
-    if (gridChanged || (pixelSizeChanged && !self.inLiveResize)) {
+    // AppKit can report transient cell-grid changes while the window is being
+    // dragged. Defer both PTY grid and pixel updates until resize settles.
+    if ((gridChanged || pixelSizeChanged) && !self.inLiveResize) {
         _cols = cols;
         _rows = rows;
         _pixelWidth = pixelWidth;
