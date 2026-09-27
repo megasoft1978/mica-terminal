@@ -77,7 +77,7 @@ Speech recognition runs locally using FluidAudio and the multilingual Parakeet U
 
 ## Troubleshooting and memory
 
-Choose **Help → Open Diagnostic Logs** to open `~/Library/Logs/Mica/`. Logs include the app revision, tab folders, session start and exit, and dictation stages and memory measurements. They do not include recorded audio or transcript text. Logs are capped at 1 MiB. macOS crash reports are in `~/Library/Logs/DiagnosticReports/`.
+Choose **Help → Open Diagnostic Logs** to open `~/Library/Logs/Mica/`. Logs include the app revision and bundle path, tab folders and process IDs, session start, exit, and shutdown, microphone permission state, resize events and resulting PTY dimensions, slow session polling and terminal rendering, and dictation stages and memory measurements. They do not include recorded audio or transcript text. Logs are capped at 1 MiB. macOS crash reports are in `~/Library/Logs/DiagnosticReports/`.
 
 Mica’s terminal and dictation require macOS 14 or later. Scrollback is allocated as needed and capped at 2 MiB per session. The speech model stays unloaded until dictation starts. Run `make memory` to sample Mica and child-process memory; results depend on your tabs, window size, terminal history, shell setup, and running commands. [`docs/MEMORY-BASELINE.md`](docs/MEMORY-BASELINE.md) describes the available snapshots and their limits.
 

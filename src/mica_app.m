@@ -75,6 +75,7 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 }
 
 @interface MicaTab : NSObject
+- (void)destroySession;
 @property(nonatomic, copy) NSString *name;
 @property(nonatomic, copy) NSString *cwd;
 @property(nonatomic, copy) NSString *command;
@@ -98,7 +99,12 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 @property(nonatomic, copy) NSString *completionLabel;
 @end
 @implementation MicaTab
-- (void)dealloc { if (_session) mica_session_destroy(_session); }
+- (void)destroySession {
+    if (!_session) return;
+    mica_session_destroy(_session);
+    _session = NULL;
+}
+- (void)dealloc { [self destroySession]; }
 @end
 
 static NSString *MicaAgentNameForText(NSString *text) {
@@ -198,6 +204,13 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, weak) MicaAppDelegate *owner;
 @property(nonatomic, strong) NSFont *terminalFont;
 @property(nonatomic, strong) NSTimer *gridResizeTimer;
+@property(nonatomic, assign) NSTimeInterval gridResizeStartedAt;
+@property(nonatomic, assign) NSUInteger gridResizeEventCount;
+@property(nonatomic, assign) NSRect gridResizeInitialWindowFrame;
+@property(nonatomic, assign) NSTimeInterval drawingStatsStartedAt;
+@property(nonatomic, assign) NSUInteger drawingStatsCount;
+@property(nonatomic, assign) NSTimeInterval drawingStatsTotalDuration;
+@property(nonatomic, assign) NSTimeInterval drawingStatsMaximumDuration;
 #if defined(MICA_APP_NO_MAIN)
 @property(nonatomic, copy) NSString *testClipboardText;
 @property(nonatomic, strong) NSData *testClipboardImage;
@@ -215,6 +228,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)updateGridSize;
 - (void)scheduleGridResize;
 - (void)commitGridResize:(NSTimer *)timer;
+- (void)recordDrawDuration:(NSTimeInterval)duration;
 - (NSString *)view:(NSView *)view stringForToolTip:(NSToolTipTag)tag point:(NSPoint)point userData:(void *)data;
 - (BOOL)insertFileURLs:(NSArray<NSURL *> *)fileURLs;
 - (BOOL)hasTextSelection;
@@ -238,6 +252,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, assign) NSInteger activeIndex;
 @property(nonatomic, copy) NSString *projectName;
 @property(nonatomic, strong) NSTimer *pollTimer;
+@property(nonatomic, assign) NSTimeInterval lastSlowPollLogAt;
 @property(nonatomic, strong) MicaVoiceController *voiceController;
 @property(nonatomic, strong) MicaTab *voiceTargetTab;
 @property(nonatomic, assign) NSInteger attentionRequest;
@@ -552,16 +567,30 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     // AppKit can report transient cell-grid changes while the window is being
     // dragged. Defer both PTY grid and pixel updates until resize settles.
     if ((gridChanged || pixelSizeChanged) && !self.inLiveResize) {
+        NSInteger oldCols = _cols;
+        NSInteger oldRows = _rows;
+        int oldPixelWidth = _pixelWidth;
+        int oldPixelHeight = _pixelHeight;
         _cols = cols;
         _rows = rows;
         _pixelWidth = pixelWidth;
         _pixelHeight = pixelHeight;
         _sizedSession = tab.session;
         mica_session_resize_pixels(tab.session, (int)rows, (int)cols, pixelWidth, pixelHeight);
+        MicaDiagnosticsLog(@"resize", [NSString stringWithFormat:
+            @"pty-size pid=%d grid=%ldx%ld->%ldx%ld pixels=%dx%d->%dx%d live=%d",
+            mica_session_pid(tab.session), (long)oldCols, (long)oldRows,
+            (long)cols, (long)rows, oldPixelWidth, oldPixelHeight,
+            pixelWidth, pixelHeight, self.inLiveResize]);
     }
 }
 
 - (void)scheduleGridResize {
+    if (self.gridResizeEventCount == 0) {
+        self.gridResizeStartedAt = NSProcessInfo.processInfo.systemUptime;
+        self.gridResizeInitialWindowFrame = self.window.frame;
+    }
+    self.gridResizeEventCount++;
     [self.gridResizeTimer invalidate];
     self.gridResizeTimer = [NSTimer scheduledTimerWithTimeInterval:0.15
         target:self selector:@selector(commitGridResize:) userInfo:nil repeats:NO];
@@ -571,8 +600,46 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     if (timer != self.gridResizeTimer) return;
     self.gridResizeTimer = nil;
     if (self.inLiveResize) return;
+    NSUInteger resizeEvents = self.gridResizeEventCount;
+    NSTimeInterval resizeDuration = MAX(0,
+        NSProcessInfo.processInfo.systemUptime - self.gridResizeStartedAt);
+    NSRect initialFrame = self.gridResizeInitialWindowFrame;
+    self.gridResizeEventCount = 0;
+    self.gridResizeStartedAt = 0;
     [self updateGridSize];
+    if (resizeEvents) {
+        MicaTab *tab = self.owner.activeTab;
+        MicaDiagnosticsLog(@"resize", [NSString stringWithFormat:
+            @"settled events=%lu duration_ms=%.1f frame=%@->%@ grid=%ldx%ld pid=%d",
+            (unsigned long)resizeEvents, resizeDuration * 1000.0,
+            NSStringFromRect(initialFrame), NSStringFromRect(self.window.frame),
+            (long)_cols, (long)_rows, tab.session ? mica_session_pid(tab.session) : -1]);
+    }
     [self setNeedsDisplay:YES];
+}
+
+- (void)recordDrawDuration:(NSTimeInterval)duration {
+    NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
+    if (self.drawingStatsStartedAt == 0) self.drawingStatsStartedAt = now;
+    self.drawingStatsCount++;
+    self.drawingStatsTotalDuration += duration;
+    self.drawingStatsMaximumDuration = MAX(self.drawingStatsMaximumDuration, duration);
+    NSTimeInterval windowDuration = now - self.drawingStatsStartedAt;
+    if (windowDuration < 5.0) return;
+    if (self.drawingStatsCount >= 150 || self.drawingStatsMaximumDuration >= 0.03) {
+        MicaTab *tab = self.owner.activeTab;
+        MicaDiagnosticsLog(@"performance", [NSString stringWithFormat:
+            @"terminal-render seconds=%.1f draws=%lu draws_per_second=%.1f avg_ms=%.2f max_ms=%.2f tab=%@ pid=%d",
+            windowDuration, (unsigned long)self.drawingStatsCount,
+            self.drawingStatsCount / windowDuration,
+            self.drawingStatsTotalDuration * 1000.0 / MAX(1, self.drawingStatsCount),
+            self.drawingStatsMaximumDuration * 1000.0, tab.name ?: @"none",
+            tab.session ? mica_session_pid(tab.session) : -1]);
+    }
+    self.drawingStatsStartedAt = now;
+    self.drawingStatsCount = 0;
+    self.drawingStatsTotalDuration = 0;
+    self.drawingStatsMaximumDuration = 0;
 }
 
 - (NSRect)cellRectAtRow:(NSInteger)row col:(NSInteger)col {
@@ -1042,11 +1109,15 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
+    NSTimeInterval drawStartedAt = NSProcessInfo.processInfo.systemUptime;
     [self updateTabToolTip];
     [MicaBackgroundColor() setFill];
     NSRectFill(NSIntersectionRect(dirtyRect, self.bounds));
     MicaTab *tab = self.owner.activeTab;
-    if (!tab.session) return;
+    if (!tab.session) {
+        [self recordDrawDuration:NSProcessInfo.processInfo.systemUptime - drawStartedAt];
+        return;
+    }
 
     NSRect header = NSMakeRect(0, NSMaxY(self.bounds) - kHeaderHeight, self.bounds.size.width, kHeaderHeight);
     if (NSIntersectsRect(dirtyRect, header)) {
@@ -1269,6 +1340,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     NSRect status = NSMakeRect(0, 0, self.bounds.size.width, kStatusHeight);
     if (NSIntersectsRect(status, dirtyRect)) [self drawStatusBarForTab:tab];
     (void)dirtyRect;
+    [self recordDrawDuration:NSProcessInfo.processInfo.systemUptime - drawStartedAt];
 }
 
 - (void)keyDown:(NSEvent *)event {
@@ -1301,6 +1373,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     }
     if (!command && [self handleNavigationModeKey:event key:keyString control:control]) return;
     if (command) {
+        if ([keyString isEqualToString:@"q"]) { [NSApp terminate:nil]; return; }
         if (keyString.length == 1 && keyString.integerValue >= 1 &&
             keyString.integerValue <= 9 && [keyString characterAtIndex:0] >= '1' &&
             [keyString characterAtIndex:0] <= '9') {
@@ -1846,6 +1919,8 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
 - (void)resizeActiveSession {
     [self.terminalView.gridResizeTimer invalidate];
     self.terminalView.gridResizeTimer = nil;
+    self.terminalView.gridResizeEventCount = 0;
+    self.terminalView.gridResizeStartedAt = 0;
     [self.terminalView updateGridSize];
     [self.terminalView setNeedsDisplay:YES];
 }
@@ -1859,6 +1934,12 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     NSTask *task = [[NSTask alloc] init];
     task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/open"];
     task.arguments = @[@"-n", NSBundle.mainBundle.bundleURL.path];
+    task.terminationHandler = ^(NSTask *finishedTask) {
+        MicaDiagnosticsLog(@"launch", [NSString stringWithFormat:
+            @"new-instance open exited status=%d reason=%@",
+            finishedTask.terminationStatus,
+            finishedTask.terminationReason == NSTaskTerminationReasonExit ? @"exit" : @"signal"]);
+    };
     NSError *error = nil;
     if (![task launchAndReturnError:&error]) {
         MicaDiagnosticsLog(@"launch", [NSString stringWithFormat:@"new instance failed: %@", error.localizedDescription]);
@@ -1929,8 +2010,9 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
 - (void)closeActiveTab {
     if (self.tabs.count <= 1) { [self.window performClose:nil]; return; }
     MicaTab *previous = self.activeTab;
-    MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"tab closed name=%@ folder=%@",
-        previous.name ?: @"Terminal", previous.cwd ?: @"unknown"]);
+    MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"tab closed name=%@ folder=%@ pid=%d",
+        previous.name ?: @"Terminal", previous.cwd ?: @"unknown",
+        previous.session ? mica_session_pid(previous.session) : -1]);
     if (previous == self.voiceTargetTab) [self cancelDictation];
     if (previous.session && NSApp.isActive) mica_session_focus(previous.session, false);
     self.uiMode = MicaUIModeNormal;
@@ -1985,6 +2067,7 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     (void)timer;
     BOOL redraw = NO;
     NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
+    NSTimeInterval pollStartedAt = now;
     for (MicaTab *tab in self.tabs) {
         if (!tab.session) continue;
         mica_session_poll(tab.session, 0);
@@ -2125,13 +2208,33 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
         redraw = YES;
     }
     if (redraw) [self.terminalView setNeedsDisplay:YES];
+    NSTimeInterval pollEndedAt = NSProcessInfo.processInfo.systemUptime;
+    NSTimeInterval pollDuration = pollEndedAt - pollStartedAt;
+    if (pollDuration >= 0.075 && pollEndedAt - self.lastSlowPollLogAt >= 1.0) {
+        self.lastSlowPollLogAt = pollEndedAt;
+        MicaTab *activeTab = self.activeTab;
+        MicaDiagnosticsLog(@"performance", [NSString stringWithFormat:
+            @"slow-session-poll duration_ms=%.1f tabs=%lu active=%@ active_pid=%d",
+            pollDuration * 1000.0, (unsigned long)self.tabs.count,
+            activeTab.name ?: @"none",
+            activeTab.session ? mica_session_pid(activeTab.session) : -1]);
+    }
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender { (void)sender; return YES; }
 - (void)applicationWillTerminate:(NSNotification *)notification {
     (void)notification;
     MicaDiagnosticsLog(@"app", @"application is terminating");
+    [self.pollTimer invalidate];
+    self.pollTimer = nil;
     [self.voiceController cancel];
+    MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"terminating all sessions count=%lu",
+        (unsigned long)self.tabs.count]);
+    for (MicaTab *tab in self.tabs) {
+        MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"terminating session tab=%@ pid=%d",
+            tab.name ?: @"Terminal", tab.session ? mica_session_pid(tab.session) : -1]);
+        [tab destroySession];
+    }
 }
 - (void)applicationWillResignActive:(NSNotification *)notification {
     (void)notification;
@@ -2161,8 +2264,9 @@ int main(int argc, const char *argv[]) {
     (void)argc; (void)argv;
     @autoreleasepool {
         MicaDiagnosticsInitialize();
-        MicaDiagnosticsLog(@"startup", [NSString stringWithFormat:@"Mica %@ revision %@ launching pid=%d bundle=%@ folder=%@",
-            @MICA_VERSION, @MICA_REVISION, getpid(), NSBundle.mainBundle.bundleIdentifier ?: @"unknown",
+        MicaDiagnosticsLog(@"startup", [NSString stringWithFormat:@"Mica %@ revision %@ launching pid=%d parent_pid=%d bundle=%@ path=%@ folder=%@",
+            @MICA_VERSION, @MICA_REVISION, getpid(), getppid(), NSBundle.mainBundle.bundleIdentifier ?: @"unknown",
+            NSBundle.mainBundle.bundleURL.path ?: @"unknown",
             NSFileManager.defaultManager.currentDirectoryPath ?: @"unknown"]);
         NSApplication *app = NSApplication.sharedApplication;
         app.activationPolicy = NSApplicationActivationPolicyRegular;

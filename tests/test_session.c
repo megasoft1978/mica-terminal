@@ -388,6 +388,45 @@ color_checked:
     errno = 0;
     assert(kill(cleanup_pid, 0) == -1 && errno == ESRCH);
 
+    char orphanPIDTemplate[] = "/tmp/mica-orphan-pid-XXXXXX";
+    int orphanPIDFD = mkstemp(orphanPIDTemplate);
+    assert(orphanPIDFD >= 0);
+    close(orphanPIDFD);
+    unlink(orphanPIDTemplate);
+    char orphanCommand[1024];
+    snprintf(orphanCommand, sizeof(orphanCommand),
+        "sh -c 'trap \"\" HUP; echo $$ > %s; exec sleep 30' & "
+        "printf 'GROUP-CLEANUP-READY\\n'; wait", orphanPIDTemplate);
+    MicaSession *groupCleanupSession = mica_session_create("/tmp", orphanCommand, 6, 80);
+    assert(groupCleanupSession != NULL);
+    pid_t groupCleanupShellPID = mica_session_pid(groupCleanupSession);
+    pid_t groupCleanupDescendantPID = -1;
+    for (int attempt = 0; attempt < 200; attempt++) {
+        mica_session_poll(groupCleanupSession, 10);
+        FILE *pidFile = fopen(orphanPIDTemplate, "r");
+        if (pidFile) {
+            (void)fscanf(pidFile, "%d", &groupCleanupDescendantPID);
+            fclose(pidFile);
+        }
+        if (groupCleanupDescendantPID > 0) break;
+    }
+    assert(groupCleanupDescendantPID > 0);
+    mica_session_destroy(groupCleanupSession);
+    unlink(orphanPIDTemplate);
+    bool groupCleanupProcessesGone = false;
+    for (int attempt = 0; attempt < 200; attempt++) {
+        errno = 0;
+        bool shellGone = kill(groupCleanupShellPID, 0) < 0 && errno == ESRCH;
+        errno = 0;
+        bool descendantGone = kill(groupCleanupDescendantPID, 0) < 0 && errno == ESRCH;
+        if (shellGone && descendantGone) {
+            groupCleanupProcessesGone = true;
+            break;
+        }
+        usleep(10000);
+    }
+    assert(groupCleanupProcessesGone);
+
     MicaSession *mouse_session = mica_session_create("/tmp",
         "stty -echo -icanon -isig; "
         "printf '\\033[?1000h\\033[?1006hMOUSE-READY\\n'; "

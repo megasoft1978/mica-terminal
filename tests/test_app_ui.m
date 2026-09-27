@@ -402,6 +402,8 @@ static int MicaRunUISelfTest(void) {
         [delegate installMenus];
 
         NSMenu *sessionMenu = [NSApp.mainMenu itemWithTitle:@"Session"].submenu;
+        NSMenuItem *quitMenuItem = [[NSApp.mainMenu itemWithTitle:@"Mica"].submenu
+            itemWithTitle:@"Quit Mica"];
         NSMenuItem *newShellMenuItem = [sessionMenu itemWithTitle:@"New Shell Tab"];
         NSMenuItem *tabPickerMenuItem = [sessionMenu itemWithTitle:@"Choose Tab…"];
         NSMenuItem *scrollbackMenuItem = [sessionMenu itemWithTitle:@"Browse Scrollback"];
@@ -421,9 +423,11 @@ static int MicaRunUISelfTest(void) {
                           (NSEventModifierFlagCommand | NSEventModifierFlagShift)) ==
                             (NSEventModifierFlagCommand | NSEventModifierFlagShift) &&
                          diagnosticLogsMenuItem.target == delegate &&
+                         [quitMenuItem.keyEquivalent isEqualToString:@"q"] &&
+                         (quitMenuItem.keyEquivalentModifierMask & NSEventModifierFlagCommand) != 0 &&
                          [sessionMenu itemWithTitle:@"New Claude Code Tab"] == nil &&
                          [sessionMenu itemWithTitle:@"New Codex Tab"] == nil,
-                         @"Session shortcuts omit toggle dictation; Dictation uses left Option press and release");
+                         @"Quit Mica keeps Command-Q while Dictation uses left Option press and release");
 
         MicaAppDelegate *voiceDelegate = [[MicaAppDelegate alloc] init];
         voiceDelegate.tabs = [NSMutableArray array];

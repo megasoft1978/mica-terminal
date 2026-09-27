@@ -39,6 +39,7 @@ typedef struct {
 struct MicaSession {
     int master_fd;
     pid_t child_pid;
+    uint32_t terminal_device;
     int rows;
     int cols;
     int pixel_width;
@@ -480,6 +481,145 @@ static void flush_pending_input(MicaSession *session) {
     clear_pending_input(session);
 }
 
+typedef struct {
+    pid_t pid;
+    uint64_t start_seconds;
+    uint64_t start_microseconds;
+} MicaProcessIdentity;
+
+static size_t snapshot_process_tree(pid_t root_pid, MicaProcessIdentity **tree_out) {
+    *tree_out = NULL;
+    int required_bytes = proc_listallpids(NULL, 0);
+    if (required_bytes <= 0) return 0;
+    size_t capacity = (size_t)required_bytes / sizeof(pid_t) + 16;
+    pid_t *pids = calloc(capacity, sizeof(*pids));
+    if (!pids) return 0;
+    int returned_bytes = proc_listallpids(pids, (int)(capacity * sizeof(*pids)));
+    if (returned_bytes <= 0) {
+        free(pids);
+        return 0;
+    }
+    size_t pid_count = (size_t)returned_bytes / sizeof(*pids);
+    struct proc_bsdinfo *processes = calloc(pid_count ? pid_count : 1, sizeof(*processes));
+    bool *included = calloc(pid_count ? pid_count : 1, sizeof(*included));
+    if (!processes || !included) {
+        free(processes);
+        free(included);
+        free(pids);
+        return 0;
+    }
+    ssize_t root_index = -1;
+    for (size_t index = 0; index < pid_count; index++) {
+        if (pids[index] <= 0) continue;
+        if (proc_pidinfo(pids[index], PROC_PIDTBSDINFO, 0,
+            &processes[index], sizeof(processes[index])) != sizeof(processes[index])) continue;
+        if ((pid_t)processes[index].pbi_pid == root_pid) root_index = (ssize_t)index;
+    }
+    free(pids);
+    if (root_index < 0) {
+        free(processes);
+        free(included);
+        return 0;
+    }
+    included[root_index] = true;
+    size_t tree_count = 1;
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (size_t index = 0; index < pid_count; index++) {
+            if (included[index] || processes[index].pbi_pid == 0) continue;
+            for (size_t parent = 0; parent < pid_count; parent++) {
+                if (included[parent] && processes[index].pbi_ppid == processes[parent].pbi_pid) {
+                    included[index] = true;
+                    tree_count++;
+                    changed = true;
+                    break;
+                }
+            }
+        }
+    }
+    MicaProcessIdentity *tree = calloc(tree_count, sizeof(*tree));
+    if (!tree) {
+        free(processes);
+        free(included);
+        return 0;
+    }
+    size_t output_index = 0;
+    for (size_t index = 0; index < pid_count; index++) {
+        if (!included[index]) continue;
+        tree[output_index++] = (MicaProcessIdentity){
+            .pid = (pid_t)processes[index].pbi_pid,
+            .start_seconds = processes[index].pbi_start_tvsec,
+            .start_microseconds = processes[index].pbi_start_tvusec,
+        };
+    }
+    free(processes);
+    free(included);
+    *tree_out = tree;
+    return tree_count;
+}
+
+static void signal_process_tree(const MicaProcessIdentity *tree, size_t tree_count,
+                                int signal_number) {
+    for (size_t index = 0; index < tree_count; index++) {
+        struct proc_bsdinfo current;
+        if (proc_pidinfo(tree[index].pid, PROC_PIDTBSDINFO, 0,
+            &current, sizeof(current)) != sizeof(current)) continue;
+        if (current.pbi_start_tvsec != tree[index].start_seconds ||
+            current.pbi_start_tvusec != tree[index].start_microseconds) continue;
+        (void)kill(tree[index].pid, signal_number);
+    }
+}
+
+static size_t snapshot_terminal_processes(uint32_t terminal_device,
+                                         MicaProcessIdentity **processes_out) {
+    *processes_out = NULL;
+    if (terminal_device == UINT32_MAX) return 0;
+    int required_bytes = proc_listallpids(NULL, 0);
+    if (required_bytes <= 0) return 0;
+    size_t capacity = (size_t)required_bytes / sizeof(pid_t) + 16;
+    pid_t *pids = calloc(capacity, sizeof(*pids));
+    MicaProcessIdentity *processes = calloc(capacity, sizeof(*processes));
+    if (!pids || !processes) {
+        free(pids);
+        free(processes);
+        return 0;
+    }
+    int returned_bytes = proc_listallpids(pids, (int)(capacity * sizeof(*pids)));
+    if (returned_bytes <= 0) {
+        free(pids);
+        free(processes);
+        return 0;
+    }
+    size_t pid_count = (size_t)returned_bytes / sizeof(*pids);
+    size_t process_count = 0;
+    for (size_t index = 0; index < pid_count; index++) {
+        if (pids[index] <= 0) continue;
+        struct proc_bsdinfo info;
+        if (proc_pidinfo(pids[index], PROC_PIDTBSDINFO, 0, &info, sizeof(info)) != sizeof(info) ||
+            info.e_tdev != terminal_device) continue;
+        processes[process_count++] = (MicaProcessIdentity){
+            .pid = (pid_t)info.pbi_pid,
+            .start_seconds = info.pbi_start_tvsec,
+            .start_microseconds = info.pbi_start_tvusec,
+        };
+    }
+    free(pids);
+    if (!process_count) {
+        free(processes);
+        return 0;
+    }
+    *processes_out = processes;
+    return process_count;
+}
+
+static uint32_t terminal_device_for_process(pid_t pid) {
+    struct proc_bsdinfo info;
+    if (pid <= 0 || proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, sizeof(info)) != sizeof(info))
+        return UINT32_MAX;
+    return info.e_tdev;
+}
+
 static void write_nonblocking(MicaSession *session, const char *bytes, size_t length) {
     if (!session || session->master_fd < 0 || !bytes || length == 0) return;
 
@@ -658,6 +798,7 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
     if (!session) return NULL;
     session->master_fd = -1;
     session->child_pid = -1;
+    session->terminal_device = UINT32_MAX;
     session->rows = rows;
     session->cols = cols;
     session->running = true;
@@ -736,6 +877,7 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
     }
     session->master_fd = master;
     session->child_pid = pid;
+    session->terminal_device = terminal_device_for_process(pid);
     int flags = fcntl(master, F_GETFL, 0);
     if (flags >= 0) fcntl(master, F_SETFL, flags | O_NONBLOCK);
     return session;
@@ -755,23 +897,53 @@ MicaSession *mica_session_create_prefilled(const char *cwd, const char *command,
 
 void mica_session_destroy(MicaSession *session) {
     if (!session) return;
+    MicaProcessIdentity *process_tree = NULL;
+    size_t process_count = session->child_pid > 0
+        ? snapshot_process_tree(session->child_pid, &process_tree) : 0;
+    MicaProcessIdentity *terminal_processes = NULL;
+    size_t terminal_process_count = snapshot_terminal_processes(
+        session->terminal_device, &terminal_processes);
     if (session->master_fd >= 0) close(session->master_fd);
+    if (session->running) {
+        signal_process_tree(process_tree, process_count, SIGHUP);
+        signal_process_tree(terminal_processes, terminal_process_count, SIGHUP);
+    }
     if (session->child_pid > 0 && session->running) {
         kill(-session->child_pid, SIGHUP);
         kill(session->child_pid, SIGHUP);
-        int status;
+        // Give the shell and its descendants a short grace period, then kill
+        // the captured tree even if the shell leader already exited. Children
+        // can have separate process groups and ignore the terminal hangup.
+        int status = 0;
+        bool childReaped = false;
         for (int attempt = 0; attempt < 40; attempt++) {
             pid_t result = waitpid(session->child_pid, &status, WNOHANG);
-            if (result == session->child_pid || (result < 0 && errno == ECHILD)) break;
+            if (result == session->child_pid || (result < 0 && errno == ECHILD)) {
+                childReaped = true;
+                break;
+            }
             struct timespec pause = { .tv_sec = 0, .tv_nsec = 5000000 };
             nanosleep(&pause, NULL);
         }
-        if (waitpid(session->child_pid, &status, WNOHANG) == 0) {
-            kill(-session->child_pid, SIGKILL);
-            kill(session->child_pid, SIGKILL);
-            (void)waitpid(session->child_pid, &status, 0);
+        signal_process_tree(process_tree, process_count, SIGKILL);
+        signal_process_tree(terminal_processes, terminal_process_count, SIGKILL);
+        (void)kill(-session->child_pid, SIGKILL);
+        (void)kill(session->child_pid, SIGKILL);
+        if (!childReaped)
+            while (waitpid(session->child_pid, &status, 0) < 0 && errno == EINTR) {}
+    } else {
+        // The interactive shell may already have exited while a child it
+        // started remains attached to this PTY. Its controlling-terminal ID
+        // still lets us clean up that process without trusting a stale PID.
+        signal_process_tree(terminal_processes, terminal_process_count, SIGHUP);
+        if (terminal_process_count) {
+            struct timespec pause = { .tv_sec = 0, .tv_nsec = 50000000 };
+            nanosleep(&pause, NULL);
+            signal_process_tree(terminal_processes, terminal_process_count, SIGKILL);
         }
     }
+    free(process_tree);
+    free(terminal_processes);
     if (session->vt) vterm_free(session->vt);
     free(session->history);
     clear_folds(session);
