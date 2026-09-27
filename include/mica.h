@@ -8,7 +8,7 @@
 #include <vterm.h>
 
 #define MICA_VERSION "0.0.1"
-#define MICA_REVISION "20"
+#define MICA_REVISION "21"
 #define MICA_HISTORY_LIMIT_BYTES (2u * 1024u * 1024u)
 
 typedef struct MicaSession MicaSession;

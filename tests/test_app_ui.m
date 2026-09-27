@@ -38,6 +38,34 @@ static BOOL MicaUITestFindText(MicaSession *session, NSString *text, NSInteger *
     return NO;
 }
 
+static BOOL MicaUITestFindTextAcrossWrappedRows(MicaSession *session, NSString *text) {
+    const char *needle = text.UTF8String;
+    if (!session || !needle || !needle[0]) return NO;
+    int rows = mica_session_rows(session), cols = mica_session_cols(session);
+    size_t length = strlen(needle), cells = (size_t)rows * (size_t)cols;
+    if (length > cells) return NO;
+    for (size_t start = 0; start + length <= cells; start++) {
+        BOOL matches = YES;
+        for (size_t index = 0; index < length; index++) {
+            size_t position = start + index;
+            MicaCell cell;
+            if (!mica_session_get_cell(session, (int)(position / (size_t)cols),
+                                       (int)(position % (size_t)cols), &cell) ||
+                cell.chars[0] != (unsigned char)needle[index]) {
+                matches = NO;
+                break;
+            }
+        }
+        if (matches) return YES;
+    }
+    return NO;
+}
+
+static NSString *MicaUITestVoiceFile(NSString *directory, MicaSession *session, NSString *suffix) {
+    return [directory stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"%d.%@", (int)mica_session_pid(session), suffix]];
+}
+
 static NSUInteger MicaUITestCountText(MicaSession *session, NSString *text) {
     NSUInteger count = 0;
     const char *needle = text.UTF8String;
@@ -402,6 +430,12 @@ static int MicaRunUISelfTest(void) {
         voiceDelegate.activeIndex = 0;
         voiceDelegate.uiMode = MicaUIModeNormal;
         MicaUITestAttachWindow(voiceDelegate);
+        char voiceTestDirectoryTemplate[] = "/tmp/mica-voice-contract-XXXXXX";
+        char *voiceTestDirectoryPath = mkdtemp(voiceTestDirectoryTemplate);
+        NSString *voiceTestDirectory = voiceTestDirectoryPath
+            ? [NSString stringWithUTF8String:voiceTestDirectoryPath] : nil;
+        BOOL voiceTestDirectoryReady = voiceTestDirectory.length > 0 &&
+            setenv("MICA_TEST_ZLE_DIR", voiceTestDirectory.fileSystemRepresentation, 1) == 0;
         MicaUITestVoiceController *pushToTalkProbe = [[MicaUITestVoiceController alloc]
             initWithHelperURL:[NSURL fileURLWithPath:@"/bin/false"]];
         voiceDelegate.voiceController = pushToTalkProbe;
@@ -409,6 +443,7 @@ static int MicaRunUISelfTest(void) {
             command:@"printf 'PTT-TARGET-READY\\n'" prefilled:NO];
         [voiceDelegate addTabWithName:@"Other tab" cwd:@"/tmp"
             command:@"printf 'PTT-OTHER-READY\\n'" prefilled:NO];
+        unsetenv("MICA_TEST_ZLE_DIR");
         MicaTab *voiceTargetTab = voiceDelegate.tabs.firstObject;
         BOOL voiceTabsReady = NO;
         for (int attempt = 0; attempt < 200; attempt++) {
@@ -419,17 +454,18 @@ static int MicaRunUISelfTest(void) {
             }
             usleep(10000);
         }
-        // Seeing the marker does not mean the fixture command has returned to
-        // zsh yet. Wait until both prompts are ready before sending dictation.
+        // The command-completion OSC arrives before its replacement zsh prompt.
+        // Wait for each shell's zle-line-init probe instead of guessing by time.
         BOOL voiceTabsAtPrompt = NO;
-        for (int attempt = 0; attempt < 300; attempt++) {
-            BOOL commandsFinished = YES;
+        for (int attempt = 0; voiceTestDirectoryReady && attempt < 500; attempt++) {
+            BOOL bothEditorsReady = voiceTestDirectoryReady;
             for (MicaTab *tab in voiceDelegate.tabs) {
                 mica_session_poll(tab.session, 0);
-                commandsFinished = commandsFinished &&
-                    mica_session_command_completion_count(tab.session) > 0;
+                bothEditorsReady = bothEditorsReady &&
+                    [[NSFileManager defaultManager] fileExistsAtPath:
+                        MicaUITestVoiceFile(voiceTestDirectory, tab.session, @"ready")];
             }
-            if (commandsFinished) {
+            if (bothEditorsReady) {
                 voiceTabsAtPrompt = YES;
                 break;
             }
@@ -478,7 +514,7 @@ static int MicaRunUISelfTest(void) {
         NSString *rawHelperSource = [NSString stringWithFormat:
             @"#!/bin/sh\nprintf '%%s\\n' \"$1\" >> '%@'\n"
              "if [ \"$1\" = stream ]; then\n"
-             "  printf '%%s\\n' '{\"type\":\"result\",\"text\":\"MICA-RAW-TRANSCRIPT\"}'\n"
+             "  printf '%%s\\n' '{\"type\":\"result\",\"text\":\"mica_test_raw_transcript\"}'\n"
              "else\n"
              "  printf '%%s\\n' '{\"type\":\"error\",\"message\":\"cleanup should not run\"}'\n"
              "fi\n", rawCallsPath];
@@ -497,31 +533,88 @@ static int MicaRunUISelfTest(void) {
         voiceDelegate.voiceTargetTab = voiceTargetTab;
         [voiceDelegate selectTabAtIndex:1];
         if (rawHelperReady)
-            [rawVoiceController launchHelperWithArguments:@[@"stream"] inputData:nil keepsInputOpen:NO];
-        for (int attempt = 0; rawHelperReady && rawVoiceController.state != MicaVoiceControllerStateIdle &&
-             rawVoiceController.state != MicaVoiceControllerStateFailed && attempt < 300; attempt++)
-            MicaUITestRunLoopFor(0.01);
-        for (int attempt = 0; rawHelperReady && !MicaUITestFindText(voiceTargetTab.session,
-             @"MICA-RAW-TRANSCRIPT", NULL, NULL) && attempt < 500; attempt++) {
-            mica_session_poll(voiceTargetTab.session, 0);
+            MicaUITestLaunchSpeechHelper(rawVoiceController);
+        for (int attempt = 0; rawHelperReady &&
+             (rawVoiceController.state != MicaVoiceControllerStateIdle ||
+              ![rawVoiceController.transcript isEqualToString:@"mica_test_raw_transcript"]) && attempt < 500; attempt++) {
+            for (MicaTab *tab in voiceDelegate.tabs) mica_session_poll(tab.session, 0);
             MicaUITestRunLoopFor(0.01);
         }
+
+        // Ask each live zsh line editor to write its actual editable buffer to
+        // a private fixture receipt. This works for wrapped text and proves
+        // which PTY received input without submitting that input.
+        NSString *targetBufferPath = MicaUITestVoiceFile(voiceTestDirectory,
+            voiceTargetTab.session, @"buffer");
+        NSString *otherBufferPath = MicaUITestVoiceFile(voiceTestDirectory,
+            ((MicaTab *)voiceDelegate.tabs[1]).session, @"buffer");
+        NSString *targetExecutionPath = MicaUITestVoiceFile(voiceTestDirectory,
+            voiceTargetTab.session, @"executed");
+        if (voiceTabsAtPrompt && voiceTestDirectoryReady) {
+            static const char captureBufferChord[] = { 0x18, 0x02 };
+            mica_session_write(voiceTargetTab.session, captureBufferChord, sizeof(captureBufferChord));
+            mica_session_write(((MicaTab *)voiceDelegate.tabs[1]).session,
+                captureBufferChord, sizeof(captureBufferChord));
+        }
+        for (int attempt = 0; rawHelperReady && voiceTestDirectoryReady && attempt < 300; attempt++) {
+            for (MicaTab *tab in voiceDelegate.tabs) mica_session_poll(tab.session, 0);
+            if ([[NSFileManager defaultManager] fileExistsAtPath:targetBufferPath] &&
+                [[NSFileManager defaultManager] fileExistsAtPath:otherBufferPath]) break;
+            MicaUITestRunLoopFor(0.01);
+        }
+        NSString *targetBuffer = [NSString stringWithContentsOfFile:targetBufferPath
+            encoding:NSUTF8StringEncoding error:nil];
+        NSString *otherBuffer = [NSString stringWithContentsOfFile:otherBufferPath
+            encoding:NSUTF8StringEncoding error:nil];
+        targetBuffer = [targetBuffer stringByTrimmingCharactersInSet:
+            NSCharacterSet.newlineCharacterSet];
+        otherBuffer = [otherBuffer stringByTrimmingCharactersInSet:
+            NSCharacterSet.newlineCharacterSet];
         NSString *rawHelperCalls = [NSString stringWithContentsOfFile:rawCallsPath
             encoding:NSUTF8StringEncoding error:nil];
+        BOOL wasNotSubmittedAutomatically =
+            ![[NSFileManager defaultManager] fileExistsAtPath:targetExecutionPath];
+        BOOL routedToCapturedTab = [targetBuffer isEqualToString:@"mica_test_raw_transcript"] &&
+            otherBuffer.length == 0;
+        BOOL targetTranscriptVisible = NO;
+        if (routedToCapturedTab) {
+            [voiceDelegate selectTabAtIndex:0];
+            for (int attempt = 0; attempt < 100 && !targetTranscriptVisible; attempt++) {
+                mica_session_poll(voiceTargetTab.session, 0);
+                targetTranscriptVisible = MicaUITestFindTextAcrossWrappedRows(
+                    voiceTargetTab.session, @"mica_test_raw_transcript");
+                if (!targetTranscriptVisible) MicaUITestRunLoopFor(0.01);
+            }
+        }
+        BOOL explicitReturnExecutes = NO;
+        if (routedToCapturedTab && wasNotSubmittedAutomatically) {
+            mica_session_key(voiceTargetTab.session, VTERM_KEY_ENTER, VTERM_MOD_NONE);
+            for (int attempt = 0; attempt < 300; attempt++) {
+                mica_session_poll(voiceTargetTab.session, 0);
+                if ([[NSFileManager defaultManager] fileExistsAtPath:targetExecutionPath]) {
+                    explicitReturnExecutes = YES;
+                    break;
+                }
+                MicaUITestRunLoopFor(0.01);
+            }
+        }
         BOOL rawTranscriptInsertedWithoutCleanup = rawHelperReady &&
             rawVoiceController.state == MicaVoiceControllerStateIdle &&
             [rawHelperCalls isEqualToString:@"stream\n"] &&
-            MicaUITestFindText(voiceTargetTab.session, @"MICA-RAW-TRANSCRIPT", NULL, NULL) &&
-            !MicaUITestFindText(((MicaTab *)voiceDelegate.tabs[1]).session,
-                @"MICA-RAW-TRANSCRIPT", NULL, NULL);
+            routedToCapturedTab && wasNotSubmittedAutomatically && targetTranscriptVisible &&
+            explicitReturnExecutes;
         MicaUITestRecord(report, &allPassed, rawTranscriptInsertedWithoutCleanup,
-            [NSString stringWithFormat:@"raw speech result is inserted into the tab targeted when capture began without invoking cleanup or submitting it (calls=%@ state=%ld status=%@ transcript=%@ target-running=%d target-visible=%d other-visible=%d)",
+            [NSString stringWithFormat:@"raw speech result stays in the captured shell buffer until Return (calls=%@ state=%ld status=%@ target-running=%d target-buffer=%@ other-buffer=%@ not-submitted=%d visible=%d return-executes=%d command=%s completions=%llu screen=%@)",
                 rawHelperCalls, (long)rawVoiceController.state, rawVoiceController.statusText,
-                rawVoiceController.transcript, mica_session_is_running(voiceTargetTab.session),
-                MicaUITestFindText(voiceTargetTab.session, @"MICA-RAW-TRANSCRIPT", NULL, NULL),
-                MicaUITestFindText(((MicaTab *)voiceDelegate.tabs[1]).session,
-                    @"MICA-RAW-TRANSCRIPT", NULL, NULL)]);
-        mica_session_write(voiceTargetTab.session, "\x15", 1);
+                mica_session_is_running(voiceTargetTab.session), targetBuffer ?: @"<missing>",
+                otherBuffer ?: @"<missing>", wasNotSubmittedAutomatically,
+                targetTranscriptVisible, explicitReturnExecutes,
+                mica_session_current_command(voiceTargetTab.session),
+                (unsigned long long)mica_session_command_completion_count(voiceTargetTab.session),
+                MicaUITestScreenTail(voiceTargetTab.session)]);
+        if (voiceTestDirectoryPath) {
+            [[NSFileManager defaultManager] removeItemAtPath:voiceTestDirectory error:nil];
+        }
         [voiceDelegate.window makeKeyAndOrderFront:nil];
         [voiceDelegate cancelDictation];
         BOOL cancelKeepsWindowOpen = voiceDelegate.window.isVisible;

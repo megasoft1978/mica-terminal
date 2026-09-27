@@ -294,6 +294,15 @@ static char *create_prefill_startup_dir(void) {
         "autoload -Uz add-zsh-hook\n"
         "add-zsh-hook preexec _mica_command_started\n"
         "add-zsh-hook precmd _mica_command_finished\n"
+        "if [[ -n $MICA_TEST_ZLE_DIR ]]; then\n"
+        "    function mica_test_prompt_ready() { : > \"$MICA_TEST_ZLE_DIR/$$.ready\"; }\n"
+        "    function mica_test_capture_buffer() { print -r -- \"$BUFFER\" > \"$MICA_TEST_ZLE_DIR/$$.buffer\"; }\n"
+        "    function mica_test_raw_transcript() { : > \"$MICA_TEST_ZLE_DIR/$$.executed\"; }\n"
+        "    zle -N mica_test_capture_buffer\n"
+        "    bindkey '^X^B' mica_test_capture_buffer\n"
+        "    autoload -Uz add-zle-hook-widget\n"
+        "    add-zle-hook-widget zle-line-init mica_test_prompt_ready\n"
+        "fi\n"
         "if [[ \"$MICA_TEST_NO_STARTUP\" != 1 ]] && (( ! $+functions[compdef] )); then\n"
         "    export ZDOTDIR=\"$MICA_ORIGINAL_ZDOTDIR\"\n"
         "    autoload -Uz compinit\n"
@@ -659,9 +668,13 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
                 execl("/bin/zsh", "zsh", "-l", "-i", (char *)NULL);
             }
         }
+        const char *test_mode = getenv("MICA_TEST_NO_STARTUP");
+        bool skip_user_startup = test_mode && strcmp(test_mode, "1") == 0;
+        // Some UI tests need Mica's temporary ZDOTDIR wrapper to install a
+        // ZLE probe, while still suppressing every user startup file.
+        bool test_zle_probe = skip_user_startup && getenv("MICA_TEST_ZLE_DIR") != NULL;
         if (command) {
-            const char *test_mode = getenv("MICA_TEST_NO_STARTUP");
-            if (test_mode && strcmp(test_mode, "1") == 0) {
+            if (skip_user_startup && !test_zle_probe) {
                 execl("/bin/zsh", "zsh", "-f", "-i", "-c",
                       "mica_command=$1; mica_label=${mica_command#unset CLAUDECODE && }; mica_label=${mica_label##[[:space:]]#}; mica_label=${mica_label%%[[:space:]]*}; printf '\\033]777;mica;command-started;%s\\033\\\\' \"$mica_label\"; eval \"$mica_command\"; mica_status=$?; printf '\\n[command exited: %d]\\n' \"$mica_status\"; printf '\\033]777;mica;command-finished;%d\\033\\\\' \"$mica_status\"; exec /bin/zsh -f -i",
                       "mica", command, (char *)NULL);
@@ -671,8 +684,7 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
                       "mica", command, (char *)NULL);
             }
         } else {
-            const char *test_mode = getenv("MICA_TEST_NO_STARTUP");
-            if (test_mode && strcmp(test_mode, "1") == 0) execl("/bin/zsh", "zsh", "-f", "-i", (char *)NULL);
+            if (skip_user_startup && !test_zle_probe) execl("/bin/zsh", "zsh", "-f", "-i", (char *)NULL);
             else execl("/bin/zsh", "zsh", "-l", "-i", (char *)NULL);
         }
         dprintf(STDERR_FILENO, "mica: cannot start zsh: %s\r\n", strerror(errno));
