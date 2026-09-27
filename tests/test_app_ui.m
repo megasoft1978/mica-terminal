@@ -612,6 +612,28 @@ static int MicaRunUISelfTest(void) {
                 mica_session_current_command(voiceTargetTab.session),
                 (unsigned long long)mica_session_command_completion_count(voiceTargetTab.session),
                 MicaUITestScreenTail(voiceTargetTab.session)]);
+
+        MicaVoiceController *undeliveredProbe = rawHelperReady
+            ? [[MicaVoiceController alloc] initWithHelperURL:[NSURL fileURLWithPath:
+                [NSString stringWithUTF8String:rawHelperTemplate]]]
+            : nil;
+        undeliveredProbe.delegate = voiceDelegate;
+        voiceDelegate.voiceController = undeliveredProbe;
+        voiceDelegate.voiceTargetTab = nil;
+        if (rawHelperReady) MicaUITestLaunchSpeechHelper(undeliveredProbe);
+        for (int attempt = 0; rawHelperReady &&
+             undeliveredProbe.state != MicaVoiceControllerStateFailed && attempt < 300; attempt++)
+            MicaUITestRunLoopFor(0.01);
+        BOOL rejectedDeliveryPreservesTranscript = rawHelperReady &&
+            undeliveredProbe.state == MicaVoiceControllerStateFailed &&
+            [undeliveredProbe.transcript isEqualToString:@"mica_test_raw_transcript"] &&
+            [undeliveredProbe.statusText containsString:@"Copy it"];
+        MicaUITestRecord(report, &allPassed, rejectedDeliveryPreservesTranscript,
+            [NSString stringWithFormat:@"a transcript rejected by its captured shell stays visible with recovery guidance (state=%ld transcript=%@ status=%@)",
+                (long)undeliveredProbe.state, undeliveredProbe.transcript, undeliveredProbe.statusText]);
+        [undeliveredProbe cancel];
+        voiceDelegate.voiceController = rawVoiceController;
+
         if (voiceTestDirectoryPath) {
             [[NSFileManager defaultManager] removeItemAtPath:voiceTestDirectory error:nil];
         }

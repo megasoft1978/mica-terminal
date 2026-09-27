@@ -394,9 +394,15 @@
     self.transcript = finalText;
     self.confirmedTranscript = finalText;
     self.elapsedSeconds = 0;
-    [self.delegate voiceController:self didFinishTranscript:finalText];
     self.recordingStartedAt = nil;
     self.isPushToTalk = NO;
+    if (![self.delegate voiceController:self didFinishTranscript:finalText]) {
+        MicaDiagnosticsLog(@"dictation", @"transcript recognized but could not be inserted into its captured shell");
+        [self setState:MicaVoiceControllerStateFailed
+                status:@"Transcript was not inserted. Copy it from this message and paste it manually."
+              progress:-1];
+        return;
+    }
     [self setState:MicaVoiceControllerStateIdle status:@"" progress:-1];
 }
 

@@ -65,7 +65,7 @@ Speech recognition runs locally with FluidAudio's multilingual Parakeet Ultra mo
 
 Choose **Help → Open Diagnostic Logs** to open `~/Library/Logs/Mica/`. The plain-text launch log records the app revision, tab folders, shell start and exit results, dictation stages, helper exit status, and peak helper memory. It does not record shell command text, transcripts, or audio. Logs are capped at 1 MiB. macOS crash reports are in `~/Library/Logs/DiagnosticReports/`.
 
-Mica caps scrollback at 2 MiB per session and allocates it as needed. The speech model is not loaded until dictation starts. Use `make memory` to sample the memory used by a running Mica instance and its child processes; results depend on the number of tabs, window size, scrollback, and running commands.
+Mica caps scrollback at 2 MiB per session and allocates it as needed. The speech model is not loaded until dictation starts. Use `make memory` to sample the memory used by a running Mica instance and its child processes; results depend on the number of tabs, window size, scrollback, and running commands. [`docs/MEMORY-BASELINE.md`](docs/MEMORY-BASELINE.md) records measured snapshots and explains how to compare like-for-like workloads.
 
 ## Build and checks
 
@@ -79,4 +79,4 @@ make memory     # sample memory use for running Mica processes
 
 Tests use local fixtures and do not send prompts to Claude Code or Codex. The macOS CI workflow runs `make validate` and uploads the UI smoke report and screenshot.
 
-Version `0.0.1`, revision `21`.
+Version `0.0.1`, revision `22`.
