@@ -138,13 +138,19 @@
     self.recordingStartedAt = nil;
     self.elapsedSeconds = 0;
     [self setState:MicaVoiceControllerStatePreparing
-            status:@"Requesting microphone access…"
+            status:@"Checking microphone permission…"
           progress:-1];
 
     AVAuthorizationStatus permission = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
+    NSString *permissionName = permission == AVAuthorizationStatusAuthorized ? @"authorized" :
+        (permission == AVAuthorizationStatusNotDetermined ? @"not-determined" :
+         (permission == AVAuthorizationStatusDenied ? @"denied" : @"restricted"));
+    MicaDiagnosticsLog(@"dictation", [NSString stringWithFormat:@"microphone permission=%@ bundle=%@",
+        permissionName, NSBundle.mainBundle.bundleIdentifier ?: @"unknown"]);
     if (permission == AVAuthorizationStatusAuthorized) {
         [self launchASRHelper];
     } else if (permission == AVAuthorizationStatusNotDetermined) {
+        [self setState:MicaVoiceControllerStatePreparing status:@"Requesting microphone access…" progress:-1];
         __weak typeof(self) weakSelf = self;
         [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio completionHandler:^(BOOL granted) {
             dispatch_async(dispatch_get_main_queue(), ^{

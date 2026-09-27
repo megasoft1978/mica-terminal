@@ -721,6 +721,32 @@ static int MicaRunUISelfTest(void) {
                 pixelResizeDeferred, (unsigned long)pixelUpdatesAfterEnd,
                 (long)mica_session_rows(resizeTab.session), (long)originalRows,
                 (long)mica_session_cols(resizeTab.session), (long)originalCols]);
+        NSUInteger updatesBeforeAXResize = MicaUITestCountText(resizeTab.session,
+            @"MICA-RESIZE-PIXELS-UPDATED");
+        NSRect programmaticFrame = resizeView.frame;
+        programmaticFrame.size.width += MAX(1, ceil(cellWidth));
+        resizeView.frame = programmaticFrame;
+        [resizeView scheduleGridResize];
+        MicaUITestRunLoopFor(0.05);
+        programmaticFrame.size.width += MAX(1, ceil(cellWidth));
+        resizeView.frame = programmaticFrame;
+        [resizeView scheduleGridResize];
+        MicaUITestRunLoopFor(0.05);
+        BOOL programmaticResizeDeferred = MicaUITestCountText(resizeTab.session,
+            @"MICA-RESIZE-PIXELS-UPDATED") == updatesBeforeAXResize;
+        MicaUITestRunLoopFor(0.2);
+        for (int attempt = 0; attempt < 100 &&
+             MicaUITestCountText(resizeTab.session, @"MICA-RESIZE-PIXELS-UPDATED") == updatesBeforeAXResize; attempt++) {
+            mica_session_poll(resizeTab.session, 10);
+        }
+        NSUInteger updatesAfterAXResize = MicaUITestCountText(resizeTab.session,
+            @"MICA-RESIZE-PIXELS-UPDATED");
+        BOOL programmaticResizeCoalesced = programmaticResizeDeferred &&
+            updatesAfterAXResize == updatesBeforeAXResize + 1;
+        MicaUITestRecord(report, &allPassed, programmaticResizeCoalesced,
+            [NSString stringWithFormat:@"programmatic window resizes defer and coalesce terminal PTY size changes (deferred=%d updates=%lu→%lu)",
+                programmaticResizeDeferred, (unsigned long)updatesBeforeAXResize,
+                (unsigned long)updatesAfterAXResize]);
         mica_session_write(resizeTab.session, "\x03", 1);
         BOOL resizeSessionExited = MicaUITestExitTabs(resizeDelegate.tabs);
         MicaUITestRecord(report, &allPassed, resizeSessionExited,

@@ -197,6 +197,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @interface MicaTerminalView : NSView
 @property(nonatomic, weak) MicaAppDelegate *owner;
 @property(nonatomic, strong) NSFont *terminalFont;
+@property(nonatomic, strong) NSTimer *gridResizeTimer;
 #if defined(MICA_APP_NO_MAIN)
 @property(nonatomic, copy) NSString *testClipboardText;
 @property(nonatomic, strong) NSData *testClipboardImage;
@@ -212,6 +213,8 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (NSRect)dirtyRectForRows:(MicaDirtyRows)rows;
 - (NSRect)terminalRect;
 - (void)updateGridSize;
+- (void)scheduleGridResize;
+- (void)commitGridResize:(NSTimer *)timer;
 - (NSString *)view:(NSView *)view stringForToolTip:(NSToolTipTag)tag point:(NSPoint)point userData:(void *)data;
 - (BOOL)insertFileURLs:(NSArray<NSURL *> *)fileURLs;
 - (BOOL)hasTextSelection;
@@ -418,6 +421,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 
 - (void)dealloc {
     [_leftOptionTimer invalidate];
+    [_gridResizeTimer invalidate];
 }
 
 - (void)leftOptionPressedAlone:(NSTimer *)timer {
@@ -555,6 +559,20 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         _sizedSession = tab.session;
         mica_session_resize_pixels(tab.session, (int)rows, (int)cols, pixelWidth, pixelHeight);
     }
+}
+
+- (void)scheduleGridResize {
+    [self.gridResizeTimer invalidate];
+    self.gridResizeTimer = [NSTimer scheduledTimerWithTimeInterval:0.15
+        target:self selector:@selector(commitGridResize:) userInfo:nil repeats:NO];
+}
+
+- (void)commitGridResize:(NSTimer *)timer {
+    if (timer != self.gridResizeTimer) return;
+    self.gridResizeTimer = nil;
+    if (self.inLiveResize) return;
+    [self updateGridSize];
+    [self setNeedsDisplay:YES];
 }
 
 - (NSRect)cellRectAtRow:(NSInteger)row col:(NSInteger)col {
@@ -1025,7 +1043,6 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 
 - (void)drawRect:(NSRect)dirtyRect {
     [self updateTabToolTip];
-    [self updateGridSize];
     [MicaBackgroundColor() setFill];
     NSRectFill(NSIntersectionRect(dirtyRect, self.bounds));
     MicaTab *tab = self.owner.activeTab;
@@ -1298,8 +1315,8 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         if ([keyString isEqualToString:@"v"]) { [self paste:nil]; return; }
         if ((flags & NSEventModifierFlagShift) && event.keyCode == 30) { [self.owner selectRelativeTab:1]; return; }
         if ((flags & NSEventModifierFlagShift) && event.keyCode == 33) { [self.owner selectRelativeTab:-1]; return; }
-        if ([keyString isEqualToString:@"+"] || [keyString isEqualToString:@"="]) { self.terminalFont = MicaTerminalFont(MIN(28, self.terminalFont.pointSize + 1)); [self setNeedsDisplay:YES]; return; }
-        if ([keyString isEqualToString:@"-"]) { self.terminalFont = MicaTerminalFont(MAX(8, self.terminalFont.pointSize - 1)); [self setNeedsDisplay:YES]; return; }
+        if ([keyString isEqualToString:@"+"] || [keyString isEqualToString:@"="]) { self.terminalFont = MicaTerminalFont(MIN(28, self.terminalFont.pointSize + 1)); [self.owner resizeActiveSession]; return; }
+        if ([keyString isEqualToString:@"-"]) { self.terminalFont = MicaTerminalFont(MAX(8, self.terminalFont.pointSize - 1)); [self.owner resizeActiveSession]; return; }
         return;
     }
     if (!tab.session) return;
@@ -1555,7 +1572,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 }
 
 - (void)viewDidEndLiveResize { [super viewDidEndLiveResize]; [self.owner resizeActiveSession]; }
-- (void)viewDidChangeBackingProperties { [super viewDidChangeBackingProperties]; [self.owner resizeActiveSession]; }
+- (void)viewDidChangeBackingProperties { [super viewDidChangeBackingProperties]; [self scheduleGridResize]; }
 @end
 
 static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, NSDictionary *bundleInfo,
@@ -1826,7 +1843,12 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     [self.window makeFirstResponder:self.terminalView];
 }
 
-- (void)resizeActiveSession { [self.terminalView setNeedsDisplay:YES]; }
+- (void)resizeActiveSession {
+    [self.terminalView.gridResizeTimer invalidate];
+    self.terminalView.gridResizeTimer = nil;
+    [self.terminalView updateGridSize];
+    [self.terminalView setNeedsDisplay:YES];
+}
 - (void)newShell:(id)sender { (void)sender; [self newTabWithName:@"Shell" command:nil]; }
 - (void)closeTab:(id)sender { (void)sender; [self closeActiveTab]; }
 - (void)nextTab:(id)sender { (void)sender; [self selectRelativeTab:1]; }
@@ -2128,7 +2150,10 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     tab.needsAttention = NO;
     [self.terminalView setNeedsDisplay:YES];
 }
-- (void)windowDidResize:(NSNotification *)notification { (void)notification; [self resizeActiveSession]; }
+- (void)windowDidResize:(NSNotification *)notification {
+    (void)notification;
+    [self.terminalView scheduleGridResize];
+}
 @end
 
 #ifndef MICA_APP_NO_MAIN

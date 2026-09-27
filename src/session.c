@@ -20,6 +20,7 @@
 
 #define MICA_HISTORY_INITIAL 32
 #define MICA_READ_BUFFER 16384
+#define MICA_POLL_READ_BUDGET (64 * 1024)
 #define MICA_TITLE_MAX_BYTES 512
 #define MICA_FOLD_LIMIT 128
 
@@ -792,11 +793,14 @@ int mica_session_poll(MicaSession *session, int timeout_ms) {
         if (rc > 0 && (pfd.revents & POLLOUT)) flush_pending_input(session);
         if (rc > 0 && (pfd.revents & (POLLIN | POLLHUP | POLLERR))) {
             char buffer[MICA_READ_BUFFER];
-            for (;;) {
+            size_t bytes_read = 0;
+            bool received_output = false;
+            while (bytes_read < MICA_POLL_READ_BUDGET) {
                 ssize_t n = read(session->master_fd, buffer, sizeof(buffer));
                 if (n > 0) {
                     vterm_input_write(session->vt, buffer, (size_t)n);
-                    vterm_screen_flush_damage(session->screen);
+                    bytes_read += (size_t)n;
+                    received_output = true;
                     continue;
                 }
                 if (n < 0 && errno == EINTR) continue;
@@ -808,6 +812,7 @@ int mica_session_poll(MicaSession *session, int timeout_ms) {
                 }
                 break;
             }
+            if (received_output) vterm_screen_flush_damage(session->screen);
         }
     }
     if (session->running && session->child_pid > 0) {
