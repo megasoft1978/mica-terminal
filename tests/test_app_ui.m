@@ -420,7 +420,8 @@ static int MicaRunUISelfTest(void) {
         BOOL optionChordIgnored = pushToTalkProbe.pushToTalkStarts == 0 &&
             pushToTalkProbe.pushToTalkFinishes == 0;
         MicaUITestSendFlags(voiceDelegate, NSEventModifierFlagOption, 58);
-        MicaUITestRunLoopFor(0.22);
+        for (int attempt = 0; pushToTalkProbe.pushToTalkStarts < 1 && attempt < 200; attempt++)
+            MicaUITestRunLoopFor(0.01);
         BOOL heldOptionStartedOnce = pushToTalkProbe.pushToTalkStarts == 1 &&
             voiceDelegate.voiceTargetTab == voiceTargetTab;
         MicaUITestSendFlags(voiceDelegate, 0, 58);
@@ -433,7 +434,8 @@ static int MicaRunUISelfTest(void) {
                 (unsigned long)pushToTalkProbe.pushToTalkFinishes]);
 
         MicaUITestSendFlags(voiceDelegate, NSEventModifierFlagOption, 58);
-        MicaUITestRunLoopFor(0.22);
+        for (int attempt = 0; pushToTalkProbe.pushToTalkStarts < 2 && attempt < 200; attempt++)
+            MicaUITestRunLoopFor(0.01);
         [voiceDelegate.terminalView cancelLeftOptionTracking];
         BOOL focusLossFinishesHold = pushToTalkProbe.pushToTalkStarts == 2 &&
             pushToTalkProbe.pushToTalkFinishes == 2;
@@ -485,8 +487,12 @@ static int MicaRunUISelfTest(void) {
             !MicaUITestFindText(((MicaTab *)voiceDelegate.tabs[1]).session,
                 @"MICA-RAW-TRANSCRIPT", NULL, NULL);
         MicaUITestRecord(report, &allPassed, rawTranscriptInsertedWithoutCleanup,
-            [NSString stringWithFormat:@"raw speech result is inserted into the tab targeted when capture began without invoking cleanup or submitting it (calls=%@ status=%@)",
-                rawHelperCalls, rawVoiceController.statusText]);
+            [NSString stringWithFormat:@"raw speech result is inserted into the tab targeted when capture began without invoking cleanup or submitting it (calls=%@ state=%ld status=%@ transcript=%@ target-running=%d target-visible=%d other-visible=%d)",
+                rawHelperCalls, (long)rawVoiceController.state, rawVoiceController.statusText,
+                rawVoiceController.transcript, mica_session_is_running(voiceTargetTab.session),
+                MicaUITestFindText(voiceTargetTab.session, @"MICA-RAW-TRANSCRIPT", NULL, NULL),
+                MicaUITestFindText(((MicaTab *)voiceDelegate.tabs[1]).session,
+                    @"MICA-RAW-TRANSCRIPT", NULL, NULL)]);
         mica_session_write(voiceTargetTab.session, "\x15", 1);
         [voiceDelegate.window makeKeyAndOrderFront:nil];
         [voiceDelegate cancelDictation];
