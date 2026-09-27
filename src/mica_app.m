@@ -1,9 +1,16 @@
 #import <Cocoa/Cocoa.h>
 #import "mica.h"
+#import "mica_diagnostics.h"
+#import "mica_voice_controller.h"
 
-static const CGFloat kHeaderHeight = 40.0;
-static const CGFloat kStatusHeight = 34.0;
+#include <unistd.h>
+
+static const CGFloat kHeaderHeight = 32.0;
+static const CGFloat kStatusHeight = 32.0;
 static const CGFloat kFontSizeDefault = 16.0;
+static const CGFloat kTabTitleFontSize = 10.5;
+static const CGFloat kTabMinimumWidth = 140.0;
+static const CGFloat kTabOverflowWidth = 56.0;
 
 typedef NS_ENUM(NSInteger, MicaUIMode) {
     MicaUIModeNormal = 0,
@@ -12,10 +19,22 @@ typedef NS_ENUM(NSInteger, MicaUIMode) {
 };
 
 static NSColor *MicaColor(uint32_t rgb) {
-    return [NSColor colorWithRed:((rgb >> 16) & 0xff) / 255.0
-                           green:((rgb >> 8) & 0xff) / 255.0
-                            blue:(rgb & 0xff) / 255.0
-                           alpha:1.0];
+    static NSCache<NSNumber *, NSColor *> *colors;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        colors = [NSCache new];
+        colors.countLimit = 512;
+    });
+    rgb &= 0x00ffffff;
+    NSNumber *key = @(rgb);
+    NSColor *cached = [colors objectForKey:key];
+    if (cached) return cached;
+    NSColor *color = [NSColor colorWithRed:((rgb >> 16) & 0xff) / 255.0
+                                    green:((rgb >> 8) & 0xff) / 255.0
+                                     blue:(rgb & 0xff) / 255.0
+                                    alpha:1.0];
+    [colors setObject:color forKey:key];
+    return color;
 }
 
 static NSColor *MicaBackgroundColor(void) {
@@ -37,11 +56,36 @@ static NSFont *MicaTerminalFont(CGFloat size) {
     return font ?: [NSFont monospacedSystemFontOfSize:size weight:NSFontWeightRegular];
 }
 
+static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) {
+    if (!font || traits == 0) return font;
+    static NSCache<NSString *, NSFont *> *fonts;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        fonts = [NSCache new];
+        fonts.countLimit = 32;
+    });
+    NSString *key = [NSString stringWithFormat:@"%@-%.2f-%lu",
+        font.fontName, font.pointSize, (unsigned long)traits];
+    NSFont *cached = [fonts objectForKey:key];
+    if (cached) return cached;
+    NSFont *styled = [[NSFontManager sharedFontManager] convertFont:font toHaveTrait:traits];
+    if (!styled) styled = font;
+    [fonts setObject:styled forKey:key];
+    return styled;
+}
+
 @interface MicaTab : NSObject
 @property(nonatomic, copy) NSString *name;
 @property(nonatomic, copy) NSString *cwd;
 @property(nonatomic, copy) NSString *command;
 @property(nonatomic, copy) NSString *terminalTitle;
+@property(nonatomic, copy) NSString *currentCommand;
+@property(nonatomic, copy) NSString *agentActivity;
+@property(nonatomic, copy) NSString *agentActivityDetail;
+@property(nonatomic, assign) NSTimeInterval agentActivityStartedAt;
+@property(nonatomic, assign) NSTimeInterval commandStartedAt;
+@property(nonatomic, assign) NSInteger commandClockSecond;
+@property(nonatomic, assign) NSTimeInterval cwdLastCheck;
 @property(nonatomic, assign) MicaSession *session;
 @property(nonatomic, assign) uint64_t revision;
 @property(nonatomic, assign) uint64_t attentionCount;
@@ -57,24 +101,142 @@ static NSFont *MicaTerminalFont(CGFloat size) {
 - (void)dealloc { if (_session) mica_session_destroy(_session); }
 @end
 
+static NSString *MicaAgentNameForText(NSString *text) {
+    NSString *identity = text.lowercaseString ?: @"";
+    if ([identity containsString:@"codex"]) return @"Codex";
+    if ([identity containsString:@"claude"] || [identity containsString:@"yowork"])
+        return @"Claude Code";
+    return nil;
+}
+
+static NSString *MicaAgentNameForTab(MicaTab *tab) {
+    if (tab.currentCommand.length) return MicaAgentNameForText(tab.currentCommand);
+    NSString *terminalTitleAgent = MicaAgentNameForText(tab.terminalTitle);
+    if (terminalTitleAgent) return terminalTitleAgent;
+    NSString *configuredCommandAgent = MicaAgentNameForText(tab.command);
+    if (configuredCommandAgent) return configuredCommandAgent;
+    return MicaAgentNameForText(tab.name);
+}
+
+static BOOL CellIsContinuation(MicaCell cell);
+
+static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **detailOut) {
+    if (detailOut) *detailOut = nil;
+    if (!session) return @"Starting";
+    int rows = mica_session_rows(session);
+    int cols = mica_session_cols(session);
+    int firstRow = MAX(0, rows - 12);
+    NSString *activity = nil;
+    NSString *activityLine = nil;
+    NSString *recentAction = nil;
+    for (int row = rows - 1; row >= firstRow; row--) {
+        NSMutableString *line = [NSMutableString string];
+        for (int col = 0; col < cols; col++) {
+            MicaCell cell;
+            if (!mica_session_get_cell(session, row, col, &cell) || CellIsContinuation(cell)) continue;
+            for (NSUInteger i = 0; i < VTERM_MAX_CHARS_PER_CELL && cell.chars[i]; i++) {
+                uint32_t codepoint = cell.chars[i];
+                if (codepoint >= 0x20 && codepoint <= 0x7e) [line appendFormat:@"%c", (char)codepoint];
+                else [line appendString:@" "];
+            }
+        }
+        NSString *trimmed = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        if (!trimmed.length) continue;
+        NSString *upper = trimmed.uppercaseString;
+        NSString *lineActivity = nil;
+        if ([upper containsString:@"TRUST THIS FOLDER"] || [upper containsString:@"NEEDS APPROVAL"] ||
+            [upper containsString:@"APPROVE THIS"] || [upper containsString:@"ALLOW THIS"]) {
+            lineActivity = @"Needs approval";
+        } else if ([upper containsString:@"RESUME A PREVIOUS SESSION"] ||
+                   [upper containsString:@"RESUME SESSION"]) {
+            lineActivity = @"Choosing session";
+        } else if ([upper containsString:@"COMPACTING"] || [upper containsString:@"COMPACTION"]) {
+            lineActivity = @"Compacting";
+        } else if ([upper containsString:@"PLANNING"]) {
+            lineActivity = @"Planning";
+        } else if ([upper containsString:@"SEARCHING"] || [upper containsString:@"SEARCHED FOR"]) {
+            lineActivity = @"Searching";
+        } else if ([upper containsString:@"READING"] || [upper hasPrefix:@"READ "]) {
+            lineActivity = @"Reading";
+        } else if ([upper containsString:@"EDITING"] || [upper containsString:@"WRITING"] ||
+                   [upper containsString:@"IMPLEMENTING"] || [upper hasPrefix:@"EDITED "] ||
+                   [upper hasPrefix:@"WROTE "]) {
+            lineActivity = @"Editing";
+        } else if ([upper containsString:@"WORKING"] || [upper containsString:@"ESC TO INTERRUPT"]) {
+            lineActivity = @"Working";
+        } else if ([upper containsString:@"THINKING"]) {
+            lineActivity = @"Thinking";
+        } else if ([upper containsString:@"RUNNING"] || [upper hasPrefix:@"RAN "]) {
+            lineActivity = @"Running";
+        } else if ([upper containsString:@"EXPLORING"] || [upper containsString:@"EXPLORED"]) {
+            lineActivity = @"Exploring";
+        } else if ([upper containsString:@"TESTING"]) {
+            lineActivity = @"Testing";
+        } else if ([upper containsString:@"ANALYZING"] || [upper containsString:@"INVESTIGATING"]) {
+            lineActivity = @"Analyzing";
+        } else if ([upper containsString:@"ASK CODEX TO DO ANYTHING"] ||
+                   [upper containsString:@"TRY \""]) {
+            lineActivity = @"Ready";
+        }
+        if (!recentAction && ([upper hasPrefix:@"RAN "] || [upper hasPrefix:@"READ "] ||
+            [upper hasPrefix:@"SEARCHED "] || [upper hasPrefix:@"EXPLORED"] ||
+            [upper hasPrefix:@"EDITED "] || [upper hasPrefix:@"WROTE "] ||
+            [upper hasPrefix:@"UPDATED "] || [upper hasPrefix:@"TESTED "])) {
+            recentAction = trimmed;
+        }
+        if (lineActivity && (!activity || [activity isEqualToString:@"Ready"])) {
+            activity = lineActivity;
+            activityLine = trimmed;
+        }
+    }
+    if (detailOut) *detailOut = recentAction ?: activityLine;
+    return activity ?: @"Running";
+}
+
 @class MicaAppDelegate;
 @interface MicaTerminalView : NSView
 @property(nonatomic, weak) MicaAppDelegate *owner;
 @property(nonatomic, strong) NSFont *terminalFont;
+#if defined(MICA_APP_NO_MAIN)
+@property(nonatomic, copy) NSString *testClipboardText;
+@property(nonatomic, strong) NSData *testClipboardImage;
+@property(nonatomic, copy) NSArray<NSURL *> *testDraggedFileURLs;
+#endif
+- (NSRect)tabRectAtIndex:(NSUInteger)index;
+- (NSRange)visibleTabRange;
+- (BOOL)hasTabOverflow;
+- (NSRect)tabOverflowRect;
+- (NSMenu *)tabOverflowMenu;
+- (void)selectOverflowTab:(id)sender;
+- (NSInteger)tabIndexAtPoint:(NSPoint)point;
+- (NSRect)dirtyRectForRows:(MicaDirtyRows)rows;
+- (NSRect)terminalRect;
+- (void)updateGridSize;
+- (NSString *)view:(NSView *)view stringForToolTip:(NSToolTipTag)tag point:(NSPoint)point userData:(void *)data;
+- (BOOL)insertFileURLs:(NSArray<NSURL *> *)fileURLs;
+- (BOOL)hasTextSelection;
 - (void)copySelection:(id)sender;
 - (void)clearSelection;
+- (void)foldSelectedLines:(id)sender;
 - (void)paste:(id)sender;
 - (void)copy:(id)sender;
+- (NSRect)cellRectAtRow:(NSInteger)row col:(NSInteger)col;
+- (NSColor *)colorForVTermColor:(VTermColor)color isForeground:(BOOL)isForeground;
+- (NSRect)voiceOverlayRect;
+- (NSRect)voiceOverlayActionRect;
+- (void)drawVoiceOverlay;
+- (void)cancelLeftOptionTracking;
 @end
 
-@interface MicaAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
+@interface MicaAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, MicaVoiceControllerDelegate>
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, strong) MicaTerminalView *terminalView;
 @property(nonatomic, strong) NSMutableArray<MicaTab *> *tabs;
 @property(nonatomic, assign) NSInteger activeIndex;
 @property(nonatomic, copy) NSString *projectName;
-@property(nonatomic, copy) NSDictionary<NSString *, NSString *> *agentCommands;
 @property(nonatomic, strong) NSTimer *pollTimer;
+@property(nonatomic, strong) MicaVoiceController *voiceController;
+@property(nonatomic, strong) MicaTab *voiceTargetTab;
 @property(nonatomic, assign) NSInteger attentionRequest;
 - (MicaTab *)activeTab;
 - (NSString *)displayNameForTab:(MicaTab *)tab;
@@ -84,17 +246,19 @@ static NSFont *MicaTerminalFont(CGFloat size) {
 - (void)closeActiveTab;
 - (void)selectRelativeTab:(NSInteger)delta;
 - (void)selectTabAtIndex:(NSInteger)index;
+- (void)toggleTabPicker;
+- (void)toggleScrollback;
 - (void)resizeActiveSession;
 - (void)installMenus;
 - (void)updateWindowTitle;
 - (void)pollSessions:(NSTimer *)timer;
-- (void)launchAgentCommand:(NSString *)key tabName:(NSString *)name;
-- (void)newClaude:(id)sender;
-- (void)newCodex:(id)sender;
-- (void)resumeClaude:(id)sender;
-- (void)resumeCodex:(id)sender;
 - (void)loadLaunchConfiguration;
 - (void)loadLaunchConfigurationFromArguments:(NSArray<NSString *> *)arguments bundleInfo:(NSDictionary *)bundleInfo;
+- (void)startPushToTalk;
+- (void)finishPushToTalk;
+- (void)beginDictationForActiveTab;
+- (void)cancelDictation;
+- (void)openDiagnosticLogs:(id)sender;
 @property(nonatomic, assign) MicaUIMode uiMode;
 @end
 
@@ -137,8 +301,94 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
            (codepoint >= 0xfe20 && codepoint <= 0xfe2f);
 }
 
+static BOOL MicaStringChanged(NSString *current, NSString *previous) {
+    return current != previous && ![current isEqualToString:previous];
+}
+
+static CGFloat MicaCenteredTextBaseline(NSFont *font, CGFloat height) {
+    return floor((height - (font.ascender - font.descender)) / 2.0 - font.descender);
+}
+
+static NSString *MicaTruncatedText(NSString *text, CGFloat width, NSDictionary *attributes) {
+    if (!text.length || width <= 0) return @"";
+    if ([text sizeWithAttributes:attributes].width <= width) return text;
+    NSString *ellipsis = @"…";
+    if ([ellipsis sizeWithAttributes:attributes].width > width) return @"";
+    NSMutableArray<NSNumber *> *clusterEnds = [NSMutableArray array];
+    [text enumerateSubstringsInRange:NSMakeRange(0, text.length)
+                             options:NSStringEnumerationByComposedCharacterSequences
+                          usingBlock:^(__unused NSString *substring, NSRange substringRange,
+                                       __unused NSRange enclosingRange, __unused BOOL *stop) {
+        [clusterEnds addObject:@(NSMaxRange(substringRange))];
+    }];
+    NSUInteger low = 0;
+    NSUInteger high = clusterEnds.count;
+    while (low < high) {
+        NSUInteger middle = low + (high - low + 1) / 2;
+        NSUInteger end = clusterEnds[middle - 1].unsignedIntegerValue;
+        NSString *candidate = [[text substringToIndex:end] stringByAppendingString:ellipsis];
+        if ([candidate sizeWithAttributes:attributes].width <= width) low = middle;
+        else high = middle - 1;
+    }
+    NSUInteger end = low ? clusterEnds[low - 1].unsignedIntegerValue : 0;
+    return [[text substringToIndex:end] stringByAppendingString:ellipsis];
+}
+
+static NSString *MicaUsableWorkingDirectory(NSString *requestedPath) {
+    NSString *candidate = requestedPath.length ? requestedPath.stringByStandardizingPath : NSHomeDirectory();
+    NSFileManager *fileManager = NSFileManager.defaultManager;
+    NSString *original = candidate;
+    while (candidate.length > 1) {
+        BOOL isDirectory = NO;
+        if ([fileManager fileExistsAtPath:candidate isDirectory:&isDirectory] && isDirectory &&
+            [fileManager isReadableFileAtPath:candidate] && [fileManager isExecutableFileAtPath:candidate]) {
+            if (![candidate isEqualToString:original])
+                MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:
+                    @"requested folder is missing or inaccessible; using nearest readable parent requested=%@ resolved=%@",
+                    original, candidate]);
+            return candidate;
+        }
+        NSString *parent = candidate.stringByDeletingLastPathComponent;
+        if ([parent isEqualToString:candidate]) break;
+        candidate = parent;
+    }
+    NSString *home = NSHomeDirectory();
+    MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:
+        @"requested folder and parents are inaccessible; using home requested=%@ resolved=%@", original, home]);
+    return home;
+}
+
+static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *attributes) {
+    if (!path.length || width <= 0) return @"";
+    if ([path sizeWithAttributes:attributes].width <= width) return path;
+
+    NSArray<NSString *> *components = [path componentsSeparatedByString:@"/"];
+    NSMutableArray<NSString *> *suffix = [NSMutableArray array];
+    for (NSInteger index = (NSInteger)components.count - 1; index >= 0; index--) {
+        NSString *component = components[(NSUInteger)index];
+        if (!component.length) continue;
+        [suffix insertObject:component atIndex:0];
+        NSString *candidate = [NSString stringWithFormat:@"…/%@", [suffix componentsJoinedByString:@"/"]];
+        if ([candidate sizeWithAttributes:attributes].width > width) {
+            [suffix removeObjectAtIndex:0];
+            break;
+        }
+    }
+    if (suffix.count) return [NSString stringWithFormat:@"…/%@", [suffix componentsJoinedByString:@"/"]];
+
+    NSMutableString *tail = [path mutableCopy];
+    while (tail.length) {
+        NSRange first = [tail rangeOfComposedCharacterSequenceAtIndex:0];
+        [tail deleteCharactersInRange:first];
+        NSString *candidate = [@"…" stringByAppendingString:tail];
+        if ([candidate sizeWithAttributes:attributes].width <= width) return candidate;
+    }
+    return @"…";
+}
+
 @implementation MicaTerminalView {
     BOOL _selecting;
+    BOOL _selectionPending;
     NSPoint _selectionStart;
     NSPoint _selectionEnd;
     CGFloat _charWidth;
@@ -152,10 +402,89 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
     BOOL _mousePressed;
     NSInteger _mouseRow;
     NSInteger _mouseCol;
+    NSToolTipTag _tabToolTipTag;
+    NSRect _tabToolTipRect;
+    BOOL _hasTabToolTip;
+    NSTimer *_leftOptionTimer;
+    BOOL _leftOptionIsDown;
+    BOOL _leftOptionUsedWithAnotherKey;
+    BOOL _leftOptionStartedDictation;
+}
+
+- (instancetype)initWithFrame:(NSRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) [self registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
+    return self;
 }
 
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)isFlipped { return NO; }
+
+- (void)resetCursorRects {
+    [super resetCursorRects];
+    NSRect terminal = [self terminalRect];
+    if (!NSIsEmptyRect(terminal)) [self addCursorRect:terminal cursor:NSCursor.IBeamCursor];
+    NSRect action = [self voiceOverlayActionRect];
+    if (!NSIsEmptyRect(action)) [self addCursorRect:action cursor:NSCursor.pointingHandCursor];
+    NSRect overflow = [self tabOverflowRect];
+    if ([self hasTabOverflow] && !NSIsEmptyRect(overflow))
+        [self addCursorRect:overflow cursor:NSCursor.pointingHandCursor];
+}
+
+- (void)layout {
+    [super layout];
+}
+
+- (void)dealloc {
+    [_leftOptionTimer invalidate];
+}
+
+- (void)leftOptionPressedAlone:(NSTimer *)timer {
+    if (_leftOptionTimer != timer) return;
+    _leftOptionTimer = nil;
+    if (_leftOptionIsDown && !_leftOptionUsedWithAnotherKey) {
+        _leftOptionStartedDictation = YES;
+        [self.owner startPushToTalk];
+    }
+}
+
+- (void)cancelLeftOptionTracking {
+    BOOL shouldFinish = _leftOptionStartedDictation;
+    [_leftOptionTimer invalidate];
+    _leftOptionTimer = nil;
+    _leftOptionIsDown = NO;
+    _leftOptionUsedWithAnotherKey = NO;
+    _leftOptionStartedDictation = NO;
+    if (shouldFinish) [self.owner finishPushToTalk];
+}
+
+- (void)flagsChanged:(NSEvent *)event {
+    [super flagsChanged:event];
+    if (event.keyCode != 58) return; // Left Option; leave right Option as a normal shell modifier.
+    NSEventModifierFlags flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+    BOOL isDown = (flags & NSEventModifierFlagOption) != 0;
+    if (isDown) {
+        if (_leftOptionIsDown) return;
+        _leftOptionIsDown = YES;
+        _leftOptionUsedWithAnotherKey =
+            (flags & (NSEventModifierFlagCommand | NSEventModifierFlagControl |
+                      NSEventModifierFlagShift | NSEventModifierFlagFunction)) != 0;
+        [_leftOptionTimer invalidate];
+        _leftOptionTimer = nil;
+        if (!_leftOptionUsedWithAnotherKey) {
+            _leftOptionTimer = [NSTimer scheduledTimerWithTimeInterval:0.18
+                target:self selector:@selector(leftOptionPressedAlone:) userInfo:nil repeats:NO];
+        }
+    } else {
+        BOOL shouldFinish = _leftOptionIsDown && _leftOptionStartedDictation;
+        [_leftOptionTimer invalidate];
+        _leftOptionTimer = nil;
+        _leftOptionIsDown = NO;
+        _leftOptionUsedWithAnotherKey = NO;
+        _leftOptionStartedDictation = NO;
+        if (shouldFinish) [self.owner finishPushToTalk];
+    }
+}
 
 - (NSColor *)colorForVTermColor:(VTermColor)color isForeground:(BOOL)isForeground {
     if (isForeground && VTERM_COLOR_IS_DEFAULT_FG(&color)) return MicaForegroundColor();
@@ -163,6 +492,26 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
     if (VTERM_COLOR_IS_RGB(&color))
         return MicaColor(((uint32_t)color.rgb.red << 16) | ((uint32_t)color.rgb.green << 8) | color.rgb.blue);
     return isForeground ? MicaForegroundColor() : MicaBackgroundColor();
+}
+
+- (NSFont *)fontForCell:(MicaCell)cell {
+    NSFontTraitMask traits = (cell.attrs.bold ? NSBoldFontMask : 0) |
+        (cell.attrs.italic ? NSItalicFontMask : 0);
+    return MicaTerminalFontWithTraits(self.terminalFont, traits);
+}
+
+- (void)drawTextRun:(NSString *)text row:(NSInteger)row startCol:(NSInteger)col
+               font:(NSFont *)font foreground:(NSColor *)foreground underline:(BOOL)underline {
+    if (!text.length) return;
+    NSMutableDictionary *attributes = [@{
+        NSFontAttributeName: font,
+        NSForegroundColorAttributeName: foreground,
+        NSLigatureAttributeName: @0
+    } mutableCopy];
+    if (underline) attributes[NSUnderlineStyleAttributeName] = @(NSUnderlineStyleSingle);
+    NSRect firstCell = [self cellRectAtRow:row col:col];
+    [text drawAtPoint:NSMakePoint(NSMinX(firstCell), NSMinY(firstCell) + 1)
+       withAttributes:attributes];
 }
 
 - (NSString *)stringForCell:(MicaCell)cell {
@@ -186,21 +535,36 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
                       MAX(0, self.bounds.size.height - kHeaderHeight - kStatusHeight));
 }
 
+- (NSRect)voiceOverlayRect {
+    if (!self.owner.voiceController || self.owner.voiceController.state == MicaVoiceControllerStateIdle)
+        return NSZeroRect;
+    CGFloat width = MIN(680, MAX(0, [self terminalRect].size.width - 32));
+    if (width < 120) return NSZeroRect;
+    return NSMakeRect(16, kStatusHeight + 14, width, 146);
+}
+
+- (NSRect)voiceOverlayActionRect {
+    return NSZeroRect;
+}
+
 - (void)updateGridSize {
     MicaTab *tab = self.owner.activeTab;
     if (!tab.session) return;
     NSDictionary *attrs = @{ NSFontAttributeName: self.terminalFont };
     NSSize cell = [@"M" sizeWithAttributes:attrs];
-    _charWidth = MAX(1.0, ceil(cell.width));
+    // Use the font's real monospaced advance. Rounding every cell up makes a
+    // batched text run drift away from the cell grid across each terminal row.
+    _charWidth = MAX(1.0, cell.width);
     _lineHeight = MAX(1.0, ceil(self.terminalFont.ascender - self.terminalFont.descender + self.terminalFont.leading + 1.0));
     NSRect area = [self terminalRect];
     NSInteger cols = MAX(2, floor(area.size.width / _charWidth));
     NSInteger rows = MAX(2, floor(area.size.height / _lineHeight));
     CGFloat scale = self.window.backingScaleFactor > 0 ? self.window.backingScaleFactor : 1.0;
-    int pixelWidth = (int)lrint(self.bounds.size.width * scale);
+    int pixelWidth = (int)lrint(area.size.width * scale);
     int pixelHeight = (int)lrint(area.size.height * scale);
-    if (cols != _cols || rows != _rows || _sizedSession != tab.session ||
-        pixelWidth != _pixelWidth || pixelHeight != _pixelHeight) {
+    BOOL gridChanged = cols != _cols || rows != _rows || _sizedSession != tab.session;
+    BOOL pixelSizeChanged = pixelWidth != _pixelWidth || pixelHeight != _pixelHeight;
+    if (gridChanged || (pixelSizeChanged && !self.inLiveResize)) {
         _cols = cols;
         _rows = rows;
         _pixelWidth = pixelWidth;
@@ -223,6 +587,193 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
     return [NSString stringWithFormat:@"%lu %@%@", (unsigned long)index, marker, [self.owner displayNameForTab:tab]];
 }
 
+- (NSRect)tabRectAtIndex:(NSUInteger)index {
+    NSUInteger count = self.owner.tabs.count;
+    if (index >= count || count == 0) return NSZeroRect;
+    NSRect header = NSMakeRect(0, NSMaxY(self.bounds) - kHeaderHeight,
+                               self.bounds.size.width, kHeaderHeight);
+    NSRange visible = [self visibleTabRange];
+    if (index < visible.location || index >= NSMaxRange(visible)) return NSZeroRect;
+    CGFloat tabWidth = header.size.width / (CGFloat)count;
+    CGFloat x = index * tabWidth;
+    if ([self hasTabOverflow]) {
+        CGFloat tabsWidth = MAX(0, header.size.width - kTabOverflowWidth);
+        tabWidth = visible.length ? tabsWidth / (CGFloat)visible.length : 0;
+        x = (index - visible.location) * tabWidth;
+    }
+    return NSMakeRect(x, NSMinY(header), tabWidth, header.size.height);
+}
+
+- (NSRange)visibleTabRange {
+    NSUInteger count = self.owner.tabs.count;
+    CGFloat width = self.bounds.size.width;
+    if (count == 0) return NSMakeRange(0, 0);
+    if (width <= 0 || count * kTabMinimumWidth <= width) return NSMakeRange(0, count);
+    NSUInteger capacity = (NSUInteger)floor(MAX(0, width - kTabOverflowWidth) / kTabMinimumWidth);
+    capacity = MIN(count, MAX((NSUInteger)1, capacity));
+    NSUInteger active = self.owner.activeIndex >= 0 ? (NSUInteger)self.owner.activeIndex : 0;
+    active = MIN(active, count - 1);
+    NSUInteger start = active >= capacity ? active - capacity + 1 : 0;
+    if (start + capacity > count) start = count - capacity;
+    return NSMakeRange(start, capacity);
+}
+
+- (BOOL)hasTabOverflow {
+    return [self visibleTabRange].length < self.owner.tabs.count;
+}
+
+- (NSRect)tabOverflowRect {
+    if (![self hasTabOverflow]) return NSZeroRect;
+    CGFloat width = MIN(kTabOverflowWidth, self.bounds.size.width);
+    return NSMakeRect(self.bounds.size.width - width,
+        NSMaxY(self.bounds) - kHeaderHeight, width, kHeaderHeight);
+}
+
+- (NSMenu *)tabOverflowMenu {
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Other Tabs"];
+    NSRange visible = [self visibleTabRange];
+    for (NSUInteger index = 0; index < self.owner.tabs.count; index++) {
+        if (NSLocationInRange(index, visible)) continue;
+        MicaTab *tab = self.owner.tabs[index];
+        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:[self labelForTab:tab active:NO]
+            action:@selector(selectOverflowTab:) keyEquivalent:@""];
+        item.target = self;
+        item.representedObject = @(index);
+        [menu addItem:item];
+    }
+    return menu;
+}
+
+- (void)selectOverflowTab:(id)sender {
+    if (![sender isKindOfClass:NSMenuItem.class]) return;
+    NSNumber *index = [(NSMenuItem *)sender representedObject];
+    if (index) [self.owner selectTabAtIndex:index.integerValue];
+}
+
+- (NSRect)dirtyRectForRows:(MicaDirtyRows)rows {
+    if (_rows <= 0 || _lineHeight <= 0 || rows.start_row >= rows.end_row) return NSZeroRect;
+    NSInteger first = MIN(MAX(rows.start_row, 0), _rows);
+    NSInteger last = MIN(MAX(rows.end_row, 0), _rows);
+    if (first >= last) return NSZeroRect;
+    NSRect terminal = [self terminalRect];
+    CGFloat top = NSMaxY(terminal);
+    CGFloat bottom = top - last * _lineHeight;
+    NSRect damagedRows = NSMakeRect(0, bottom - 1, self.bounds.size.width,
+                                    (last - first) * _lineHeight + 2);
+    return NSIntersectionRect(damagedRows, terminal);
+}
+
+- (NSInteger)tabIndexAtPoint:(NSPoint)point {
+    NSUInteger count = self.owner.tabs.count;
+    CGFloat width = self.bounds.size.width;
+    NSRect header = NSMakeRect(0, NSMaxY(self.bounds) - kHeaderHeight, width, kHeaderHeight);
+    if (count == 0 || width <= 0 || !NSPointInRect(point, header)) return NSNotFound;
+    if (NSPointInRect(point, [self tabOverflowRect])) return NSNotFound;
+    NSRange visible = [self visibleTabRange];
+    CGFloat tabsWidth = [self hasTabOverflow] ? MAX(0, width - kTabOverflowWidth) : width;
+    if (tabsWidth <= 0 || visible.length == 0) return NSNotFound;
+    NSUInteger visibleIndex = MIN((NSUInteger)(point.x / tabsWidth * (CGFloat)visible.length), visible.length - 1);
+    return (NSInteger)(visible.location + visibleIndex);
+}
+
+- (void)updateTabToolTip {
+    NSRect header = NSMakeRect(0, NSMaxY(self.bounds) - kHeaderHeight,
+                               self.bounds.size.width, kHeaderHeight);
+    BOOL shouldHaveToolTip = self.owner.tabs.count > 0 && !NSIsEmptyRect(header);
+    if (_hasTabToolTip && (!shouldHaveToolTip || !NSEqualRects(header, _tabToolTipRect))) {
+        [self removeToolTip:_tabToolTipTag];
+        _hasTabToolTip = NO;
+    }
+    if (shouldHaveToolTip && !_hasTabToolTip) {
+        _tabToolTipTag = [self addToolTipRect:header owner:self userData:NULL];
+        _tabToolTipRect = header;
+        _hasTabToolTip = YES;
+    }
+}
+
+- (NSString *)view:(NSView *)view stringForToolTip:(NSToolTipTag)tag point:(NSPoint)point userData:(void *)data {
+    (void)view;
+    (void)tag;
+    (void)data;
+    if (NSPointInRect(point, [self tabOverflowRect])) {
+        NSUInteger hidden = self.owner.tabs.count - [self visibleTabRange].length;
+        return [NSString stringWithFormat:@"%lu more terminal tab%@", (unsigned long)hidden, hidden == 1 ? @"" : @"s"];
+    }
+    NSInteger index = [self tabIndexAtPoint:point];
+    if (index == NSNotFound || index >= (NSInteger)self.owner.tabs.count) return nil;
+    MicaTab *tab = self.owner.tabs[(NSUInteger)index];
+    NSString *label = [self labelForTab:tab active:index == self.owner.activeIndex];
+    NSString *agent = MicaAgentNameForTab(tab);
+    if (agent && tab.currentCommand.length) {
+        NSString *command = tab.currentCommand.length ? tab.currentCommand : (tab.command ?: agent);
+        NSString *folder = tab.cwd;
+        NSMutableArray<NSString *> *details = [NSMutableArray arrayWithObjects:
+            [NSString stringWithFormat:@"Tab: %@", tab.name ?: @"Terminal"],
+            [NSString stringWithFormat:@"Status: %@", label],
+            [NSString stringWithFormat:@"Command: %@", command], nil];
+        if (tab.agentActivityDetail.length)
+            [details addObject:[NSString stringWithFormat:@"Recent activity: %@", tab.agentActivityDetail]];
+        [details addObject:[NSString stringWithFormat:@"Folder: %@", folder ?: @"/"]];
+        return [details componentsJoinedByString:@"\n"];
+    }
+    return label;
+}
+
+- (BOOL)hasTextSelection { return _selecting; }
+
+- (BOOL)insertFileURLs:(NSArray<NSURL *> *)fileURLs {
+    MicaTab *tab = self.owner.activeTab;
+    if (!tab.session || fileURLs.count == 0) return NO;
+    NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithCapacity:fileURLs.count];
+    NSCharacterSet *safePathCharacters = [NSCharacterSet characterSetWithCharactersInString:
+        @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./-"];
+    for (NSURL *url in fileURLs) {
+        if (![url isFileURL]) continue;
+        NSString *path = url.path;
+        if (!path.length) continue;
+        if ([path rangeOfCharacterFromSet:safePathCharacters.invertedSet].location != NSNotFound) {
+            NSString *quotedPath = [path stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
+            path = [NSString stringWithFormat:@"'%@'", quotedPath];
+        }
+        [paths addObject:path];
+    }
+    if (paths.count == 0) return NO;
+    NSData *paste = [[paths componentsJoinedByString:@" "] dataUsingEncoding:NSUTF8StringEncoding];
+    mica_session_paste(tab.session, paste.bytes, paste.length);
+    [self clearSelection];
+    return YES;
+}
+
+- (NSArray<NSURL *> *)fileURLsFromPasteboard:(NSPasteboard *)pasteboard {
+#if defined(MICA_APP_NO_MAIN)
+    if (self.testDraggedFileURLs) return self.testDraggedFileURLs;
+#endif
+    return [pasteboard readObjectsForClasses:@[NSURL.class]
+                                     options:@{ NSPasteboardURLReadingFileURLsOnlyKey: @YES }] ?: @[];
+}
+
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+    NSPoint point = [self convertPoint:sender.draggingLocation fromView:nil];
+    if (!NSPointInRect(point, [self terminalRect]) ||
+        [self fileURLsFromPasteboard:sender.draggingPasteboard].count == 0)
+        return NSDragOperationNone;
+    return NSDragOperationCopy;
+}
+
+- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)sender {
+    return [self draggingEntered:sender];
+}
+
+- (BOOL)prepareForDragOperation:(id<NSDraggingInfo>)sender {
+    return [self draggingEntered:sender] == NSDragOperationCopy;
+}
+
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
+    NSPoint point = [self convertPoint:sender.draggingLocation fromView:nil];
+    if (!NSPointInRect(point, [self terminalRect])) return NO;
+    return [self insertFileURLs:[self fileURLsFromPasteboard:sender.draggingPasteboard]];
+}
+
 - (void)drawStatusBarForTab:(MicaTab *)tab {
     NSRect status = NSMakeRect(0, 0, self.bounds.size.width, kStatusHeight);
     [NSColor.controlBackgroundColor setFill];
@@ -234,62 +785,207 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
     [separator stroke];
 
     MicaUIMode mode = self.owner.uiMode;
-    BOOL scrolled = mica_session_view_offset(tab.session) > 0;
+    int viewOffset = tab.session ? mica_session_view_offset(tab.session) : 0;
+    BOOL scrolled = viewOffset > 0;
     BOOL scrollView = mode == MicaUIModeScroll || scrolled;
-    NSString *modeName = mode == MicaUIModeTab ? @"TAB" : (scrollView ? @"SCROLL" : @"NORMAL");
+    NSString *modeName = mode == MicaUIModeTab ? @"TAB PICKER" : (scrollView ? @"SCROLLBACK" : nil);
     NSColor *modeColor = scrollView ? NSColor.systemPurpleColor : NSColor.controlAccentColor;
     NSDictionary *modeAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold],
+        NSFontAttributeName: [NSFont systemFontOfSize:10.5 weight:NSFontWeightSemibold],
         NSForegroundColorAttributeName: NSColor.alternateSelectedControlTextColor
     };
-    NSSize modeSize = [modeName sizeWithAttributes:modeAttrs];
-    NSRect badge = NSMakeRect(12, 8, modeSize.width + 18, 19);
-    [modeColor setFill];
-    [[NSBezierPath bezierPathWithRoundedRect:badge xRadius:5 yRadius:5] fill];
-    [modeName drawAtPoint:NSMakePoint(NSMinX(badge) + 9, NSMinY(badge) + 2) withAttributes:modeAttrs];
+    CGFloat contextX = 12;
+    if (modeName) {
+        NSSize modeSize = [modeName sizeWithAttributes:modeAttrs];
+        NSRect badge = NSMakeRect(12, floor((kStatusHeight - 18) / 2), modeSize.width + 18, 18);
+        [modeColor setFill];
+        [[NSBezierPath bezierPathWithRoundedRect:badge xRadius:5 yRadius:5] fill];
+        NSFont *modeFont = modeAttrs[NSFontAttributeName];
+        [modeName drawAtPoint:NSMakePoint(NSMinX(badge) + 9,
+            NSMinY(badge) + MicaCenteredTextBaseline(modeFont, badge.size.height)) withAttributes:modeAttrs];
+        contextX = NSMaxX(badge) + 12;
+    }
 
-    NSString *context = tab.cwd.lastPathComponent.length ? tab.cwd.lastPathComponent : @"/";
-    NSColor *contextColor = NSColor.secondaryLabelColor;
-    if (tab.completedCommand) {
+    NSString *folderName = tab.cwd.length ? tab.cwd : @"/";
+    NSString *context = [NSString stringWithFormat:@"Folder: %@", folderName];
+    NSColor *contextColor = [NSColor.labelColor colorWithAlphaComponent:0.76];
+    if (mode == MicaUIModeTab) {
+        context = @"Choose a tab";
+    } else if (mode == MicaUIModeScroll) {
+        context = @"Use arrows or j/k to scroll";
+    } else if (tab.currentCommand.length) {
+        NSString *agent = MicaAgentNameForTab(tab);
+        if (agent) {
+            NSString *activity = tab.agentActivityDetail.length
+                ? tab.agentActivityDetail : (tab.agentActivity.length ? tab.agentActivity : @"Starting");
+            context = [NSString stringWithFormat:@"%@ · %@", agent, activity];
+        } else {
+            NSTimeInterval elapsed = MAX(0, NSProcessInfo.processInfo.systemUptime - tab.commandStartedAt);
+            NSUInteger seconds = (NSUInteger)elapsed;
+            NSString *commandName = tab.currentCommand.lastPathComponent.length ? tab.currentCommand.lastPathComponent : tab.currentCommand;
+            context = [NSString stringWithFormat:@"Running %@ · %lu:%02lu", commandName,
+                (unsigned long)(seconds / 60), (unsigned long)(seconds % 60)];
+        }
+        contextColor = [NSColor.systemGreenColor blendedColorWithFraction:0.40 ofColor:NSColor.labelColor];
+    } else if (tab.completedCommand) {
         NSString *result = tab.completionStatus == 0 ? @"finished successfully" :
             [NSString stringWithFormat:@"exited with status %d", tab.completionStatus];
         context = [NSString stringWithFormat:@"%@ %@", tab.completionLabel.length ? tab.completionLabel : @"Process", result];
         contextColor = tab.completionStatus == 0 ? NSColor.systemGreenColor : NSColor.systemRedColor;
-    } else if (mica_session_view_offset(tab.session) > 0) {
-        context = [NSString stringWithFormat:@"%@  ·  %d lines back", context, mica_session_view_offset(tab.session)];
+    } else if (viewOffset > 0) {
+        context = [NSString stringWithFormat:@"%d lines back · Esc returns live", viewOffset];
     }
     NSDictionary *contextAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:12],
+        NSFontAttributeName: [NSFont systemFontOfSize:10.5],
         NSForegroundColorAttributeName: contextColor
     };
-    [context drawAtPoint:NSMakePoint(NSMaxX(badge) + 12, 9) withAttributes:contextAttrs];
 
-    NSString *hints = mode == MicaUIModeTab
-        ? @"←/h previous   →/l next   1–9 jump   n new   x close   Esc done"
-        : (mode == MicaUIModeScroll
-            ? @"↑/↓, j/k line   ←/→, h/l page   ^F/^B page   Esc live"
-            : (scrolled
-                ? @"scrollback   Esc live   ^S scroll mode   ⌘Tab switch app"
-                : @"^T tabs   ^S scroll   ⌘T shell   ⌥⌘C Claude   ⌥⌘X Codex   ⌘Tab switch app"));
+    NSArray<NSString *> *hintParts = @[@"⌥ Dictate", @"⌘1–8 Switch tab", @"⌘T New tab"];
     NSDictionary *hintAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:12],
-        NSForegroundColorAttributeName: NSColor.secondaryLabelColor
+        NSFontAttributeName: [NSFont systemFontOfSize:10.5],
+        NSForegroundColorAttributeName: [NSColor.labelColor colorWithAlphaComponent:0.70]
     };
-    NSSize hintSize = [hints sizeWithAttributes:hintAttrs];
-    [hints drawAtPoint:NSMakePoint(MAX(NSMaxX(badge) + 200, self.bounds.size.width - hintSize.width - 14), 9)
-         withAttributes:hintAttrs];
+    NSFont *hintFont = hintAttrs[NSFontAttributeName];
+    CGFloat hintWidth = 0;
+    for (NSString *part in hintParts) hintWidth += [part sizeWithAttributes:hintAttrs].width;
+    hintWidth += (hintParts.count - 1) * 16;
+    CGFloat hintRight = self.bounds.size.width - 12;
+    CGFloat hintX = MAX(contextX + 18, hintRight - hintWidth);
+    CGFloat availableWidth = MAX(0, hintX - contextX - 18);
+    if (!modeName && !tab.currentCommand.length && !tab.completedCommand && viewOffset == 0) {
+        NSString *folderLabel = @"Folder: ";
+        CGFloat labelWidth = [folderLabel sizeWithAttributes:contextAttrs].width;
+        CGFloat pathWidth = MAX(0, availableWidth - labelWidth);
+        context = [folderLabel stringByAppendingString:
+            MicaTruncatedPath(folderName, pathWidth, contextAttrs)];
+    }
+    CGFloat contextWidth = availableWidth;
+    contextWidth = MIN(contextWidth, [context sizeWithAttributes:contextAttrs].width);
+    NSString *shortContext = MicaTruncatedText(context, contextWidth, contextAttrs);
+    [shortContext drawAtPoint:NSMakePoint(contextX,
+        MicaCenteredTextBaseline(contextAttrs[NSFontAttributeName], kStatusHeight)) withAttributes:contextAttrs];
+    [NSColor.separatorColor setStroke];
+    NSBezierPath *contextDivider = [NSBezierPath bezierPath];
+    [contextDivider moveToPoint:NSMakePoint(hintX - 8, 6)];
+    [contextDivider lineToPoint:NSMakePoint(hintX - 8, kStatusHeight - 6)];
+    [contextDivider stroke];
+
+    CGFloat x = hintX;
+    for (NSUInteger index = 0; index < hintParts.count; index++) {
+        NSString *part = hintParts[index];
+        [part drawAtPoint:NSMakePoint(x, MicaCenteredTextBaseline(hintFont, kStatusHeight))
+             withAttributes:hintAttrs];
+        x += [part sizeWithAttributes:hintAttrs].width;
+        if (index + 1 < hintParts.count) {
+            x += 8;
+            NSBezierPath *hintDivider = [NSBezierPath bezierPath];
+            [hintDivider moveToPoint:NSMakePoint(x, 6)];
+            [hintDivider lineToPoint:NSMakePoint(x, kStatusHeight - 6)];
+            [hintDivider stroke];
+            x += 8;
+        }
+    }
+}
+
+- (void)drawVoiceOverlay {
+    NSRect panel = [self voiceOverlayRect];
+    if (NSIsEmptyRect(panel)) return;
+    MicaVoiceController *voice = self.owner.voiceController;
+    MicaVoiceControllerState state = voice.state;
+    NSColor *accent = state == MicaVoiceControllerStateFailed ? NSColor.systemRedColor : NSColor.controlAccentColor;
+    NSBezierPath *panelPath = [NSBezierPath bezierPathWithRoundedRect:panel xRadius:12 yRadius:12];
+    [[NSColor colorWithRed:0.10 green:0.12 blue:0.15 alpha:0.96] setFill];
+    [panelPath fill];
+    [accent setStroke];
+    panelPath.lineWidth = 1.4;
+    [panelPath stroke];
+
+    NSString *status = voice.statusText ?: @"";
+    if (state == MicaVoiceControllerStateListening) {
+        NSUInteger seconds = (NSUInteger)MAX(0, voice.elapsedSeconds);
+        status = [NSString stringWithFormat:@"Listening · %02lu:%02lu",
+                  (unsigned long)(seconds / 60), (unsigned long)(seconds % 60)];
+    }
+    NSDictionary *statusAttrs = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold],
+        NSForegroundColorAttributeName: NSColor.whiteColor
+    };
+    [status drawWithRect:NSMakeRect(NSMinX(panel) + 14, NSMaxY(panel) - 28,
+                                    panel.size.width - 28, 17)
+                 options:NSStringDrawingTruncatesLastVisibleLine
+              attributes:statusAttrs];
+
+    NSString *text = voice.transcript ?: @"";
+    if (text.length > 220) {
+        NSRange tail = [text rangeOfComposedCharacterSequencesForRange:
+            NSMakeRange(text.length - 220, 220)];
+        text = [@"…" stringByAppendingString:[text substringFromIndex:tail.location]];
+    }
+    NSRect transcriptRect = NSMakeRect(NSMinX(panel) + 14, NSMinY(panel) + 24,
+                                       panel.size.width - 28, 82);
+    if (text.length == 0) {
+        switch (state) {
+            case MicaVoiceControllerStateListening:
+                text = @"Listening… your words will appear here as you speak.";
+                break;
+            case MicaVoiceControllerStatePreparing:
+                text = @"Checking the local model and preparing the microphone…";
+                break;
+            case MicaVoiceControllerStateTranscribing:
+                text = @"Finishing speech recognition…";
+                break;
+            case MicaVoiceControllerStateFailed:
+                text = @"Dictation could not finish. Press Escape to dismiss and try again.";
+                break;
+            default:
+                text = @"Preparing local speech recognition…";
+                break;
+        }
+    }
+    NSMutableParagraphStyle *transcriptStyle = [[NSMutableParagraphStyle alloc] init];
+    transcriptStyle.lineBreakMode = NSLineBreakByWordWrapping;
+    NSMutableAttributedString *preview = [[NSMutableAttributedString alloc] initWithString:text attributes:@{
+        NSFontAttributeName: MicaTerminalFont(13),
+        NSForegroundColorAttributeName: [NSColor.whiteColor colorWithAlphaComponent:0.68],
+        NSParagraphStyleAttributeName: transcriptStyle
+    }];
+    NSString *confirmed = voice.confirmedTranscript ?: @"";
+    if (confirmed.length && text.length <= voice.transcript.length && [voice.transcript hasSuffix:text] &&
+        [text hasPrefix:confirmed] && confirmed.length <= preview.length) {
+        [preview addAttribute:NSForegroundColorAttributeName value:NSColor.whiteColor
+                         range:NSMakeRange(0, confirmed.length)];
+    }
+    [preview drawWithRect:transcriptRect options:NSStringDrawingUsesLineFragmentOrigin];
+
+    BOOL showsActivity = state == MicaVoiceControllerStatePreparing ||
+        state == MicaVoiceControllerStateTranscribing;
+    if (voice.hasProgress || showsActivity) {
+        NSRect track = NSMakeRect(NSMinX(panel) + 14, NSMinY(panel) + 10, panel.size.width - 28, 4);
+        [[NSColor.whiteColor colorWithAlphaComponent:0.18] setFill];
+        [[NSBezierPath bezierPathWithRoundedRect:track xRadius:2 yRadius:2] fill];
+        NSRect fill = track;
+        if (voice.hasProgress) {
+            fill.size.width *= voice.progress;
+        } else {
+            CGFloat segmentWidth = MIN(140, track.size.width * 0.2);
+            CGFloat travel = MAX(0, track.size.width - segmentWidth);
+            CGFloat phase = fmod(NSProcessInfo.processInfo.systemUptime / 1.25, 2.0);
+            if (phase > 1.0) phase = 2.0 - phase;
+            fill.origin.x += travel * phase;
+            fill.size.width = segmentWidth;
+        }
+        [accent setFill];
+        [[NSBezierPath bezierPathWithRoundedRect:fill xRadius:2 yRadius:2] fill];
+    }
 }
 
 - (BOOL)handleNavigationModeKey:(NSEvent *)event key:(NSString *)key control:(BOOL)control {
     MicaUIMode mode = self.owner.uiMode;
     MicaTab *tab = self.owner.activeTab;
-    if (!tab.session || mode == MicaUIModeNormal) return NO;
-    BOOL modeToggle = control &&
-        ((mode == MicaUIModeTab && [key isEqualToString:@"t"]) ||
-         (mode == MicaUIModeScroll && ([key isEqualToString:@"s"] || [key isEqualToString:@"c"])));
-    if (event.keyCode == 53 || modeToggle) {
+    if (mode == MicaUIModeNormal || (!tab.session && mode != MicaUIModeTab)) return NO;
+    if (event.keyCode == 53) {
         self.owner.uiMode = MicaUIModeNormal;
-        if (mode == MicaUIModeScroll) mica_session_scroll_to_bottom(tab.session);
+        if (mode == MicaUIModeScroll && tab.session) mica_session_scroll_to_bottom(tab.session);
         [self setNeedsDisplay:YES];
         return YES;
     }
@@ -345,41 +1041,116 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
+    [self updateTabToolTip];
     [self updateGridSize];
     [MicaBackgroundColor() setFill];
-    NSRectFill(self.bounds);
+    NSRectFill(NSIntersectionRect(dirtyRect, self.bounds));
     MicaTab *tab = self.owner.activeTab;
     if (!tab.session) return;
 
     NSRect header = NSMakeRect(0, NSMaxY(self.bounds) - kHeaderHeight, self.bounds.size.width, kHeaderHeight);
-    [NSColor.controlBackgroundColor setFill];
-    NSRectFill(header);
-    [NSColor.separatorColor setStroke];
-    NSBezierPath *headerSeparator = [NSBezierPath bezierPath];
-    [headerSeparator moveToPoint:NSMakePoint(0, NSMinY(header) + 0.5)];
-    [headerSeparator lineToPoint:NSMakePoint(NSMaxX(header), NSMinY(header) + 0.5)];
-    [headerSeparator stroke];
-    CGFloat tabX = 14;
-    NSDictionary *tabAttrs = @{ NSFontAttributeName: [NSFont systemFontOfSize:13 weight:NSFontWeightMedium], NSForegroundColorAttributeName: NSColor.secondaryLabelColor };
-    for (NSUInteger i = 0; i < self.owner.tabs.count; i++) {
-        MicaTab *candidate = self.owner.tabs[i];
-        BOOL active = i == (NSUInteger)self.owner.activeIndex;
-        NSString *label = [self labelForTab:candidate active:active];
-        NSSize labelSize = [label sizeWithAttributes:tabAttrs];
-        NSRect labelRect = NSMakeRect(tabX, NSMinY(header) + 12, labelSize.width + 20, 18);
-        if (active) {
-            NSRect selectedTab = NSMakeRect(tabX - 7, NSMinY(header) + 5, labelRect.size.width + 4, 30);
-            [[NSColor.controlAccentColor colorWithAlphaComponent:0.20] setFill];
-            [[NSBezierPath bezierPathWithRoundedRect:selectedTab xRadius:7 yRadius:7] fill];
-            NSDictionary *activeAttrs = @{ NSFontAttributeName: tabAttrs[NSFontAttributeName], NSForegroundColorAttributeName: NSColor.labelColor };
-            [label drawAtPoint:NSMakePoint(tabX, NSMinY(header) + 12) withAttributes:activeAttrs];
-        } else {
-            [label drawAtPoint:NSMakePoint(tabX, NSMinY(header) + 12) withAttributes:tabAttrs];
+    if (NSIntersectsRect(dirtyRect, header)) {
+        [NSColor.controlBackgroundColor setFill];
+        NSRectFill(header);
+        [NSColor.separatorColor setStroke];
+        NSBezierPath *headerSeparator = [NSBezierPath bezierPath];
+        [headerSeparator moveToPoint:NSMakePoint(0, NSMinY(header) + 0.5)];
+        [headerSeparator lineToPoint:NSMakePoint(NSMaxX(header), NSMinY(header) + 0.5)];
+        [headerSeparator stroke];
+        NSFont *tabFont = [NSFont systemFontOfSize:kTabTitleFontSize weight:NSFontWeightMedium];
+        NSMutableParagraphStyle *tabParagraphStyle = [[NSMutableParagraphStyle alloc] init];
+        tabParagraphStyle.lineBreakMode = NSLineBreakByTruncatingTail;
+        NSRange visibleTabs = [self visibleTabRange];
+        for (NSUInteger i = 0; i < self.owner.tabs.count; i++) {
+            if (NSIsEmptyRect([self tabRectAtIndex:i])) continue;
+            MicaTab *candidate = self.owner.tabs[i];
+            BOOL active = i == (NSUInteger)self.owner.activeIndex;
+            NSString *label = [self labelForTab:candidate active:active];
+            NSRect tabRect = [self tabRectAtIndex:i];
+            NSRect textRect = NSInsetRect(tabRect, 12, 3);
+            if (active) {
+                NSRect selectedTab = NSInsetRect(tabRect, 3, 3);
+                [[NSColor.controlAccentColor colorWithAlphaComponent:0.20] setFill];
+                [[NSBezierPath bezierPathWithRoundedRect:selectedTab xRadius:7 yRadius:7] fill];
+            }
+            NSDictionary *tabAttrs = @{
+                NSFontAttributeName: tabFont,
+                NSForegroundColorAttributeName: active ? NSColor.labelColor
+                    : [NSColor.labelColor colorWithAlphaComponent:0.72],
+                NSParagraphStyleAttributeName: tabParagraphStyle
+            };
+            if (textRect.size.width > 0) {
+                NSString *shortLabel = MicaTruncatedText(label, textRect.size.width, tabAttrs);
+                [shortLabel drawAtPoint:NSMakePoint(NSMinX(textRect),
+                    NSMinY(tabRect) + MicaCenteredTextBaseline(tabFont, tabRect.size.height))
+                    withAttributes:tabAttrs];
+            }
         }
-        tabX += labelRect.size.width + 14;
+        [NSColor.separatorColor setStroke];
+        for (NSUInteger i = visibleTabs.location; i + 1 < NSMaxRange(visibleTabs); i++) {
+            NSRect tabRect = [self tabRectAtIndex:i];
+            if (NSIsEmptyRect(tabRect)) continue;
+            NSBezierPath *tabDivider = [NSBezierPath bezierPath];
+            [tabDivider moveToPoint:NSMakePoint(NSMaxX(tabRect) - 0.5, NSMinY(header) + 7)];
+            [tabDivider lineToPoint:NSMakePoint(NSMaxX(tabRect) - 0.5, NSMaxY(header) - 7)];
+            [tabDivider stroke];
+        }
+        if ([self hasTabOverflow]) {
+            NSRange visible = [self visibleTabRange];
+            NSUInteger hidden = self.owner.tabs.count - visible.length;
+            NSRect moreRect = NSInsetRect([self tabOverflowRect], 4, 3);
+            [[NSColor.controlBackgroundColor colorWithAlphaComponent:0.8] setFill];
+            [[NSBezierPath bezierPathWithRoundedRect:moreRect xRadius:7 yRadius:7] fill];
+            NSMutableParagraphStyle *moreStyle = [[NSMutableParagraphStyle alloc] init];
+            moreStyle.alignment = NSTextAlignmentCenter;
+            NSDictionary *moreAttrs = @{
+                NSFontAttributeName: [NSFont systemFontOfSize:kTabTitleFontSize weight:NSFontWeightMedium],
+                NSForegroundColorAttributeName: NSColor.labelColor,
+                NSParagraphStyleAttributeName: moreStyle
+            };
+            NSString *moreLabel = [NSString stringWithFormat:@"… %lu", (unsigned long)hidden];
+            [moreLabel drawInRect:NSInsetRect(moreRect, 2, 4) withAttributes:moreAttrs];
+        }
     }
     for (NSInteger row = 0; row < _rows; row++) {
+        NSRect rowRect = [self cellRectAtRow:row col:0];
+        rowRect.origin.x = 0;
+        rowRect.size.width = [self terminalRect].size.width;
+        if (!NSIntersectsRect(rowRect, dirtyRect)) continue;
+        size_t hiddenRows = 0;
+        if (mica_session_fold_info_at_view_row(tab.session, (int)row, &hiddenRows)) {
+            NSRect foldRect = NSInsetRect(rowRect, 2, 1);
+            [[NSColor.controlAccentColor colorWithAlphaComponent:0.12] setFill];
+            [[NSBezierPath bezierPathWithRoundedRect:foldRect xRadius:4 yRadius:4] fill];
+            NSString *foldLabel = [NSString stringWithFormat:@"⌄  %lu lines folded  ·  click to expand",
+                (unsigned long)hiddenRows];
+            NSDictionary *foldAttrs = @{
+                NSFontAttributeName: [NSFont systemFontOfSize:12 weight:NSFontWeightMedium],
+                NSForegroundColorAttributeName: NSColor.secondaryLabelColor
+            };
+            [foldLabel drawWithRect:NSInsetRect(foldRect, 7, 1)
+                            options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
+                         attributes:foldAttrs];
+            continue;
+        }
         NSInteger skipGlyphThroughCol = -1;
+        NSMutableString *textRun = [NSMutableString string];
+        __block NSInteger textRunStartCol = -1;
+        __block NSFont *textRunFont = nil;
+        __block NSColor *textRunForeground = nil;
+        __block BOOL textRunUnderline = NO;
+        __block BOOL textRunHasInk = NO;
+        void (^flushTextRun)(void) = ^{
+            if (textRunHasInk && textRun.length && textRunStartCol >= 0) {
+                [self drawTextRun:textRun row:row startCol:textRunStartCol
+                             font:textRunFont foreground:textRunForeground underline:textRunUnderline];
+            }
+            [textRun setString:@""];
+            textRunStartCol = -1;
+            textRunFont = nil;
+            textRunForeground = nil;
+            textRunHasInk = NO;
+        };
         for (NSInteger col = 0; col < _cols; col++) {
             MicaCell cell;
             if (!mica_session_get_cell(tab.session, (int)row, (int)col, &cell)) continue;
@@ -388,16 +1159,17 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
             NSColor *bg = [self colorForVTermColor:cell.bg isForeground:NO];
             if (cell.attrs.reverse) { NSColor *swap = fg; fg = bg; bg = swap; }
             if (selected) bg = NSColor.selectedTextBackgroundColor;
-            BOOL hasBackground = selected || !VTERM_COLOR_IS_DEFAULT_BG(&cell.bg);
+            BOOL hasBackground = selected || cell.attrs.reverse || !VTERM_COLOR_IS_DEFAULT_BG(&cell.bg);
             NSRect cellRect = [self cellRectAtRow:row col:col];
             if (hasBackground) { [bg setFill]; NSRectFill(cellRect); }
             if (CellIsContinuation(cell) || col <= skipGlyphThroughCol) continue;
-            NSMutableString *glyph = [[self stringForCell:cell] mutableCopy];
+            NSString *baseGlyph = [self stringForCell:cell];
             uint32_t firstCodepoint = cell.chars[0];
             uint32_t lastCodepoint = CellLastCodepoint(cell);
             BOOL flagPair = IsRegionalIndicator(firstCodepoint);
             BOOL addedFlagMate = NO;
             NSInteger nextCol = col + MAX((NSInteger)cell.width, 1);
+            NSMutableString *mergedGlyph = nil;
             while (nextCol < _cols) {
                 MicaCell nextCell;
                 if (!mica_session_get_cell(tab.session, (int)row, (int)nextCol, &nextCell)) break;
@@ -407,75 +1179,139 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
                     IsVariationSelector(nextFirst) || IsCombiningMark(nextFirst) ||
                     (flagPair && !addedFlagMate && IsRegionalIndicator(nextFirst));
                 if (!merge) break;
-                [glyph appendString:[self stringForCell:nextCell]];
+                if (!mergedGlyph) mergedGlyph = [baseGlyph mutableCopy];
+                [mergedGlyph appendString:[self stringForCell:nextCell]];
                 skipGlyphThroughCol = nextCol + MAX((NSInteger)nextCell.width, 1) - 1;
                 if (flagPair) addedFlagMate = YES;
                 lastCodepoint = CellLastCodepoint(nextCell);
                 nextCol += MAX((NSInteger)nextCell.width, 1);
                 if (flagPair && addedFlagMate) break;
             }
-            if ([glyph isEqualToString:@" "]) continue;
-            NSFont *font = self.terminalFont;
-            if (cell.attrs.bold || cell.attrs.italic) {
-                NSFontTraitMask traits = (cell.attrs.bold ? NSBoldFontMask : 0) | (cell.attrs.italic ? NSItalicFontMask : 0);
-                font = [[NSFontManager sharedFontManager] convertFont:font toHaveTrait:traits];
+            NSString *glyph = mergedGlyph ?: baseGlyph;
+            BOOL simpleASCII = cell.width == 1 && firstCodepoint >= 0x20 && firstCodepoint < 0x80 &&
+                !mergedGlyph && !cell.attrs.strike;
+            if (simpleASCII) {
+                NSFont *font = [self fontForCell:cell];
+                BOOL underline = cell.attrs.underline;
+                BOOL canAppend = textRunStartCol >= 0 && col == textRunStartCol + (NSInteger)textRun.length &&
+                    [textRunFont isEqual:font] && [textRunForeground isEqual:fg] &&
+                    textRunUnderline == underline;
+                if (!canAppend) flushTextRun();
+                if (textRunStartCol < 0) {
+                    textRunStartCol = col;
+                    textRunFont = font;
+                    textRunForeground = fg;
+                    textRunUnderline = underline;
+                }
+                [textRun appendString:glyph];
+                if (firstCodepoint != ' ') textRunHasInk = YES;
+                continue;
             }
+            flushTextRun();
+            if ([glyph isEqualToString:@" "]) continue;
+            NSFont *font = [self fontForCell:cell];
             NSMutableDictionary *glyphAttrs = [@{ NSFontAttributeName: font, NSForegroundColorAttributeName: fg } mutableCopy];
             if (cell.attrs.underline) glyphAttrs[NSUnderlineStyleAttributeName] = @(NSUnderlineStyleSingle);
             [glyph drawAtPoint:NSMakePoint(NSMinX(cellRect), NSMinY(cellRect) + 1) withAttributes:glyphAttrs];
         }
+        flushTextRun();
     }
     if (mica_session_view_offset(tab.session) == 0 && mica_session_cursor_visible(tab.session)) {
         int cursorRow = 0, cursorCol = 0;
         mica_session_cursor(tab.session, &cursorRow, &cursorCol);
         if (cursorRow >= 0 && cursorRow < _rows && cursorCol >= 0 && cursorCol < _cols) {
             NSRect cursorRect = [self cellRectAtRow:cursorRow col:cursorCol];
-            [NSColor.textColor setFill];
-            NSRectFill(NSMakeRect(cursorRect.origin.x, cursorRect.origin.y, 2, cursorRect.size.height));
+            MicaCell cursorCell;
+            if (mica_session_get_cell(tab.session, cursorRow, cursorCol, &cursorCell)) {
+                NSInteger cellWidth = MIN(MAX((NSInteger)cursorCell.width, 1), _cols - cursorCol);
+                cursorRect.size.width = _charWidth * cellWidth;
+                NSColor *cursorFill = [self colorForVTermColor:cursorCell.fg isForeground:YES];
+                NSColor *cursorGlyph = [self colorForVTermColor:cursorCell.bg isForeground:NO];
+                if (cursorCell.attrs.reverse) {
+                    NSColor *swap = cursorFill;
+                    cursorFill = cursorGlyph;
+                    cursorGlyph = swap;
+                }
+                NSColor *rgbFill = [cursorFill colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+                CGFloat luminance = rgbFill.redComponent * 0.2126 +
+                    rgbFill.greenComponent * 0.7152 + rgbFill.blueComponent * 0.0722;
+                if (luminance < 0.4) {
+                    cursorFill = MicaForegroundColor();
+                    cursorGlyph = MicaBackgroundColor();
+                }
+                if (NSIntersectsRect(cursorRect, dirtyRect)) {
+                    [cursorFill setFill];
+                    NSRectFill(cursorRect);
+                    NSString *glyph = [self stringForCell:cursorCell];
+                    if (glyph.length && ![glyph isEqualToString:@" "]) {
+                        NSDictionary *attributes = @{
+                            NSFontAttributeName: self.terminalFont,
+                            NSForegroundColorAttributeName: cursorGlyph
+                        };
+                        [glyph drawAtPoint:NSMakePoint(NSMinX(cursorRect), NSMinY(cursorRect) + 1)
+                            withAttributes:attributes];
+                    }
+                }
+            }
         }
     }
     if (!mica_session_is_running(tab.session)) {
         int exitStatus = mica_session_exit_status(tab.session);
         NSString *exitMessage = exitStatus == 0 ? @"Shell exited" : [NSString stringWithFormat:@"Shell exited with status %d", exitStatus];
+        NSRect exitRect = NSMakeRect(0, kStatusHeight, [self terminalRect].size.width, 28);
         NSDictionary *exitAttrs = @{ NSFontAttributeName: [NSFont systemFontOfSize:12], NSForegroundColorAttributeName: NSColor.secondaryLabelColor };
-        [exitMessage drawAtPoint:NSMakePoint(12, kStatusHeight + 4) withAttributes:exitAttrs];
+        if (NSIntersectsRect(exitRect, dirtyRect))
+            [exitMessage drawAtPoint:NSMakePoint(12, kStatusHeight + 4) withAttributes:exitAttrs];
     }
-    [self drawStatusBarForTab:tab];
+    NSRect voiceOverlay = [self voiceOverlayRect];
+    if (!NSIsEmptyRect(voiceOverlay) && NSIntersectsRect(voiceOverlay, dirtyRect))
+        [self drawVoiceOverlay];
+    NSRect status = NSMakeRect(0, 0, self.bounds.size.width, kStatusHeight);
+    if (NSIntersectsRect(status, dirtyRect)) [self drawStatusBarForTab:tab];
     (void)dirtyRect;
 }
 
 - (void)keyDown:(NSEvent *)event {
     MicaTab *tab = self.owner.activeTab;
-    if (!tab.session) return;
     NSEventModifierFlags flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
     BOOL command = (flags & NSEventModifierFlagCommand) != 0;
     BOOL option = (flags & NSEventModifierFlagOption) != 0;
     BOOL control = (flags & NSEventModifierFlagControl) != 0;
     NSString *keyString = event.charactersIgnoringModifiers.lowercaseString;
-    if (!command && control && [keyString isEqualToString:@"t"]) {
-        self.owner.uiMode = self.owner.uiMode == MicaUIModeTab ? MicaUIModeNormal : MicaUIModeTab;
-        [self setNeedsDisplay:YES];
+    if (event.keyCode != 58 && _leftOptionIsDown && !_leftOptionStartedDictation) {
+        _leftOptionUsedWithAnotherKey = YES;
+        [_leftOptionTimer invalidate];
+        _leftOptionTimer = nil;
+    }
+    MicaVoiceControllerState voiceState = self.owner.voiceController.state;
+    BOOL voiceBusy = voiceState == MicaVoiceControllerStatePreparing ||
+        voiceState == MicaVoiceControllerStateListening ||
+        voiceState == MicaVoiceControllerStateTranscribing;
+    if (event.keyCode == 53 && (voiceBusy || voiceState == MicaVoiceControllerStateFailed)) {
+        [self.owner cancelDictation];
         return;
     }
-    if (!command && control && [keyString isEqualToString:@"s"]) {
-        if (self.owner.uiMode == MicaUIModeScroll) {
-            mica_session_scroll_to_bottom(tab.session);
-            self.owner.uiMode = MicaUIModeNormal;
-        } else {
-            self.owner.uiMode = MicaUIModeScroll;
-        }
-        [self setNeedsDisplay:YES];
+    if (command && (flags & NSEventModifierFlagShift) && [keyString isEqualToString:@"p"]) {
+        [self.owner toggleTabPicker];
+        return;
+    }
+    if (command && (flags & NSEventModifierFlagShift) && [keyString isEqualToString:@"s"]) {
+        [self.owner toggleScrollback];
         return;
     }
     if (!command && [self handleNavigationModeKey:event key:keyString control:control]) return;
     if (command) {
+        if (keyString.length == 1 && keyString.integerValue >= 1 &&
+            keyString.integerValue <= 9 && [keyString characterAtIndex:0] >= '1' &&
+            [keyString characterAtIndex:0] <= '9') {
+            NSInteger index = keyString.integerValue == 9
+                ? (NSInteger)self.owner.tabs.count - 1 : keyString.integerValue - 1;
+            [self.owner selectTabAtIndex:index];
+            return;
+        }
         if ([keyString isEqualToString:@"t"]) { [self.owner newTabWithName:@"Shell" command:nil]; return; }
         if ([keyString isEqualToString:@"w"]) { [self.owner closeActiveTab]; return; }
-        if (option && (flags & NSEventModifierFlagShift) && [keyString isEqualToString:@"c"]) { [self.owner resumeClaude:nil]; return; }
-        if (option && (flags & NSEventModifierFlagShift) && [keyString isEqualToString:@"x"]) { [self.owner resumeCodex:nil]; return; }
-        if (option && [keyString isEqualToString:@"c"]) { [self.owner newClaude:nil]; return; }
-        if (option && [keyString isEqualToString:@"x"]) { [self.owner newCodex:nil]; return; }
-        if ([keyString isEqualToString:@"c"]) { if (_selecting) [self copySelection:nil]; else mica_session_text(tab.session, 'c', VTERM_MOD_CTRL); return; }
+        if ([keyString isEqualToString:@"c"]) { if (_selecting) [self copySelection:nil]; else if (tab.session) mica_session_text(tab.session, 'c', VTERM_MOD_CTRL); return; }
         if ([keyString isEqualToString:@"v"]) { [self paste:nil]; return; }
         if ((flags & NSEventModifierFlagShift) && event.keyCode == 30) { [self.owner selectRelativeTab:1]; return; }
         if ((flags & NSEventModifierFlagShift) && event.keyCode == 33) { [self.owner selectRelativeTab:-1]; return; }
@@ -483,6 +1319,7 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
         if ([keyString isEqualToString:@"-"]) { self.terminalFont = MicaTerminalFont(MAX(8, self.terminalFont.pointSize - 1)); [self setNeedsDisplay:YES]; return; }
         return;
     }
+    if (!tab.session) return;
     if (event.keyCode == 53 && mica_session_view_offset(tab.session) > 0) {
         mica_session_scroll_to_bottom(tab.session);
         _selecting = NO;
@@ -535,7 +1372,12 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
         [self setNeedsDisplay:YES];
         return;
     }
-    if (key != VTERM_KEY_NONE) { mica_session_key(tab.session, key, modifiers); _selecting = NO; [self setNeedsDisplay:YES]; return; }
+    if (key != VTERM_KEY_NONE) {
+        mica_session_key(tab.session, key, modifiers);
+        _selecting = NO;
+        _selectionPending = NO;
+        return;
+    }
     NSString *characters = control ? event.charactersIgnoringModifiers : event.characters;
     for (NSUInteger i = 0; i < characters.length; i++) {
         unichar first = [characters characterAtIndex:i];
@@ -547,7 +1389,7 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
         if (codepoint >= 0x20 || codepoint > 0x7e || control) mica_session_text(tab.session, codepoint, modifiers);
     }
     _selecting = NO;
-    [self setNeedsDisplay:YES];
+    _selectionPending = NO;
 }
 
 - (void)scrollWheel:(NSEvent *)event {
@@ -570,44 +1412,84 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
 
 - (void)mouseDown:(NSEvent *)event {
     [self.window makeFirstResponder:self];
+    if (_leftOptionIsDown && !_leftOptionStartedDictation) {
+        _leftOptionUsedWithAnotherKey = YES;
+        [_leftOptionTimer invalidate];
+        _leftOptionTimer = nil;
+    }
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
-    NSRect terminal = [self terminalRect];
-    if (point.y < NSMinY(terminal)) return;
-    if (point.y > NSMaxY(terminal)) {
-        CGFloat x = 12;
-        NSDictionary *attrs = @{ NSFontAttributeName: [NSFont systemFontOfSize:12 weight:NSFontWeightMedium] };
-        for (NSUInteger i = 0; i < self.owner.tabs.count; i++) {
-            NSString *title = [self labelForTab:self.owner.tabs[i] active:(i == (NSUInteger)self.owner.activeIndex)];
-            CGFloat width = [title sizeWithAttributes:attrs].width + 24;
-            if (point.x >= x && point.x < x + width) { [self.owner selectTabAtIndex:(NSInteger)i]; return; }
-            x += width + 8;
+    NSRect voicePanel = [self voiceOverlayRect];
+    if (!NSIsEmptyRect(voicePanel) && NSPointInRect(point, voicePanel)) return;
+    NSRect header = NSMakeRect(0, NSMaxY(self.bounds) - kHeaderHeight,
+                               self.bounds.size.width, kHeaderHeight);
+    if (NSPointInRect(point, header)) {
+        if (NSPointInRect(point, [self tabOverflowRect])) {
+            [[self tabOverflowMenu] popUpMenuPositioningItem:nil atLocation:point inView:self];
+            return;
         }
+        NSInteger index = [self tabIndexAtPoint:point];
+        if (index != NSNotFound) [self.owner selectTabAtIndex:index];
+        return;
+    }
+    NSRect terminal = [self terminalRect];
+    if (!NSPointInRect(point, terminal)) return;
+    if (!self.owner.activeTab.session) return;
+    NSPoint cell = [self cellForPoint:point];
+    if (mica_session_toggle_fold_at_view_row(self.owner.activeTab.session, (int)cell.y)) {
+        [self clearSelection];
+        [self setNeedsDisplay:YES];
         return;
     }
     BOOL option = (event.modifierFlags & NSEventModifierFlagOption) != 0;
     if (mica_session_reports_mouse(self.owner.activeTab.session) && !option) {
         _selecting = NO;
-        NSPoint cell = [self cellForPoint:point];
+        _selectionPending = NO;
         mica_session_mouse(self.owner.activeTab.session, (int)cell.y, (int)cell.x, 1, true);
         _mousePressed = YES;
         _mouseRow = (NSInteger)cell.y;
         _mouseCol = (NSInteger)cell.x;
         return;
     }
-    _selecting = YES;
+    _selecting = NO;
+    _selectionPending = YES;
     _selectionStart = point;
     _selectionEnd = point;
-    [self setNeedsDisplay:YES];
 }
 
 - (void)mouseDragged:(NSEvent *)event {
-    if (!_selecting) return;
-    _selectionEnd = [self convertPoint:event.locationInWindow fromView:nil];
+    if (_mousePressed) {
+        NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+        NSPoint cell = [self cellForPoint:point];
+        _mouseRow = (NSInteger)cell.y;
+        _mouseCol = (NSInteger)cell.x;
+        mica_session_mouse(self.owner.activeTab.session, (int)_mouseRow, (int)_mouseCol, 1, true);
+        return;
+    }
+    if (!_selectionPending && !_selecting) return;
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    if (!_selecting && hypot(point.x - _selectionStart.x, point.y - _selectionStart.y) < 3.0) return;
+    _selecting = YES;
+    _selectionPending = NO;
+    _selectionEnd = point;
     [self setNeedsDisplay:YES];
 }
 
 - (void)clearSelection {
     _selecting = NO;
+    _selectionPending = NO;
+}
+
+- (void)foldSelectedLines:(id)sender {
+    (void)sender;
+    if (!_selecting || !self.owner.activeTab.session) return;
+    NSPoint start = [self cellForPoint:_selectionStart];
+    NSPoint end = [self cellForPoint:_selectionEnd];
+    NSInteger firstRow = MIN((NSInteger)start.y, (NSInteger)end.y);
+    NSInteger lastRow = MAX((NSInteger)start.y, (NSInteger)end.y);
+    if (mica_session_fold_visible_rows(self.owner.activeTab.session, (int)firstRow, (int)lastRow)) {
+        [self clearSelection];
+        [self setNeedsDisplay:YES];
+    }
 }
 
 - (void)mouseUp:(NSEvent *)event {
@@ -616,8 +1498,12 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
         _mousePressed = NO;
         return;
     }
-    if (!_selecting) return;
+    if (!_selecting) {
+        _selectionPending = NO;
+        return;
+    }
     _selectionEnd = [self convertPoint:event.locationInWindow fromView:nil];
+    _selectionPending = NO;
     [self setNeedsDisplay:YES];
 }
 
@@ -652,10 +1538,20 @@ static BOOL IsCombiningMark(uint32_t codepoint) {
     (void)sender;
     MicaTab *tab = self.owner.activeTab;
     if (!tab.session) return;
-    NSString *testPasteboardName = NSProcessInfo.processInfo.environment[@"MICA_TEST_PASTEBOARD_NAME"];
-    NSPasteboard *pasteboard = testPasteboardName.length
-        ? [NSPasteboard pasteboardWithName:testPasteboardName]
-        : NSPasteboard.generalPasteboard;
+#if defined(MICA_APP_NO_MAIN)
+    if (self.testClipboardImage) {
+        mica_session_text(tab.session, 'v', VTERM_MOD_CTRL);
+        [self setNeedsDisplay:YES];
+        return;
+    }
+    if (self.testClipboardText) {
+        NSData *bytes = [self.testClipboardText dataUsingEncoding:NSUTF8StringEncoding];
+        mica_session_paste(tab.session, bytes.bytes, bytes.length);
+        [self setNeedsDisplay:YES];
+        return;
+    }
+#endif
+    NSPasteboard *pasteboard = NSPasteboard.generalPasteboard;
     NSArray<NSPasteboardType> *imageTypes = @[
         NSPasteboardTypePNG, NSPasteboardTypeTIFF, @"public.jpeg"
     ];
@@ -694,7 +1590,6 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     }
 
     NSMutableArray<NSDictionary *> *tabs = [NSMutableArray array];
-    NSMutableDictionary<NSString *, NSString *> *agentCommands = [NSMutableDictionary dictionary];
     if (layoutPath.length) {
         NSString *contents = [NSString stringWithContentsOfFile:layoutPath encoding:NSUTF8StringEncoding error:nil];
         [contents enumerateLinesUsingBlock:^(NSString *line, BOOL *stop) {
@@ -702,22 +1597,6 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
             if (!line.length || [line hasPrefix:@"#"]) return;
             NSArray<NSString *> *parts = [line componentsSeparatedByString:@"\t"];
             if (parts.count < 2) return;
-            NSString *setting = parts[0];
-            if ([setting hasPrefix:@"agent."]) {
-                NSString *key = [setting substringFromIndex:6];
-                NSSet<NSString *> *allowedKeys = [NSSet setWithArray:@[
-                    @"claude.start", @"claude.resume", @"codex.start", @"codex.resume"
-                ]];
-                if ([allowedKeys containsObject:key]) {
-                    NSMutableString *configuredCommand = [NSMutableString string];
-                    for (NSUInteger i = 1; i < parts.count; i++) {
-                        if (i > 1) [configuredCommand appendString:@"\t"];
-                        [configuredCommand appendString:parts[i]];
-                    }
-                    if (configuredCommand.length) agentCommands[key] = configuredCommand;
-                }
-                return;
-            }
             NSString *name = parts[0];
             NSString *tabCwd = parts[1].length ? parts[1] : cwd;
             NSMutableString *tabCommand = [NSMutableString string];
@@ -748,7 +1627,6 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
         @"cwd": cwd,
         @"command": command,
         @"tabs": tabs,
-        @"agentCommands": agentCommands,
         @"layoutLoaded": @(layoutLoaded),
         @"activeIndex": @0
     };
@@ -768,6 +1646,19 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
 }
 
 - (NSString *)displayNameForTab:(MicaTab *)tab {
+    if (tab.currentCommand.length) {
+        NSString *agent = MicaAgentNameForTab(tab);
+        if (agent) {
+            NSString *activity = tab.agentActivity.length ? tab.agentActivity : @"Starting";
+            NSString *work = tab.agentActivityDetail.length ? tab.agentActivityDetail : activity;
+            return [NSString stringWithFormat:@"%@ · %@", agent, work];
+        }
+        NSTimeInterval elapsed = tab.commandStartedAt > 0 ? NSProcessInfo.processInfo.systemUptime - tab.commandStartedAt : 0;
+        NSUInteger seconds = (NSUInteger)MAX(0, elapsed);
+        NSString *command = tab.currentCommand.lastPathComponent.length ? tab.currentCommand.lastPathComponent : tab.currentCommand;
+        return [NSString stringWithFormat:@"%@ · %lu:%02lu", command,
+            (unsigned long)(seconds / 60), (unsigned long)(seconds % 60)];
+    }
     if (!tab.terminalTitle.length) return tab.name;
     return [NSString stringWithFormat:@"%@ · %@", tab.name, tab.terminalTitle];
 }
@@ -778,6 +1669,9 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     (void)notification;
+    MicaDiagnosticsLog(@"launch", [NSString stringWithFormat:@"opened app=%@ bundle=%@ pid=%d",
+        NSBundle.mainBundle.infoDictionary[@"CFBundleDisplayName"] ?: @"Mica",
+        NSBundle.mainBundle.bundleIdentifier ?: @"unknown", getpid()]);
     self.tabs = [NSMutableArray array];
     self.activeIndex = 0;
     self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(120, 120, 1100, 700)
@@ -793,6 +1687,9 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     self.terminalView.owner = self;
     self.terminalView.terminalFont = MicaTerminalFont(kFontSizeDefault);
     [self.window setContentView:self.terminalView];
+    NSURL *voiceHelperURL = [NSBundle.mainBundle.bundleURL URLByAppendingPathComponent:@"Contents/Helpers/mica-voice"];
+    self.voiceController = [[MicaVoiceController alloc] initWithHelperURL:voiceHelperURL];
+    self.voiceController.delegate = self;
     [self.window makeKeyAndOrderFront:nil];
     [self installMenus];
     self.uiMode = MicaUIModeNormal;
@@ -807,6 +1704,8 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     NSMenuItem *appRoot = [[NSMenuItem alloc] initWithTitle:@"Mica" action:nil keyEquivalent:@""];
     NSMenu *appMenu = [[NSMenu alloc] initWithTitle:@"Mica"];
     AddMenuItem(appMenu, @"About Mica", @selector(orderFrontStandardAboutPanel:), @"", 0);
+    AddMenuItem(appMenu, @"New Instance", @selector(newInstance:), @"",
+                NSEventModifierFlagCommand | NSEventModifierFlagOption).target = self;
     [appMenu addItem:NSMenuItem.separatorItem];
     AddMenuItem(appMenu, @"Quit Mica", @selector(terminate:), @"q", NSEventModifierFlagCommand);
     appRoot.submenu = appMenu;
@@ -814,10 +1713,10 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     NSMenuItem *sessionsRoot = [[NSMenuItem alloc] initWithTitle:@"Session" action:nil keyEquivalent:@""];
     NSMenu *sessionMenu = [[NSMenu alloc] initWithTitle:@"Session"];
     AddMenuItem(sessionMenu, @"New Shell Tab", @selector(newShell:), @"t", NSEventModifierFlagCommand).target = self;
-    AddMenuItem(sessionMenu, @"New Claude Code Tab", @selector(newClaude:), @"c", NSEventModifierFlagCommand | NSEventModifierFlagOption).target = self;
-    AddMenuItem(sessionMenu, @"New Codex Tab", @selector(newCodex:), @"x", NSEventModifierFlagCommand | NSEventModifierFlagOption).target = self;
-    AddMenuItem(sessionMenu, @"Resume Claude Code", @selector(resumeClaude:), @"c", NSEventModifierFlagCommand | NSEventModifierFlagOption | NSEventModifierFlagShift).target = self;
-    AddMenuItem(sessionMenu, @"Resume Codex", @selector(resumeCodex:), @"x", NSEventModifierFlagCommand | NSEventModifierFlagOption | NSEventModifierFlagShift).target = self;
+    AddMenuItem(sessionMenu, @"Choose Tab…", @selector(toggleTabPicker), @"p",
+                NSEventModifierFlagCommand | NSEventModifierFlagShift).target = self;
+    AddMenuItem(sessionMenu, @"Browse Scrollback", @selector(toggleScrollback), @"s",
+                NSEventModifierFlagCommand | NSEventModifierFlagShift).target = self;
     [sessionMenu addItem:NSMenuItem.separatorItem];
     AddMenuItem(sessionMenu, @"Previous Tab", @selector(previousTab:), @"[", NSEventModifierFlagCommand | NSEventModifierFlagShift).target = self;
     AddMenuItem(sessionMenu, @"Next Tab", @selector(nextTab:), @"]", NSEventModifierFlagCommand | NSEventModifierFlagShift).target = self;
@@ -828,9 +1727,27 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
     AddMenuItem(editMenu, @"Copy", @selector(copy:), @"c", NSEventModifierFlagCommand);
     AddMenuItem(editMenu, @"Paste", @selector(paste:), @"v", NSEventModifierFlagCommand);
+    AddMenuItem(editMenu, @"Fold Selected Lines", @selector(foldSelectedLines:), @"f",
+                NSEventModifierFlagCommand | NSEventModifierFlagOption).target = self.terminalView;
     editRoot.submenu = editMenu;
     [main addItem:editRoot];
+    NSMenuItem *helpRoot = [[NSMenuItem alloc] initWithTitle:@"Help" action:nil keyEquivalent:@""];
+    NSMenu *helpMenu = [[NSMenu alloc] initWithTitle:@"Help"];
+    AddMenuItem(helpMenu, @"Open Diagnostic Logs", @selector(openDiagnosticLogs:), @"", 0).target = self;
+    helpRoot.submenu = helpMenu;
+    [main addItem:helpRoot];
+    NSApp.helpMenu = helpMenu;
     [NSApp setMainMenu:main];
+}
+
+- (void)openDiagnosticLogs:(id)sender {
+    (void)sender;
+    NSURL *directory = MicaDiagnosticsLogDirectory();
+    if (!directory) {
+        MicaDiagnosticsLog(@"diagnostics", @"could not locate the diagnostic log folder");
+        return;
+    }
+    [[NSWorkspace sharedWorkspace] openURL:directory];
 }
 
 - (void)loadLaunchConfiguration {
@@ -843,15 +1760,40 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
         NSFileManager.defaultManager.currentDirectoryPath);
     NSString *projectName = configuration[@"projectName"];
     self.projectName = projectName.length ? projectName : nil;
-    self.agentCommands = configuration[@"agentCommands"] ?: @{};
     NSArray<NSDictionary *> *tabSpecs = configuration[@"tabs"];
+    MicaDiagnosticsLog(@"launch", [NSString stringWithFormat:@"configuration project=%@ layout=%d tabs=%lu",
+        self.projectName ?: @"Mica Terminal", [configuration[@"layoutLoaded"] boolValue],
+        (unsigned long)tabSpecs.count]);
+    NSMutableArray<NSNumber *> *tabIndexMap = [NSMutableArray arrayWithCapacity:tabSpecs.count];
     for (NSDictionary *spec in tabSpecs) {
         NSString *command = [spec[@"command"] length] ? spec[@"command"] : nil;
+        // Older layouts used a built-in Git view. Keep them useful by turning
+        // that entry into the regular lazygit shell command.
+        if ([command isEqualToString:@"mica-git"]) command = @"lazygit";
+        [tabIndexMap addObject:@(self.tabs.count)];
         [self addTabWithName:spec[@"name"] cwd:spec[@"cwd"] command:command
                    prefilled:[spec[@"prefilled"] boolValue]];
     }
-    if ([configuration[@"layoutLoaded"] boolValue] && self.tabs.count > 1)
-        [self selectTabAtIndex:[configuration[@"activeIndex"] integerValue]];
+    if (self.tabs.count == 0) {
+        NSString *cwd = configuration[@"cwd"] ?: NSFileManager.defaultManager.currentDirectoryPath;
+        [self addTabWithName:@"Shell" cwd:cwd command:nil prefilled:NO];
+    }
+    if ([configuration[@"layoutLoaded"] boolValue] && self.tabs.count > 1) {
+        NSInteger sourceIndex = [configuration[@"activeIndex"] integerValue];
+        NSUInteger targetIndex = NSNotFound;
+        if (sourceIndex >= 0 && sourceIndex < (NSInteger)tabIndexMap.count) {
+            NSUInteger mapped = tabIndexMap[(NSUInteger)sourceIndex].unsignedIntegerValue;
+            if (mapped != NSNotFound && mapped < self.tabs.count) targetIndex = mapped;
+        }
+        if (targetIndex == NSNotFound) {
+            for (NSInteger index = MIN(sourceIndex, (NSInteger)tabIndexMap.count - 1); index >= 0; index--) {
+                NSUInteger mapped = tabIndexMap[(NSUInteger)index].unsignedIntegerValue;
+                if (mapped != NSNotFound && mapped < self.tabs.count) { targetIndex = mapped; break; }
+            }
+        }
+        if (targetIndex == NSNotFound) targetIndex = 0;
+        [self selectTabAtIndex:(NSInteger)targetIndex];
+    }
     [self updateWindowTitle];
     [self.terminalView setNeedsDisplay:YES];
 }
@@ -862,23 +1804,31 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     [self.terminalView clearSelection];
     MicaTab *tab = [[MicaTab alloc] init];
     tab.name = name.length ? name : @"Terminal";
-    tab.cwd = cwd.length ? cwd : NSFileManager.defaultManager.currentDirectoryPath;
+    tab.cwd = MicaUsableWorkingDirectory(cwd.length ? cwd : NSFileManager.defaultManager.currentDirectoryPath);
     tab.command = command;
     tab.session = prefilled
         ? mica_session_create_prefilled(tab.cwd.fileSystemRepresentation, command.UTF8String, 24, 80)
         : mica_session_create(tab.cwd.fileSystemRepresentation, command.UTF8String, 24, 80);
     if (!tab.session) {
+        MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"session start failed tab=%@ folder=%@",
+            tab.name, tab.cwd]);
         NSAlert *alert = [[NSAlert alloc] init];
         alert.messageText = @"Mica could not create a terminal session";
         alert.informativeText = [NSString stringWithFormat:@"Could not open %@", tab.cwd];
         [alert runModal];
         return;
     }
-    tab.commandCompletionCount = mica_session_command_completion_count(tab.session);
+    MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"session started tab=%@ folder=%@ pid=%d command_prefilled=%d",
+        tab.name, tab.cwd, (int)mica_session_pid(tab.session), command.length > 0]);
+    if (tab.session) {
+        tab.commandCompletionCount = mica_session_command_completion_count(tab.session);
+        tab.tracksCompletion = command.length > 0;
+        tab.completionLabel = command.length ? command.pathComponents.lastObject : @"Process";
+    }
     tab.revision = UINT64_MAX;
     [self.tabs addObject:tab];
     self.activeIndex = (NSInteger)self.tabs.count - 1;
-    if (NSApp.isActive) mica_session_focus(tab.session, true);
+    if (tab.session && NSApp.isActive) mica_session_focus(tab.session, true);
     [self updateWindowTitle];
     [self resizeActiveSession];
     [self.terminalView setNeedsDisplay:YES];
@@ -890,36 +1840,97 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     [self.window makeFirstResponder:self.terminalView];
 }
 
-- (void)launchAgentCommand:(NSString *)key tabName:(NSString *)name {
-    NSString *command = self.agentCommands[key];
-    if (!command.length) {
-        [self newTabWithName:@"Shell" command:nil];
-        return;
-    }
-    [self newTabWithName:name command:command];
-    self.activeTab.tracksCompletion = YES;
-    self.activeTab.completionLabel = name;
-}
-
 - (void)resizeActiveSession { [self.terminalView setNeedsDisplay:YES]; }
 - (void)newShell:(id)sender { (void)sender; [self newTabWithName:@"Shell" command:nil]; }
-- (void)newClaude:(id)sender { (void)sender; [self launchAgentCommand:@"claude.start" tabName:@"Claude Code"]; }
-- (void)newCodex:(id)sender { (void)sender; [self launchAgentCommand:@"codex.start" tabName:@"Codex"]; }
-- (void)resumeClaude:(id)sender { (void)sender; [self launchAgentCommand:@"claude.resume" tabName:@"Claude Code (resumed)"]; }
-- (void)resumeCodex:(id)sender { (void)sender; [self launchAgentCommand:@"codex.resume" tabName:@"Codex (resumed)"]; }
 - (void)closeTab:(id)sender { (void)sender; [self closeActiveTab]; }
 - (void)nextTab:(id)sender { (void)sender; [self selectRelativeTab:1]; }
 - (void)previousTab:(id)sender { (void)sender; [self selectRelativeTab:-1]; }
 
+- (void)newInstance:(id)sender {
+    (void)sender;
+    NSTask *task = [[NSTask alloc] init];
+    task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/open"];
+    task.arguments = @[@"-n", NSBundle.mainBundle.bundleURL.path];
+    NSError *error = nil;
+    if (![task launchAndReturnError:&error]) {
+        MicaDiagnosticsLog(@"launch", [NSString stringWithFormat:@"new instance failed: %@", error.localizedDescription]);
+    } else {
+        MicaDiagnosticsLog(@"launch", @"requested new app instance with open -n");
+    }
+}
+
+- (void)startPushToTalk {
+    [self beginDictationForActiveTab];
+}
+
+- (void)beginDictationForActiveTab {
+    MicaTab *tab = self.activeTab;
+    if (!tab.session || !self.voiceController) return;
+    MicaVoiceControllerState state = self.voiceController.state;
+    BOOL inProgress = state == MicaVoiceControllerStatePreparing || state == MicaVoiceControllerStateListening ||
+        state == MicaVoiceControllerStateTranscribing;
+    if (!inProgress) self.voiceTargetTab = tab;
+
+    char path[4096] = {0};
+    NSString *workingDirectory = tab.cwd;
+    if (mica_session_working_directory(tab.session, path, sizeof(path))) {
+        NSString *liveDirectory = [NSFileManager.defaultManager stringWithFileSystemRepresentation:path
+                                                                                           length:strlen(path)];
+        if (liveDirectory.length) {
+            workingDirectory = liveDirectory;
+            tab.cwd = liveDirectory;
+        }
+    }
+    [self.voiceController startPushToTalkForWorkingDirectory:workingDirectory];
+    [self.terminalView setNeedsDisplay:YES];
+}
+
+- (void)finishPushToTalk {
+    [self.voiceController finishPushToTalk];
+    [self.terminalView setNeedsDisplay:YES];
+}
+
+- (void)cancelDictation {
+    [self.voiceController cancel];
+    self.voiceTargetTab = nil;
+    [self.terminalView setNeedsDisplay:YES];
+}
+
+- (void)voiceControllerDidUpdate:(MicaVoiceController *)controller {
+    (void)controller;
+    [self.terminalView setNeedsDisplay:YES];
+}
+
+- (BOOL)voiceController:(MicaVoiceController *)controller
+      didFinishTranscript:(NSString *)transcript {
+    (void)controller;
+    MicaTab *target = self.voiceTargetTab;
+    if (!target || ![self.tabs containsObject:target] || !target.session ||
+        !mica_session_is_running(target.session)) return NO;
+    NSData *bytes = [transcript dataUsingEncoding:NSUTF8StringEncoding];
+    if (!bytes.length) return NO;
+    mica_session_paste(target.session, bytes.bytes, bytes.length);
+    self.voiceTargetTab = nil;
+    if (target == self.activeTab) {
+        [self.terminalView clearSelection];
+        [self.terminalView setNeedsDisplay:YES];
+    }
+    return YES;
+}
+
 - (void)closeActiveTab {
     if (self.tabs.count <= 1) { [self.window performClose:nil]; return; }
     MicaTab *previous = self.activeTab;
+    MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"tab closed name=%@ folder=%@",
+        previous.name ?: @"Terminal", previous.cwd ?: @"unknown"]);
+    if (previous == self.voiceTargetTab) [self cancelDictation];
     if (previous.session && NSApp.isActive) mica_session_focus(previous.session, false);
+    self.uiMode = MicaUIModeNormal;
     [self.terminalView clearSelection];
     [self.tabs removeObjectAtIndex:(NSUInteger)self.activeIndex];
     if (self.activeIndex >= (NSInteger)self.tabs.count) self.activeIndex = (NSInteger)self.tabs.count - 1;
     MicaTab *tab = self.activeTab;
-    if (NSApp.isActive) mica_session_focus(tab.session, true);
+    if (tab.session && NSApp.isActive) mica_session_focus(tab.session, true);
     tab.needsAttention = NO;
     [self updateWindowTitle];
     [self resizeActiveSession];
@@ -935,28 +1946,76 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     if (index < 0 || index >= (NSInteger)self.tabs.count || index == self.activeIndex) return;
     MicaTab *previous = self.activeTab;
     if (previous.session && NSApp.isActive) mica_session_focus(previous.session, false);
+    if (self.uiMode != MicaUIModeTab) self.uiMode = MicaUIModeNormal;
     [self.terminalView clearSelection];
     self.activeIndex = index;
     MicaTab *tab = self.activeTab;
     tab.needsAttention = NO;
-    if (NSApp.isActive) mica_session_focus(tab.session, true);
+    if (tab.session && NSApp.isActive) mica_session_focus(tab.session, true);
     [self updateWindowTitle];
     [self resizeActiveSession];
+}
+
+- (void)toggleTabPicker {
+    self.uiMode = self.uiMode == MicaUIModeTab ? MicaUIModeNormal : MicaUIModeTab;
+    [self.terminalView setNeedsDisplay:YES];
+}
+
+- (void)toggleScrollback {
+    MicaTab *tab = self.activeTab;
+    if (!tab.session) return;
+    if (self.uiMode == MicaUIModeScroll) {
+        mica_session_scroll_to_bottom(tab.session);
+        self.uiMode = MicaUIModeNormal;
+    } else {
+        self.uiMode = MicaUIModeScroll;
+    }
+    [self.terminalView setNeedsDisplay:YES];
 }
 
 - (void)pollSessions:(NSTimer *)timer {
     (void)timer;
     BOOL redraw = NO;
+    NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
     for (MicaTab *tab in self.tabs) {
+        if (!tab.session) continue;
         mica_session_poll(tab.session, 0);
+        MicaDirtyRows dirtyRows = {0};
+        BOOL hasDirtyRows = mica_session_take_dirty_rows(tab.session, &dirtyRows);
         const char *rawTitle = mica_session_title(tab.session);
         NSString *terminalTitle = rawTitle[0]
             ? [[NSString alloc] initWithBytes:rawTitle length:strlen(rawTitle) encoding:NSUTF8StringEncoding]
             : nil;
-        if (terminalTitle != tab.terminalTitle && ![terminalTitle isEqualToString:tab.terminalTitle]) {
+        if (MicaStringChanged(terminalTitle, tab.terminalTitle)) {
             tab.terminalTitle = terminalTitle;
             if (tab == self.activeTab) [self updateWindowTitle];
             redraw = YES;
+        }
+        const char *rawCommand = mica_session_current_command(tab.session);
+        NSString *currentCommand = rawCommand[0]
+            ? [[NSString alloc] initWithBytes:rawCommand length:strlen(rawCommand) encoding:NSUTF8StringEncoding]
+            : nil;
+        if (MicaStringChanged(currentCommand, tab.currentCommand)) {
+            tab.currentCommand = currentCommand;
+            tab.commandStartedAt = currentCommand.length ? now : 0;
+            tab.commandClockSecond = -1;
+            tab.completedCommand = NO;
+            tab.agentActivity = currentCommand.length && MicaAgentNameForTab(tab) ? @"Starting" : nil;
+            tab.agentActivityDetail = nil;
+            tab.agentActivityStartedAt = currentCommand.length ? now : 0;
+            if (tab == self.activeTab) [self updateWindowTitle];
+            redraw = YES;
+        }
+        if (currentCommand.length) {
+            BOOL isAgent = MicaAgentNameForTab(tab) != nil;
+            NSTimeInterval startedAt = isAgent && tab.agentActivityStartedAt > 0
+                ? tab.agentActivityStartedAt : tab.commandStartedAt;
+            NSInteger second = (NSInteger)MAX(0, floor(now - startedAt));
+            if (second != tab.commandClockSecond) {
+                tab.commandClockSecond = second;
+                if (tab == self.activeTab) [self updateWindowTitle];
+                redraw = YES;
+            }
         }
         uint64_t attentionCount = mica_session_attention_count(tab.session);
         if (attentionCount != tab.attentionCount) {
@@ -971,6 +2030,7 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
         uint64_t completionCount = mica_session_command_completion_count(tab.session);
         if (tab.tracksCompletion && completionCount > tab.commandCompletionCount) {
             tab.commandCompletionCount = completionCount;
+            tab.tracksCompletion = NO;
             tab.completedCommand = YES;
             tab.completionStatus = mica_session_command_exit_status(tab.session);
             if (tab != self.activeTab || !NSApp.isActive) {
@@ -994,14 +2054,80 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
             redraw = YES;
         }
         uint64_t revision = mica_session_revision(tab.session);
-        if (revision != tab.revision) { tab.revision = revision; if (tab == self.activeTab) redraw = YES; }
+        if (revision != tab.revision) {
+            tab.revision = revision;
+            if (currentCommand.length && MicaAgentNameForTab(tab)) {
+                NSString *detail = nil;
+                NSString *activity = MicaAgentActivityForSession(tab.session, &detail);
+                if (MicaStringChanged(activity, tab.agentActivity)) {
+                    tab.agentActivity = activity;
+                    tab.agentActivityDetail = detail;
+                    tab.agentActivityStartedAt = now;
+                    tab.commandClockSecond = -1;
+                    if (tab == self.activeTab) [self updateWindowTitle];
+                    redraw = YES;
+                } else if (MicaStringChanged(detail, tab.agentActivityDetail)) {
+                    tab.agentActivityDetail = detail;
+                    if (tab == self.activeTab) [self updateWindowTitle];
+                    redraw = YES;
+                }
+            }
+            if (tab == self.activeTab && hasDirtyRows) {
+                NSRect dirtyRect = [self.terminalView dirtyRectForRows:dirtyRows];
+                if (!NSIsEmptyRect(dirtyRect)) [self.terminalView setNeedsDisplayInRect:dirtyRect];
+            }
+        }
+    }
+    MicaTab *active = self.activeTab;
+    if (active.session && now - active.cwdLastCheck >= 1.0) {
+        active.cwdLastCheck = now;
+        char path[4096] = {0};
+        if (mica_session_working_directory(active.session, path, sizeof(path))) {
+            NSString *cwd = [NSFileManager.defaultManager stringWithFileSystemRepresentation:path
+                                                                                       length:strlen(path)];
+            if (cwd.length && ![cwd isEqualToString:active.cwd]) {
+                MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"folder changed tab=%@ folder=%@",
+                    active.name ?: @"Terminal", cwd]);
+                active.cwd = cwd;
+                redraw = YES;
+            }
+        }
+    }
+    NSMutableArray<MicaTab *> *exitedTabs = [NSMutableArray array];
+    for (MicaTab *tab in self.tabs)
+        if (tab.session && !mica_session_is_running(tab.session)) [exitedTabs addObject:tab];
+    for (MicaTab *tab in exitedTabs) {
+        NSUInteger index = [self.tabs indexOfObjectIdenticalTo:tab];
+        if (index == NSNotFound) continue;
+        MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"session exited tab=%@ status=%d",
+            tab.name ?: @"Terminal", mica_session_exit_status(tab.session)]);
+        if (self.voiceTargetTab == tab) [self cancelDictation];
+        if (self.tabs.count <= 1) {
+            [self.window performClose:nil];
+            return;
+        }
+        if ((NSInteger)index == self.activeIndex) {
+            [self closeActiveTab];
+        } else {
+            [self.tabs removeObjectAtIndex:index];
+            if ((NSInteger)index < self.activeIndex) self.activeIndex--;
+            [self updateWindowTitle];
+            [self resizeActiveSession];
+        }
+        redraw = YES;
     }
     if (redraw) [self.terminalView setNeedsDisplay:YES];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender { (void)sender; return YES; }
+- (void)applicationWillTerminate:(NSNotification *)notification {
+    (void)notification;
+    MicaDiagnosticsLog(@"app", @"application is terminating");
+    [self.voiceController cancel];
+}
 - (void)applicationWillResignActive:(NSNotification *)notification {
     (void)notification;
+    [self.terminalView cancelLeftOptionTracking];
     MicaTab *tab = self.activeTab;
     if (tab.session) mica_session_focus(tab.session, false);
 }
@@ -1023,6 +2149,10 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
 int main(int argc, const char *argv[]) {
     (void)argc; (void)argv;
     @autoreleasepool {
+        MicaDiagnosticsInitialize();
+        MicaDiagnosticsLog(@"startup", [NSString stringWithFormat:@"Mica %@ revision %@ launching pid=%d bundle=%@ folder=%@",
+            @MICA_VERSION, @MICA_REVISION, getpid(), NSBundle.mainBundle.bundleIdentifier ?: @"unknown",
+            NSFileManager.defaultManager.currentDirectoryPath ?: @"unknown"]);
         NSApplication *app = NSApplication.sharedApplication;
         app.activationPolicy = NSApplicationActivationPolicyRegular;
         MicaAppDelegate *delegate = [[MicaAppDelegate alloc] init];

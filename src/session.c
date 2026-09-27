@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <libproc.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
@@ -20,6 +21,7 @@
 #define MICA_HISTORY_INITIAL 32
 #define MICA_READ_BUFFER 16384
 #define MICA_TITLE_MAX_BYTES 512
+#define MICA_FOLD_LIMIT 128
 
 static const uint32_t mica_ansi_palette[16] = {
     0x1e1e1e, 0xf48771, 0x90c978, 0xf5d67a,
@@ -27,6 +29,11 @@ static const uint32_t mica_ansi_palette[16] = {
     0x4a4a4a, 0xff5370, 0xc3e88d, 0xffcb6b,
     0x82aaff, 0xc792ea, 0x89ddff, 0xffffff,
 };
+
+typedef struct {
+    size_t start;
+    size_t end;
+} MicaFold;
 
 struct MicaSession {
     int master_fd;
@@ -41,6 +48,8 @@ struct MicaSession {
     int exit_status;
     int command_exit_status;
     uint64_t revision;
+    MicaDirtyRows dirty_rows;
+    bool has_dirty_rows;
     uint64_t attention_count;
     uint64_t command_completion_count;
     bool focus_report;
@@ -52,14 +61,90 @@ struct MicaSession {
     size_t history_start;
     size_t history_count;
     size_t view_offset;
+    MicaFold *folds;
+    size_t fold_count;
+    size_t fold_capacity;
     char *pending_input;
     size_t pending_input_offset;
     size_t pending_input_length;
     size_t pending_input_capacity;
     char *command;
+    char *current_command;
     char *title;
     char *startup_dir;
 };
+
+static void remove_fold_at(MicaSession *session, size_t index) {
+    if (!session || index >= session->fold_count) return;
+    if (index + 1 < session->fold_count)
+        memmove(&session->folds[index], &session->folds[index + 1],
+                (session->fold_count - index - 1) * sizeof(*session->folds));
+    session->fold_count--;
+}
+
+static void clear_folds(MicaSession *session) {
+    if (!session) return;
+    free(session->folds);
+    session->folds = NULL;
+    session->fold_count = 0;
+    session->fold_capacity = 0;
+}
+
+static size_t folded_hidden_lines(const MicaSession *session) {
+    size_t hidden = 0;
+    if (!session) return 0;
+    for (size_t i = 0; i < session->fold_count; i++)
+        hidden += session->folds[i].end - session->folds[i].start - 1;
+    return hidden;
+}
+
+static size_t display_history_count(const MicaSession *session) {
+    if (!session) return 0;
+    size_t hidden = folded_hidden_lines(session);
+    return hidden > session->history_count ? 0 : session->history_count - hidden;
+}
+
+static size_t history_index_for_display_row(const MicaSession *session, size_t display_row,
+                                             bool *is_fold_placeholder) {
+    size_t hidden_before = 0;
+    if (is_fold_placeholder) *is_fold_placeholder = false;
+    for (size_t i = 0; session && i < session->fold_count; i++) {
+        MicaFold fold = session->folds[i];
+        size_t visible_start = fold.start - hidden_before;
+        if (display_row < visible_start) break;
+        if (display_row == visible_start) {
+            if (is_fold_placeholder) *is_fold_placeholder = true;
+            return fold.start;
+        }
+        hidden_before += fold.end - fold.start - 1;
+    }
+    return display_row + hidden_before;
+}
+
+static void adjust_folds_after_history_push(MicaSession *session) {
+    if (!session) return;
+    for (size_t i = 0; i < session->fold_count;) {
+        MicaFold *fold = &session->folds[i];
+        fold->start = fold->start > 0 ? fold->start - 1 : 0;
+        fold->end--;
+        if (fold->end <= fold->start + 1) remove_fold_at(session, i);
+        else i++;
+    }
+}
+
+static void adjust_folds_after_history_pop(MicaSession *session) {
+    if (!session) return;
+    for (size_t i = 0; i < session->fold_count;) {
+        MicaFold *fold = &session->folds[i];
+        if (fold->start >= session->history_count) {
+            remove_fold_at(session, i);
+            continue;
+        }
+        if (fold->end > session->history_count) fold->end = session->history_count;
+        if (fold->end <= fold->start + 1) remove_fold_at(session, i);
+        else i++;
+    }
+}
 
 static void configure_terminal_colors(MicaSession *session) {
     for (int index = 0; index < 16; index++) {
@@ -93,6 +178,8 @@ static void convert_screen_color(const MicaSession *session, VTermColor *color) 
         }
         return;
     }
+    // The AppKit renderer consumes RGB only. Resolve the ANSI 0–15 palette
+    // too, otherwise basic SGR colors appear as the default foreground.
     vterm_screen_convert_color_to_rgb(session->screen, color);
 }
 
@@ -159,16 +246,26 @@ static char *create_prefill_startup_dir(void) {
     char *directory = mkdtemp(template);
     if (!directory) return NULL;
     static const char startup[] =
+        "if [[ \"$MICA_TEST_NO_STARTUP\" != 1 ]]; then\n"
         "original=\"$MICA_ORIGINAL_ZDOTDIR\"\n"
         "export ZDOTDIR=\"$original\"\n"
         "[[ -r \"$original/.zshenv\" ]] && source \"$original/.zshenv\"\n"
-        "export ZDOTDIR=\"$MICA_ZSH_WRAPPER\"\n";
+        "export ZDOTDIR=\"$MICA_ZSH_WRAPPER\"\n"
+        "fi\n";
     static const char profile[] =
+        "if [[ \"$MICA_TEST_NO_STARTUP\" != 1 ]]; then\n"
         "original=\"$MICA_ORIGINAL_ZDOTDIR\"\n"
         "export ZDOTDIR=\"$original\"\n"
         "[[ -r \"$original/.zprofile\" ]] && source \"$original/.zprofile\"\n"
-        "export ZDOTDIR=\"$MICA_ZSH_WRAPPER\"\n";
+        "export ZDOTDIR=\"$MICA_ZSH_WRAPPER\"\n"
+        "fi\n";
     static const char interactive[] =
+        "if [[ \"$MICA_TEST_NO_STARTUP\" == 1 ]]; then\n"
+        "    if [[ -n $MICA_INITIAL_COMMAND ]]; then\n"
+        "        print -z -- \"$MICA_INITIAL_COMMAND\"\n"
+        "        unset MICA_INITIAL_COMMAND\n"
+        "    fi\n"
+        "else\n"
         "original=\"$MICA_ORIGINAL_ZDOTDIR\"\n"
         "export ZDOTDIR=\"$original\"\n"
         "[[ -r \"$original/.zshrc\" ]] && source \"$original/.zshrc\"\n"
@@ -177,12 +274,39 @@ static char *create_prefill_startup_dir(void) {
         "if [[ -n $MICA_INITIAL_COMMAND ]]; then\n"
         "    print -z -- \"$MICA_INITIAL_COMMAND\"\n"
         "    unset MICA_INITIAL_COMMAND\n"
+        "fi\n"
+        "fi\n"
+        "function _mica_command_started() {\n"
+        "    local mica_command=\"${1##[[:space:]]#}\"\n"
+        "    mica_command=\"${mica_command#unset CLAUDECODE && }\"\n"
+        "    mica_command=\"${mica_command##[[:space:]]#}\"\n"
+        "    mica_command=\"${mica_command%%[[:space:]]*}\"\n"
+        "    [[ -n $mica_command ]] || return\n"
+        "    MICA_COMMAND_ACTIVE=1\n"
+        "    printf '\\033]777;mica;command-started;%s\\033\\\\' \"$mica_command\"\n"
+        "}\n"
+        "function _mica_command_finished() {\n"
+        "    local mica_status=$?\n"
+        "    [[ $MICA_COMMAND_ACTIVE == 1 ]] || return\n"
+        "    unset MICA_COMMAND_ACTIVE\n"
+        "    printf '\\033]777;mica;command-finished;%d\\033\\\\' $mica_status\n"
+        "}\n"
+        "autoload -Uz add-zsh-hook\n"
+        "add-zsh-hook preexec _mica_command_started\n"
+        "add-zsh-hook precmd _mica_command_finished\n"
+        "if [[ \"$MICA_TEST_NO_STARTUP\" != 1 ]] && (( ! $+functions[compdef] )); then\n"
+        "    export ZDOTDIR=\"$MICA_ORIGINAL_ZDOTDIR\"\n"
+        "    autoload -Uz compinit\n"
+        "    compinit -i\n"
+        "    export ZDOTDIR=\"$MICA_ZSH_WRAPPER\"\n"
         "fi\n";
     static const char login[] =
+        "if [[ \"$MICA_TEST_NO_STARTUP\" != 1 ]]; then\n"
         "original=\"$MICA_ORIGINAL_ZDOTDIR\"\n"
         "export ZDOTDIR=\"$original\"\n"
         "[[ -r \"$original/.zlogin\" ]] && source \"$original/.zlogin\"\n"
-        "export ZDOTDIR=\"$MICA_ZSH_WRAPPER\"\n";
+        "export ZDOTDIR=\"$MICA_ZSH_WRAPPER\"\n"
+        "fi\n";
     if (!write_startup_file(directory, ".zshenv", startup) ||
         !write_startup_file(directory, ".zprofile", profile) ||
         !write_startup_file(directory, ".zshrc", interactive) ||
@@ -212,9 +336,22 @@ static void remove_prefill_startup_dir(char *directory) {
 }
 
 static int damage_callback(VTermRect rect, void *user) {
-    (void)rect;
     MicaSession *session = user;
-    if (session) session->revision++;
+    if (session) {
+        if (rect.start_row < rect.end_row) {
+            if (!session->has_dirty_rows) {
+                session->dirty_rows.start_row = rect.start_row;
+                session->dirty_rows.end_row = rect.end_row;
+                session->has_dirty_rows = true;
+            } else {
+                if (rect.start_row < session->dirty_rows.start_row)
+                    session->dirty_rows.start_row = rect.start_row;
+                if (rect.end_row > session->dirty_rows.end_row)
+                    session->dirty_rows.end_row = rect.end_row;
+            }
+        }
+        session->revision++;
+    }
     return 1;
 }
 
@@ -247,7 +384,33 @@ static int bell_callback(void *user) {
 
 static int notification_osc(int command, VTermStringFragment fragment, void *user) {
     MicaSession *session = user;
+    static const char started_prefix[] = "mica;command-started;";
     static const char completion_prefix[] = "mica;command-finished;";
+    if (session && command == 777 && fragment.final && fragment.str &&
+        fragment.len > (int)(sizeof(started_prefix) - 1) &&
+        memcmp(fragment.str, started_prefix, sizeof(started_prefix) - 1) == 0) {
+        size_t start = sizeof(started_prefix) - 1;
+        size_t length = (size_t)fragment.len - start;
+        if (length > 80) length = 80;
+        char safe_command[81];
+        size_t used = 0;
+        for (size_t i = 0; i < length; i++) {
+            unsigned char byte = (unsigned char)fragment.str[start + i];
+            if ((byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') ||
+                (byte >= '0' && byte <= '9') || byte == '_' || byte == '-' ||
+                byte == '.' || byte == '/' || byte == '+') safe_command[used++] = (char)byte;
+        }
+        safe_command[used] = '\0';
+        if (used) {
+            char *copy = strdup(safe_command);
+            if (copy) {
+                free(session->current_command);
+                session->current_command = copy;
+                session->revision++;
+            }
+        }
+        return 1;
+    }
     if (session && command == 777 && fragment.final && fragment.str &&
         fragment.len > (int)(sizeof(completion_prefix) - 1) &&
         memcmp(fragment.str, completion_prefix, sizeof(completion_prefix) - 1) == 0) {
@@ -264,6 +427,8 @@ static int notification_osc(int command, VTermStringFragment fragment, void *use
         if (valid) {
             session->command_exit_status = status;
             session->command_completion_count++;
+            free(session->current_command);
+            session->current_command = NULL;
             session->revision++;
         }
         return 1;
@@ -353,6 +518,7 @@ static void output_callback(const char *bytes, size_t length, void *user) {
 static int history_push(int cols, const VTermScreenCell *cells, void *user) {
     MicaSession *session = user;
     if (!session || cols <= 0 || (size_t)cols != (size_t)session->cols) return 1;
+    size_t old_display_count = display_history_count(session);
     size_t limit = history_limit_lines(session->cols);
     if (session->history_count == session->history_capacity && session->history_capacity < limit) {
         size_t next_capacity = session->history_capacity ? session->history_capacity * 2 : MICA_HISTORY_INITIAL;
@@ -377,14 +543,17 @@ static int history_push(int cols, const VTermScreenCell *cells, void *user) {
         slot = (session->history_start + session->history_count) % session->history_capacity;
         session->history_count++;
     } else {
+        adjust_folds_after_history_push(session);
         slot = session->history_start;
         session->history_start = (session->history_start + 1) % session->history_capacity;
     }
     memcpy(session->history + slot * (size_t)session->cols, cells,
            (size_t)session->cols * sizeof(*cells));
-    if (session->view_offset > 0 && session->view_offset < session->history_count)
+    size_t new_display_count = display_history_count(session);
+    if (new_display_count > old_display_count && session->view_offset > 0 &&
+        session->view_offset < new_display_count)
         session->view_offset++;
-    if (session->view_offset > session->history_count) session->view_offset = session->history_count;
+    if (session->view_offset > new_display_count) session->view_offset = new_display_count;
     return 1;
 }
 
@@ -395,7 +564,10 @@ static int history_pop(int cols, VTermScreenCell *cells, void *user) {
     memcpy(cells, session->history + slot * (size_t)session->cols,
            (size_t)session->cols * sizeof(*cells));
     session->history_count--;
+    adjust_folds_after_history_pop(session);
     if (session->history_count == 0) session->history_start = 0;
+    size_t display_count = display_history_count(session);
+    if (session->view_offset > display_count) session->view_offset = display_count;
     return 1;
 }
 
@@ -408,6 +580,7 @@ static int history_clear(void *user) {
     session->history_start = 0;
     session->history_count = 0;
     session->view_offset = 0;
+    clear_folds(session);
     return 1;
 }
 
@@ -433,9 +606,9 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
     session->cols = cols;
     session->running = true;
     session->command = command ? strdup(command) : strdup("/bin/zsh -l -i");
-    if (prefilled && command) session->startup_dir = create_prefill_startup_dir();
+    session->startup_dir = create_prefill_startup_dir();
     session->vt = vterm_new(rows, cols);
-    if (!session->command || !session->vt || (prefilled && command && !session->startup_dir)) goto fail;
+    if (!session->command || !session->vt) goto fail;
 
     vterm_set_utf8(session->vt, 1);
     session->state = vterm_obtain_state(session->vt);
@@ -455,6 +628,11 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
     pid_t pid = forkpty(&master, NULL, NULL, &window_size);
     if (pid < 0) goto fail;
     if (pid == 0) {
+        struct termios terminal_settings;
+        if (tcgetattr(STDIN_FILENO, &terminal_settings) == 0) {
+            terminal_settings.c_iflag &= (tcflag_t)~(IXON | IXOFF);
+            (void)tcsetattr(STDIN_FILENO, TCSANOW, &terminal_settings);
+        }
         if (cwd && cwd[0] && chdir(cwd) != 0) {
             dprintf(STDERR_FILENO, "mica: cannot enter %s: %s\r\n", cwd, strerror(errno));
             _exit(126);
@@ -462,29 +640,35 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
         setenv("TERM", "xterm-256color", 1);
         setenv("COLORTERM", "truecolor", 1);
         setenv("TERM_PROGRAM", "Mica", 1);
-        setenv("TERM_PROGRAM_VERSION", "0.1.0", 1);
+        setenv("TERM_PROGRAM_VERSION", MICA_VERSION, 1);
+        setenv("TERM_PROGRAM_REVISION", MICA_REVISION, 1);
         setenv("CLICOLOR", "1", 1);
+        // GUI launchers can inherit NO_COLOR from an unrelated parent shell.
+        // Mica advertises a color-capable xterm-256color terminal.
+        unsetenv("NO_COLOR");
         if (session->startup_dir) {
-            const char *original_zdotdir = getenv("ZDOTDIR");
+            const char *original_zdotdir = getenv("MICA_ORIGINAL_ZDOTDIR");
+            if (!original_zdotdir || !original_zdotdir[0]) original_zdotdir = getenv("ZDOTDIR");
             if (!original_zdotdir || !original_zdotdir[0]) original_zdotdir = getenv("HOME");
             if (!original_zdotdir || !original_zdotdir[0]) original_zdotdir = ".";
             setenv("MICA_ORIGINAL_ZDOTDIR", original_zdotdir, 1);
             setenv("MICA_ZSH_WRAPPER", session->startup_dir, 1);
-            setenv("MICA_INITIAL_COMMAND", command, 1);
             setenv("ZDOTDIR", session->startup_dir, 1);
-            execl("/bin/zsh", "zsh", "-l", "-i", (char *)NULL);
+            if (prefilled && command) {
+                setenv("MICA_INITIAL_COMMAND", command, 1);
+                execl("/bin/zsh", "zsh", "-l", "-i", (char *)NULL);
+            }
         }
         if (command) {
-            setenv("MICA_INITIAL_COMMAND", command, 1);
             const char *test_mode = getenv("MICA_TEST_NO_STARTUP");
             if (test_mode && strcmp(test_mode, "1") == 0) {
                 execl("/bin/zsh", "zsh", "-f", "-i", "-c",
-                      "eval \"$MICA_INITIAL_COMMAND\"; mica_status=$?; printf '\\n[command exited: %d]\\n' \"$mica_status\"; printf '\\033]777;mica;command-finished;%d\\033\\\\' \"$mica_status\"; exec /bin/zsh -f -i",
-                      (char *)NULL);
+                      "mica_command=$1; mica_label=${mica_command#unset CLAUDECODE && }; mica_label=${mica_label##[[:space:]]#}; mica_label=${mica_label%%[[:space:]]*}; printf '\\033]777;mica;command-started;%s\\033\\\\' \"$mica_label\"; eval \"$mica_command\"; mica_status=$?; printf '\\n[command exited: %d]\\n' \"$mica_status\"; printf '\\033]777;mica;command-finished;%d\\033\\\\' \"$mica_status\"; exec /bin/zsh -f -i",
+                      "mica", command, (char *)NULL);
             } else {
                 execl("/bin/zsh", "zsh", "-l", "-i", "-c",
-                      "eval \"$MICA_INITIAL_COMMAND\"; mica_status=$?; printf '\\n[command exited: %d]\\n' \"$mica_status\"; printf '\\033]777;mica;command-finished;%d\\033\\\\' \"$mica_status\"; exec /bin/zsh -l -i",
-                      (char *)NULL);
+                      "mica_command=$1; mica_label=${mica_command#unset CLAUDECODE && }; mica_label=${mica_label##[[:space:]]#}; mica_label=${mica_label%%[[:space:]]*}; printf '\\033]777;mica;command-started;%s\\033\\\\' \"$mica_label\"; eval \"$mica_command\"; mica_status=$?; printf '\\n[command exited: %d]\\n' \"$mica_status\"; printf '\\033]777;mica;command-finished;%d\\033\\\\' \"$mica_status\"; exec /bin/zsh -l -i",
+                      "mica", command, (char *)NULL);
             }
         } else {
             const char *test_mode = getenv("MICA_TEST_NO_STARTUP");
@@ -534,8 +718,10 @@ void mica_session_destroy(MicaSession *session) {
     }
     if (session->vt) vterm_free(session->vt);
     free(session->history);
+    clear_folds(session);
     clear_pending_input(session);
     free(session->command);
+    free(session->current_command);
     free(session->title);
     remove_prefill_startup_dir(session->startup_dir);
     free(session);
@@ -636,6 +822,11 @@ void mica_session_resize_pixels(MicaSession *session, int rows, int cols, int pi
     bool grid_changed = rows != session->rows || cols != session->cols;
     bool pixels_changed = pixel_width != session->pixel_width || pixel_height != session->pixel_height;
     if (!grid_changed && !pixels_changed) return;
+    if (grid_changed) {
+        clear_folds(session);
+        if (session->view_offset > session->history_count)
+            session->view_offset = session->history_count;
+    }
     if (cols != session->cols) {
         size_t capacity = session->history_capacity;
         size_t limit = history_limit_lines(cols);
@@ -676,10 +867,12 @@ void mica_session_resize_pixels(MicaSession *session, int rows, int cols, int pi
 
 void mica_session_scroll(MicaSession *session, int lines) {
     if (!session) return;
+    size_t history_lines = display_history_count(session);
+    if (session->view_offset > history_lines) session->view_offset = history_lines;
     if (lines > 0) {
         size_t n = (size_t)lines;
-        session->view_offset = n > session->history_count - session->view_offset
-            ? session->history_count : session->view_offset + n;
+        session->view_offset = n > history_lines - session->view_offset
+            ? history_lines : session->view_offset + n;
     } else if (lines < 0) {
         size_t n = (size_t)(-(int64_t)lines);
         session->view_offset = n > session->view_offset ? 0 : session->view_offset - n;
@@ -691,6 +884,79 @@ int mica_session_rows(const MicaSession *session) { return session ? session->ro
 int mica_session_cols(const MicaSession *session) { return session ? session->cols : 0; }
 int mica_session_view_offset(const MicaSession *session) { return session ? (int)session->view_offset : 0; }
 size_t mica_session_history_lines(const MicaSession *session) { return session ? session->history_count : 0; }
+size_t mica_session_display_history_lines(const MicaSession *session) { return display_history_count(session); }
+
+bool mica_session_fold_visible_rows(MicaSession *session, int start_row, int end_row) {
+    if (!session || start_row < 0 || end_row <= start_row || end_row >= session->rows ||
+        session->fold_count >= MICA_FOLD_LIMIT)
+        return false;
+    size_t display_count = display_history_count(session);
+    if (session->view_offset > display_count) return false;
+    size_t first_display = display_count - session->view_offset + (size_t)start_row;
+    size_t end_display = display_count - session->view_offset + (size_t)end_row + 1;
+    if (end_display > display_count) return false;
+    size_t start = history_index_for_display_row(session, first_display, NULL);
+    size_t end = end_display == display_count
+        ? session->history_count
+        : history_index_for_display_row(session, end_display, NULL);
+    if (end <= start + 1) return false;
+    for (size_t i = 0; i < session->fold_count; i++)
+        if (start < session->folds[i].end && end > session->folds[i].start) return false;
+    if (session->fold_count == session->fold_capacity) {
+        size_t next_capacity = session->fold_capacity ? session->fold_capacity * 2 : 4;
+        if (next_capacity > MICA_FOLD_LIMIT) next_capacity = MICA_FOLD_LIMIT;
+        MicaFold *grown = realloc(session->folds, next_capacity * sizeof(*grown));
+        if (!grown) return false;
+        session->folds = grown;
+        session->fold_capacity = next_capacity;
+    }
+    size_t insert_at = 0;
+    while (insert_at < session->fold_count && session->folds[insert_at].start < start) insert_at++;
+    if (insert_at < session->fold_count)
+        memmove(&session->folds[insert_at + 1], &session->folds[insert_at],
+                (session->fold_count - insert_at) * sizeof(*session->folds));
+    session->folds[insert_at] = (MicaFold){ .start = start, .end = end };
+    session->fold_count++;
+    size_t new_display_count = display_history_count(session);
+    if (session->view_offset > new_display_count) session->view_offset = new_display_count;
+    return true;
+}
+
+bool mica_session_toggle_fold_at_view_row(MicaSession *session, int row) {
+    if (!session || row < 0 || row >= session->rows) return false;
+    size_t display_count = display_history_count(session);
+    if (session->view_offset > display_count) return false;
+    size_t display_row = display_count - session->view_offset + (size_t)row;
+    if (display_row >= display_count) return false;
+    bool is_placeholder = false;
+    size_t history_row = history_index_for_display_row(session, display_row, &is_placeholder);
+    if (!is_placeholder) return false;
+    for (size_t i = 0; i < session->fold_count; i++) {
+        if (session->folds[i].start != history_row) continue;
+        remove_fold_at(session, i);
+        return true;
+    }
+    return false;
+}
+
+bool mica_session_fold_info_at_view_row(const MicaSession *session, int row, size_t *hidden_rows) {
+    if (!session || row < 0 || row >= session->rows) return false;
+    size_t display_count = display_history_count(session);
+    if (session->view_offset > display_count) return false;
+    size_t display_row = display_count - session->view_offset + (size_t)row;
+    if (display_row >= display_count) return false;
+    bool is_placeholder = false;
+    size_t history_row = history_index_for_display_row(session, display_row, &is_placeholder);
+    if (!is_placeholder) return false;
+    for (size_t i = 0; i < session->fold_count; i++) {
+        MicaFold fold = session->folds[i];
+        if (fold.start != history_row) continue;
+        if (hidden_rows) *hidden_rows = fold.end - fold.start - 1;
+        return true;
+    }
+    return false;
+}
+
 bool mica_session_is_running(const MicaSession *session) { return session && session->running; }
 int mica_session_exit_status(const MicaSession *session) { return session && !session->running ? session->exit_status : -1; }
 uint64_t mica_session_command_completion_count(const MicaSession *session) { return session ? session->command_completion_count : 0; }
@@ -706,21 +972,42 @@ void mica_session_cursor(const MicaSession *session, int *row, int *col) {
     if (col) *col = pos.col;
 }
 uint64_t mica_session_revision(const MicaSession *session) { return session ? session->revision : 0; }
+bool mica_session_take_dirty_rows(MicaSession *session, MicaDirtyRows *rows) {
+    if (!session || !session->has_dirty_rows) return false;
+    if (rows) *rows = session->dirty_rows;
+    session->has_dirty_rows = false;
+    session->dirty_rows = (MicaDirtyRows){0};
+    return true;
+}
 uint64_t mica_session_attention_count(const MicaSession *session) { return session ? session->attention_count : 0; }
 pid_t mica_session_pid(const MicaSession *session) { return session ? session->child_pid : -1; }
+bool mica_session_working_directory(const MicaSession *session, char *buffer, size_t capacity) {
+    if (!session || session->child_pid <= 0 || !buffer || capacity == 0) return false;
+    struct proc_vnodepathinfo paths;
+    int bytes = proc_pidinfo(session->child_pid, PROC_PIDVNODEPATHINFO, 0, &paths, sizeof(paths));
+    if (bytes < (int)sizeof(paths) || paths.pvi_cdir.vip_path[0] == '\0') return false;
+    size_t length = strnlen(paths.pvi_cdir.vip_path, sizeof(paths.pvi_cdir.vip_path));
+    if (length == 0 || length >= capacity) return false;
+    memcpy(buffer, paths.pvi_cdir.vip_path, length + 1);
+    return true;
+}
 const char *mica_session_command(const MicaSession *session) { return session ? session->command : ""; }
 const char *mica_session_title(const MicaSession *session) { return session && session->title ? session->title : ""; }
+const char *mica_session_current_command(const MicaSession *session) { return session && session->current_command ? session->current_command : ""; }
 
 bool mica_session_get_cell(const MicaSession *session, int row, int col, MicaCell *cell) {
     if (!session || !cell || row < 0 || row >= session->rows || col < 0 || col >= session->cols) return false;
-    size_t virtual_row = session->history_count - session->view_offset + (size_t)row;
+    size_t visible_history_count = display_history_count(session);
+    if (session->view_offset > visible_history_count) return false;
+    size_t display_row = visible_history_count - session->view_offset + (size_t)row;
     VTermScreenCell source;
-    if (virtual_row < session->history_count) {
+    if (display_row < visible_history_count) {
         if (!session->history_capacity || !session->history) return false;
-        size_t slot = (session->history_start + virtual_row) % session->history_capacity;
+        size_t history_row = history_index_for_display_row(session, display_row, NULL);
+        size_t slot = (session->history_start + history_row) % session->history_capacity;
         source = session->history[slot * (size_t)session->cols + (size_t)col];
     } else {
-        VTermPos pos = { .row = (int)(virtual_row - session->history_count), .col = col };
+        VTermPos pos = { .row = (int)(display_row - visible_history_count), .col = col };
         if (pos.row < 0 || pos.row >= session->rows || !vterm_screen_get_cell(session->screen, pos, &source))
             return false;
     }

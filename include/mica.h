@@ -7,6 +7,8 @@
 #include <sys/types.h>
 #include <vterm.h>
 
+#define MICA_VERSION "0.0.1"
+#define MICA_REVISION "20"
 #define MICA_HISTORY_LIMIT_BYTES (2u * 1024u * 1024u)
 
 typedef struct MicaSession MicaSession;
@@ -18,6 +20,11 @@ typedef struct {
     VTermScreenCellAttrs attrs;
     char width;
 } MicaCell;
+
+typedef struct {
+    int start_row;
+    int end_row;
+} MicaDirtyRows;
 
 MicaSession *mica_session_create(const char *cwd, const char *command, int rows, int cols);
 MicaSession *mica_session_create_prefilled(const char *cwd, const char *command, int rows, int cols);
@@ -38,6 +45,10 @@ int mica_session_rows(const MicaSession *session);
 int mica_session_cols(const MicaSession *session);
 int mica_session_view_offset(const MicaSession *session);
 size_t mica_session_history_lines(const MicaSession *session);
+size_t mica_session_display_history_lines(const MicaSession *session);
+bool mica_session_fold_visible_rows(MicaSession *session, int start_row, int end_row);
+bool mica_session_toggle_fold_at_view_row(MicaSession *session, int row);
+bool mica_session_fold_info_at_view_row(const MicaSession *session, int row, size_t *hidden_rows);
 bool mica_session_get_cell(const MicaSession *session, int row, int col, MicaCell *cell);
 bool mica_session_is_running(const MicaSession *session);
 int mica_session_exit_status(const MicaSession *session);
@@ -48,9 +59,12 @@ bool mica_session_reports_focus(const MicaSession *session);
 bool mica_session_cursor_visible(const MicaSession *session);
 void mica_session_cursor(const MicaSession *session, int *row, int *col);
 uint64_t mica_session_revision(const MicaSession *session);
+bool mica_session_take_dirty_rows(MicaSession *session, MicaDirtyRows *rows);
 uint64_t mica_session_attention_count(const MicaSession *session);
 pid_t mica_session_pid(const MicaSession *session);
+bool mica_session_working_directory(const MicaSession *session, char *buffer, size_t capacity);
 const char *mica_session_command(const MicaSession *session);
 const char *mica_session_title(const MicaSession *session);
+const char *mica_session_current_command(const MicaSession *session);
 
 #endif

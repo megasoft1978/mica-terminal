@@ -21,7 +21,9 @@ HOME = Path.home()
 DEFAULT_LAYOUTS = HOME / ".config/mica/layouts"
 DEFAULT_DESKTOP = HOME / "Desktop"
 DEFAULT_BASE_APP = Path(__file__).resolve().parents[1] / "build/Mica.app"
-DEFAULT_PROJECT_ICON_TOOL = Path(__file__).resolve().parents[1] / "build/mica-project-icon"
+DEFAULT_PROJECT_ICON_TOOL = Path(
+    os.environ.get("MICA_PROJECT_ICON_TOOL", Path(__file__).resolve().parents[1] / "build/mica-project-icon")
+)
 DEFAULT_ICON_CONVERTER = Path(__file__).resolve().parent / "build-macos-icon.sh"
 DEFAULT_MANIFEST = HOME / ".config/mica/desktop-apps.json"
 DEFAULT_BACKUPS = HOME / ".local/share/mica/launcher-backups"
@@ -121,13 +123,23 @@ def normalized_identifier(project: dict, used: set[str]) -> str:
     return identifier
 
 
-def install_bundle(project: dict, base_app: Path, used_ids: set[str], backup_dir: Path) -> None:
+def install_bundle(
+    project: dict,
+    base_app: Path,
+    used_ids: set[str],
+    backup_dir: Path,
+    project_icon_tool: Path = DEFAULT_PROJECT_ICON_TOOL,
+) -> None:
     target = Path(project["app_path"])
     target.parent.mkdir(parents=True, exist_ok=True)
     binary = base_app / "Contents/MacOS/Mica"
+    voice_helper = base_app / "Contents/Helpers/mica-voice"
     icon = base_app / "Contents/Resources/Mica.icns"
+    third_party_notices = base_app / "Contents/Resources/THIRD_PARTY_NOTICES.md"
+    third_party_licenses = base_app / "Contents/Resources/ThirdPartyLicenses"
     base_info = read_plist(base_app / "Contents/Info.plist")
-    if not binary.is_file() or not icon.is_file() or not DEFAULT_PROJECT_ICON_TOOL.is_file():
+    if (not binary.is_file() or not voice_helper.is_file() or not icon.is_file()
+            or not third_party_notices.is_file() or not project_icon_tool.is_file()):
         raise RuntimeError(f"build the base Mica.app before installing project apps: {base_app}")
 
     current_info = None
@@ -162,14 +174,23 @@ def install_bundle(project: dict, base_app: Path, used_ids: set[str], backup_dir
     contents = staging / "Contents"
     (contents / "MacOS").mkdir(parents=True)
     (contents / "Resources").mkdir()
+    (contents / "Helpers").mkdir()
+    (contents / "Resources/ThirdPartyLicenses").mkdir(parents=True)
     try:
         try:
             os.link(binary, contents / "MacOS/Mica")
         except OSError:
             shutil.copy2(binary, contents / "MacOS/Mica")
+        shutil.copy2(voice_helper, contents / "Helpers/mica-voice")
+        shutil.copy2(third_party_notices, contents / "Resources/THIRD_PARTY_NOTICES.md")
+        if third_party_licenses.is_dir():
+            shutil.copytree(third_party_licenses, contents / "Resources/ThirdPartyLicenses", dirs_exist_ok=True)
+        fluid_audio_license = base_app / "Contents/Resources/LICENSE-FluidAudio.txt"
+        if fluid_audio_license.is_file():
+            shutil.copy2(fluid_audio_license, contents / "Resources/LICENSE-FluidAudio.txt")
         project_icon_png = staging_parent / "Mica-project.png"
         subprocess.run(
-            [str(DEFAULT_PROJECT_ICON_TOOL), str(icon), str(project_icon_png), display_name],
+            [str(project_icon_tool), str(icon), str(project_icon_png), display_name],
             check=True,
         )
         subprocess.run(
@@ -240,6 +261,90 @@ def register_app_bundle(path: Path) -> None:
             print(f"warning: Launch Services could not refresh {path}: {result.stderr.strip()}", file=sys.stderr)
 
 
+def create_instance_record(name: str, cwd: Path, command: str, layout_dir: Path, output_dir: Path) -> dict:
+    display_name = name.strip()
+    if not display_name or any(char in display_name for char in "\t\r\n/\\"):
+        raise ValueError("instance name must be non-empty and cannot contain tabs, newlines, or slashes")
+    slug = re.sub(r"[^a-z0-9]+", "-", display_name.lower()).strip("-")
+    if not slug:
+        raise ValueError("instance name must include at least one letter or number")
+    if any(char in command for char in "\t\r\n"):
+        raise ValueError("startup command cannot contain tabs or newlines")
+
+    project_dir = cwd.expanduser().resolve(strict=True)
+    if not project_dir.is_dir():
+        raise ValueError(f"project folder is not a directory: {project_dir}")
+    if any(char in str(project_dir) for char in "\t\r\n\0"):
+        raise ValueError("project folder path cannot contain tabs or newlines")
+    layout_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    layout_path = layout_dir / f"{slug}.mica"
+    app_name = f"{slug}.app"
+    app_path = output_dir / app_name
+    if layout_path.exists():
+        raise FileExistsError(f"Mica layout already exists: {layout_path}")
+    if app_path.exists():
+        raise FileExistsError(f"Mica app already exists: {app_path}")
+
+    layout_contents = f"# Mica layout v1\nShell\t{project_dir}\t{command.strip()}\n"
+    try:
+        with layout_path.open("x", encoding="utf-8") as stream:
+            stream.write(layout_contents)
+    except Exception:
+        layout_path.unlink(missing_ok=True)
+        raise
+    return {
+        "app_name": app_name,
+        "display_name": display_name,
+        "bundle_identifier": None,
+        "layout_name": slug,
+        "layout_path": str(layout_path.resolve()),
+        "app_path": str(app_path.resolve()),
+        "launch_script": None,
+    }
+
+
+def create_instance_from_prompts(
+    layouts: Path,
+    output: Path,
+    base_app: Path,
+    manifest: Path,
+    project_icon_tool: Path,
+    register: bool = True,
+) -> dict:
+    cwd = Path.cwd().resolve()
+    default_name = cwd.name or "Mica Project"
+    name = input(f"Name for this Mica instance [{default_name}]: ").strip() or default_name
+    folder_text = input(f"Project folder [{cwd}]: ").strip()
+    project_dir = Path(folder_text).expanduser() if folder_text else cwd
+    command = input("Startup command (optional; leave blank for a shell): ").strip()
+
+    existing = []
+    if manifest.is_file():
+        existing = json.loads(manifest.read_text(encoding="utf-8"))
+        if not isinstance(existing, list) or any(not isinstance(item, dict) for item in existing):
+            raise ValueError(f"invalid desktop app manifest: {manifest}")
+    project = create_instance_record(name, project_dir, command, layouts, output)
+    try:
+        for item in existing:
+            if item.get("app_name") == project["app_name"] or item.get("layout_name") == project["layout_name"]:
+                raise FileExistsError(f"Mica instance already exists: {project['display_name']}")
+        used_ids = {
+            item["bundle_identifier"] for item in existing
+            if isinstance(item, dict) and isinstance(item.get("bundle_identifier"), str)
+        }
+        install_bundle(project, base_app, used_ids, Path(tempfile.gettempdir()), project_icon_tool)
+        all_projects = [*existing, project]
+        write_json_atomic(manifest, all_projects)
+    except Exception:
+        shutil.rmtree(Path(project["app_path"]), ignore_errors=True)
+        Path(project["layout_path"]).unlink(missing_ok=True)
+        raise
+    if register:
+        register_app_bundle(Path(project["app_path"]))
+    return project
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--layouts", type=Path, default=DEFAULT_LAYOUTS)
@@ -248,6 +353,9 @@ def main() -> int:
     parser.add_argument("--base-app", type=Path, default=DEFAULT_BASE_APP)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--backups", type=Path, default=DEFAULT_BACKUPS)
+    parser.add_argument("--project-icon-tool", type=Path, default=DEFAULT_PROJECT_ICON_TOOL)
+    parser.add_argument("--new-instance", action="store_true", help="create a project layout and Desktop app interactively")
+    parser.add_argument("--no-register", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--install", action="store_true", help="install bundles and migrate matched shell launchers")
     args = parser.parse_args()
 
@@ -257,6 +365,18 @@ def main() -> int:
         output = args.output.expanduser().resolve()
         base_app = args.base_app.expanduser().resolve()
         manifest = args.manifest.expanduser().resolve()
+        project_icon_tool = args.project_icon_tool.expanduser().resolve()
+        if args.new_instance:
+            project = create_instance_from_prompts(
+                layouts, output, base_app, manifest, project_icon_tool, register=not args.no_register
+            )
+            print(f"created {project['app_path']}")
+            print(f"layout: {project['layout_path']}")
+            if project["layout_path"] and Path(project["layout_path"]).read_text(encoding="utf-8").splitlines()[-1].endswith("\t"):
+                print("The new app opens a zsh shell in this folder.")
+            else:
+                print("The startup command is prefilled in the shell; press Return to run it.")
+            return 0
         projects = load_projects(manifest, launchers, layouts, output)
         backup_dir = args.backups.expanduser().resolve() / datetime.now().strftime("%Y%m%d-%H%M%S")
         used_ids: set[str] = set()
@@ -271,7 +391,7 @@ def main() -> int:
                     project["bundle_identifier"] = project.get("bundle_identifier") or info.get("CFBundleIdentifier")
                     project["launch_script"] = project.get("launch_script") or info.get("MicaProjectLaunchScript")
             if args.install:
-                install_bundle(project, base_app, used_ids, backup_dir)
+                install_bundle(project, base_app, used_ids, backup_dir, project_icon_tool)
                 register_app_bundle(Path(project["app_path"]))
                 migrate_launch_script(project, backup_dir, True)
                 print(f"installed {project['app_name']} [{project['bundle_identifier']}] -> {project['layout_name']}.mica")

@@ -2,7 +2,7 @@
 
 Mica handles terminal BEL, OSC 9, and OSC 777 notifications from terminal applications and agent hooks. Notifications from background tabs show an `!` marker; macOS Dock attention is requested while Mica is unfocused. Selecting a marked tab clears its marker. Focus gained/lost events are also passed to the active terminal session.
 
-The Claude Code and Codex shortcuts use commands from the active project's local `.mica` layout. When a configured command returns, Mica shows whether it succeeded and its exit status. A completed background tab gets an indicator; if Mica is unfocused, its Dock icon requests attention. With no command configured, the shortcut opens a normal zsh tab. Mica also reads OSC window titles from terminal programs and adds them to the tab label.
+Claude Code and Codex run as regular commands inside zsh tabs. A command in a `.mica` layout is placed at the prompt; press Return to start it. Mica also reads OSC window titles from terminal programs and adds them to the tab label. Commands started with Mica's `--command` option report their exit status; completed background commands get a tab indicator, and Mica requests Dock attention while unfocused.
 
 Codex supports `tui.notifications`, `tui.notification_method` (`auto`, `osc9`, or `bel`), and `tui.notification_condition` (`unfocused` or `always`). Mica identifies itself as `TERM_PROGRAM=Mica`, so Codex may choose BEL when automatic terminal detection does not recognize OSC 9. Mica handles either method. See the [Codex configuration reference](https://developers.openai.com/codex/config-reference#tui-notification-settings). Leave your current Codex configuration alone unless you want to turn notifications on or change their focus condition.
 

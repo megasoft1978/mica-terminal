@@ -1,0 +1,110 @@
+#import "mica_diagnostics.h"
+
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdlib.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
+
+static pthread_mutex_t MicaDiagnosticsLock = PTHREAD_MUTEX_INITIALIZER;
+static int MicaDiagnosticsFD = -1;
+static NSURL *MicaDiagnosticsDirectoryURL;
+static const off_t MicaDiagnosticsMaximumBytes = 1024 * 1024;
+
+NSURL *MicaDiagnosticsLogDirectory(void) {
+    @synchronized (NSFileManager.defaultManager) {
+        if (!MicaDiagnosticsDirectoryURL) {
+            const char *override = getenv("MICA_DIAGNOSTICS_LOG_DIR");
+            if (override && override[0] == '/') {
+                MicaDiagnosticsDirectoryURL = [NSURL fileURLWithPath:
+                    [NSString stringWithUTF8String:override] isDirectory:YES];
+            } else {
+                NSURL *library = [[NSFileManager.defaultManager URLsForDirectory:NSLibraryDirectory
+                    inDomains:NSUserDomainMask] firstObject];
+                if (library)
+                    MicaDiagnosticsDirectoryURL = [library URLByAppendingPathComponent:@"Logs/Mica" isDirectory:YES];
+            }
+        }
+        return MicaDiagnosticsDirectoryURL;
+    }
+}
+
+static void MicaDiagnosticsWriteBytes(int fd, const void *bytes, size_t length) {
+    const char *cursor = bytes;
+    while (length) {
+        ssize_t written = write(fd, cursor, length);
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0) return;
+        cursor += written;
+        length -= (size_t)written;
+    }
+}
+
+void MicaDiagnosticsInitialize(void) {
+    pthread_mutex_lock(&MicaDiagnosticsLock);
+    if (MicaDiagnosticsFD >= 0) {
+        pthread_mutex_unlock(&MicaDiagnosticsLock);
+        return;
+    }
+
+    NSURL *directory = MicaDiagnosticsLogDirectory();
+    NSError *directoryError = nil;
+    if (!directory || ![NSFileManager.defaultManager createDirectoryAtURL:directory
+        withIntermediateDirectories:YES attributes:@{ NSFilePosixPermissions: @0700 } error:&directoryError]) {
+        pthread_mutex_unlock(&MicaDiagnosticsLock);
+        return;
+    }
+
+    NSString *identifier = NSBundle.mainBundle.bundleIdentifier ?: @"com.megasoft78.mica";
+    NSMutableCharacterSet *allowed = [NSMutableCharacterSet alphanumericCharacterSet];
+    [allowed addCharactersInString:@".-_"];
+    NSMutableString *safeIdentifier = [NSMutableString string];
+    for (NSUInteger index = 0; index < identifier.length; index++) {
+        unichar character = [identifier characterAtIndex:index];
+        unichar safeCharacter = [allowed characterIsMember:character] ? character : (unichar)'_';
+        [safeIdentifier appendFormat:@"%C", safeCharacter];
+    }
+    NSString *filename = [NSString stringWithFormat:@"%@-%d.log", safeIdentifier, getpid()];
+    NSURL *fileURL = [directory URLByAppendingPathComponent:filename isDirectory:NO];
+    MicaDiagnosticsFD = open(fileURL.fileSystemRepresentation,
+        O_CREAT | O_WRONLY | O_APPEND | O_CLOEXEC, S_IRUSR | S_IWUSR);
+    if (MicaDiagnosticsFD >= 0) {
+        ftruncate(MicaDiagnosticsFD, 0);
+        MicaDiagnosticsDirectoryURL = directory;
+    }
+    pthread_mutex_unlock(&MicaDiagnosticsLock);
+
+    if (directoryError)
+        MicaDiagnosticsLog(@"startup", [NSString stringWithFormat:@"could not create log directory: %@", directoryError.localizedDescription]);
+}
+
+void MicaDiagnosticsLog(NSString *category, NSString *message) {
+    if (!message.length) return;
+    pthread_mutex_lock(&MicaDiagnosticsLock);
+    if (MicaDiagnosticsFD < 0) {
+        pthread_mutex_unlock(&MicaDiagnosticsLock);
+        return;
+    }
+
+    struct stat fileStatus;
+    if (fstat(MicaDiagnosticsFD, &fileStatus) == 0 && fileStatus.st_size > MicaDiagnosticsMaximumBytes) {
+        ftruncate(MicaDiagnosticsFD, 0);
+        lseek(MicaDiagnosticsFD, 0, SEEK_SET);
+    }
+
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    struct tm localTime;
+    localtime_r(&now.tv_sec, &localTime);
+    char timestamp[40];
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S", &localTime);
+    NSString *singleLine = [[message stringByReplacingOccurrencesOfString:@"\n" withString:@"\\n"]
+        stringByReplacingOccurrencesOfString:@"\r" withString:@"\\r"];
+    NSString *line = [NSString stringWithFormat:@"%s.%03ld [%@] %@\n", timestamp,
+        now.tv_nsec / 1000000, category.length ? category : @"app", singleLine];
+    NSData *data = [line dataUsingEncoding:NSUTF8StringEncoding];
+    if (data.length) MicaDiagnosticsWriteBytes(MicaDiagnosticsFD, data.bytes, data.length);
+    pthread_mutex_unlock(&MicaDiagnosticsLock);
+}

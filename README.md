@@ -1,95 +1,111 @@
 # Mica Terminal
 
-<p align="center">
-  <img src="assets/mica-icon.png" alt="Mica Terminal icon" width="128">
-</p>
+Mica is a lightweight macOS terminal for zsh, Claude Code, Codex, and other command line tools. It uses `libvterm` for terminal behavior and keeps scrollback allocated only as needed.
 
-<p align="center">
-  <a href="https://github.com/megasoft1978/mica-terminal/actions/workflows/macos.yml"><img src="https://github.com/megasoft1978/mica-terminal/actions/workflows/macos.yml/badge.svg" alt="macOS build"></a>
-</p>
+## Install and open
 
-A lightweight, native macOS terminal workspace for shell and coding-agent sessions. Mica's session manager and bounded scrollback are written in C, terminal parsing uses `libvterm`, and a small AppKit frontend draws the interface.
-
-## Features
-
-- Project windows, terminal tabs, and keyboard-driven navigation.
-- macOS light/dark appearance, system accent colors, and readable interface text.
-- ANSI, 256-color, and truecolor support; Unicode and emoji rendering.
-- Scrollback allocated on demand, capped at 2 MiB per session.
-- Optional Claude Code and Codex launch and resume shortcuts configured per project.
-- Agent completion status with an exit code, tab indicator, and Dock attention for background work.
-- `⌘V` text paste and image-paste routing to the foreground CLI.
-- Per-project macOS app identities and marked icons for Dock and Spaces.
-- Bounded local test-and-repair loop for ongoing development.
-
-## Build
-
-Requires macOS 13 or newer, Xcode Command Line Tools, Homebrew, `libvterm`, and `pkg-config`.
+Requires macOS 13 or later, Xcode Command Line Tools, and Homebrew.
 
 ```sh
-xcode-select --install # if needed
 brew install libvterm pkg-config
-make validate
-open build/Mica.app
+make app
+open build/Mica.app --args --cwd "$PWD"
 ```
 
-Start a terminal in a directory or run a command:
+Mica opens a zsh session in the selected folder. To open a terminal with a command ready to run:
 
 ```sh
-open build/Mica.app --args --cwd "$PWD"
 open build/Mica.app --args --cwd "$PWD" --command "git status"
 ```
 
-## Controls
+## Use tabs
+
+Tabs are ordinary zsh sessions. A new tab opens in the current tab's folder. To run Claude Code, Codex, or another tool, put its command in a project layout tab.
 
 | Shortcut | Action |
 | --- | --- |
-| `⌘T` / `⌘W` | New shell tab / close tab |
+| `⌘1`–`⌘8` | Switch to tab 1–8 |
+| `⌘9` | Switch to the last tab |
+| `⌘T` / `⌘W` | Open / close a tab |
 | `⌘⇧[` / `⌘⇧]` | Previous / next tab |
-| `Ctrl-T` | Tab navigation mode (`h/j/k/l`, arrows, `1`–`9`, `n`, `x`) |
-| `Ctrl-S` | Scroll mode; arrows or `j/k` scroll lines, `h/l` or `Ctrl-B/F` scroll pages, `u/d` scroll half pages |
-| `Escape` or `Ctrl-C` | Return from scrollback to live output |
-| `⌥⌘C` / `⇧⌥⌘C` | Start / resume Claude Code |
-| `⌥⌘X` / `⇧⌥⌘X` | Start / resume Codex |
-| `⌘C` / `⌘V` | Copy selection / paste text or route an image to the active CLI |
-| `⌘+` / `⌘-` | Increase / decrease font size |
+| `⌘⇧P` | Open the tab picker; use arrows or `1`–`9`, then `Esc` |
+| `⌘⇧S` | Browse scrollback; use arrows or `j`/`k`, then `Esc` for live output |
+| `⌘C` / `⌘V` | Copy selection / paste text or send an image to the active CLI |
+| `⌘⌥F` | Fold selected scrollback lines; click the summary to expand |
+| `⌘+` / `⌘-` | Change terminal text size |
 
-Mica sets `TERM=xterm-256color`, `COLORTERM=truecolor`, and `TERM_PROGRAM=Mica`. Image paste forwards `Ctrl-V` to the active CLI, which reads the image from the macOS clipboard. Mica opens zsh by default. Agent shortcuts run only commands configured in that project's local layout; when no command is set, the shortcut opens a zsh tab.
+Click a tab to switch to it, or press `⌘1`–`⌘9`. Tabs share the available width until they reach a minimum size; use the `…` menu to find tabs that no longer fit. Hover over a tab to see its full title. While Claude Code or Codex runs, the tab and footer show its latest visible action and update when terminal output changes. Hover shows the full title, command, folder, and recent agent action. The footer shows the selected tab's full folder path, shortening the beginning when space is limited, plus its current command or status. Its shortcuts are Dictate, numbered tabs, and New Tab.
 
-When a configured command finishes, Mica shows its exit status. A background tab gets a marker, and Mica requests Dock attention if the app is unfocused.
+To open a separate Mica process for the same project, choose **Mica → New Instance** or press `⌘⌥N`. Each project app created by the desktop-app setup has its own bundle identity, so different project apps can run side by side.
 
-## Project apps and layouts
+The mode badge appears only while **TAB PICKER** or **SCROLLBACK** is active. With no badge, keystrokes go to the normal shell. Press `Esc` to leave either mode. Codex keeps its own `Ctrl+T` transcript shortcut; Mica's picker and scrollback use `⌘⇧P` and `⌘⇧S` so they do not intercept Codex or shell keys.
 
-Mica reads project layouts from `~/.config/mica/layouts/`. Each `.mica` file contains tab-separated tab names, working directories, and optional startup commands. Add optional agent commands with these keys:
+Drop a file onto the terminal to insert its shell-quoted path at the prompt. Mica does not run the path; press Return when ready.
 
-```text
-agent.claude.start<TAB>your command
-agent.claude.resume<TAB>your command
-agent.codex.start<TAB>your command
-agent.codex.resume<TAB>your command
-```
+To compact long output in scrollback, select its lines and press `⌘⌥F`. Click the folded row to expand it again.
 
-Replace `<TAB>` with a tab character; Mica keeps the rest of the line as the shell command. These files stay in your user configuration and are ignored by Git. Commands run in the project directory through a login zsh.
+## Dictate into the shell
 
-`make desktop-apps` previews matching Desktop project launchers. `make install-desktop-apps` installs one Mica app per project, gives each app its own bundle identity and colored initials icon, and routes its launcher script to the right layout. Original launchers and scripts are backed up under `~/.local/share/mica/launcher-backups/`. Project apps share one executable file when they are on the same volume; each running app still uses its own process memory.
+Dictation needs macOS 14 or later and a microphone. Hold the **left Option (⌥)** key to start, speak English or Italian, then release it to finish. The overlay shows the live transcript as it arrives. Mica inserts the transcript at the prompt and closes the overlay automatically; it does not press Return, so review it before running. Press `Esc` while recording to cancel.
 
-## Memory and testing
+Dictation uses FluidAudio's multilingual Parakeet Ultra model for English and Italian. The first use downloads about 630 MB; model files stay cached on disk and load only when you dictate. Mica shows an animated loading state and reports download or model-preparation progress when the helper provides it. Audio and recognition run locally. Mica inserts the raw transcript directly; no second language model or cleanup pass is run. The transcript is inserted into the tab that was active when recording began. Very short recordings with no recognized speech show a retry message; this is not a model crash.
 
-Run `make memory` to sample live RSS and macOS physical footprint. Compare the same projects, tabs, and agent workloads; summed RSS can count shared pages more than once. The current samples are not a controlled before/after benchmark, so no memory-savings percentage is claimed. See [`docs/MEMORY-BASELINE.md`](docs/MEMORY-BASELINE.md).
+The speech model is licensed CC BY 4.0 and attributed to Moondream and NVIDIA. FluidAudio is Apache 2.0. Full notices ship inside the app bundle and are listed in [`voice/THIRD_PARTY_NOTICES.md`](voice/THIRD_PARTY_NOTICES.md).
 
-Run `make test` for PTY, terminal rendering, clipboard, layout, app identity, icon, completion, and agent-loop tests. `make validate` also builds the app and checks its property list. The automated agent tests use local stubs and do not contact Claude or Codex.
+## Create a project instance
 
-Before the final interactive check, run `make preflight`. It repeats the full build and test validation. To check installed command line tools in the login shell without starting a session, pass their executable names, for example `scripts/check-agent-clis.sh claude codex`.
-
-For bounded automated repair passes, run:
+Run:
 
 ```sh
-scripts/agent-loop.sh 3
+make new-instance
 ```
 
-This uses the local Codex CLI with `gpt-6-luna` by default (`MICA_AGENT_MODEL` overrides it). It requires an authenticated CLI session, can edit the checkout, and does not commit or push changes.
+Mica asks for a name, project folder, and optional startup command. It creates a `.mica` layout in `~/.config/mica/layouts/` and a separate app in `~/Desktop/`. The command can be `claude`, `codex`, or any shell command; Mica places it at the prompt, and you press Return to run it. Leave it blank to open a plain zsh shell. This setup does not need a hand-written layout or launcher script.
 
-## Notes
+## Edit a project layout
 
-- See [`docs/AGENT-NOTIFICATIONS.md`](docs/AGENT-NOTIFICATIONS.md) for optional agent notifications.
-- See [`AGENT_LOOP.md`](AGENT_LOOP.md) for the automated iteration instructions.
+A layout contains one tab per line, with tab-separated name, folder, and optional command:
+
+```text
+Shell<TAB>/Users/me/Projects/work<TAB>
+Claude<TAB>/Users/me/Projects/work<TAB>claude
+Codex<TAB>/Users/me/Projects/work<TAB>codex
+Git<TAB>/Users/me/Projects/work<TAB>lazygit
+```
+
+Replace each `<TAB>` with a tab character. Commands appear at the shell prompt and run when you press Return. Open a layout with:
+
+```sh
+open build/Mica.app --args --layout "$HOME/.config/mica/layouts/work.mica"
+```
+
+Each tab is a regular zsh session. In a Git tab, Mica puts `lazygit` at the prompt; press Return to start it. Install it with `brew install lazygit` if needed. Older layouts using `mica-git` are automatically changed to the `lazygit` command. Exiting a shell closes its tab, and the other tabs resize to share the available width.
+
+`make desktop-apps` previews existing project launchers. `make install-desktop-apps` installs app bundles for them.
+
+## zsh completion
+
+Mica loads your existing zsh setup, including aliases and plugins. If it does not already enable completion, Mica initializes zsh's built-in context-aware completion for the session. The completion cache stays under your normal `ZDOTDIR`; Mica does not edit your startup files. Tab completion then uses the commands and completion definitions available on your system.
+
+Optional plugins such as [zsh-autosuggestions](https://github.com/zsh-users/zsh-autosuggestions) and [fzf-tab](https://github.com/Aloxaf/fzf-tab) add history suggestions and searchable completion menus. Configure them in your own zsh setup; Mica does not install or configure plugins.
+
+## Diagnostics
+
+Mica writes a plain-text log for each launch to `~/Library/Logs/Mica/`. Choose **Help → Open Diagnostic Logs** to find it. Logs include the app revision, tab folders, shell start/exit results, and dictation progress, stage duration, helper exit status, and peak helper memory. Mica does not log shell command text, transcripts, or audio. Each log is capped at 1 MiB. macOS crash reports, if a process crashes before it can log an exit, are stored under `~/Library/Logs/DiagnosticReports/`.
+
+## Build and check
+
+```sh
+make test       # PTY, UI, completion, memory limits, and local CLI stubs
+make validate   # tests, app build, and bundle checks
+make memory     # sample memory used by running Mica and agent processes
+make test-voice # test local speech helper components
+```
+
+The optimized app build creates the native Mica app and its local speech helper. Project apps made by `make install-desktop-apps` include both. Tests use local fixtures and do not contact Claude or Codex. Scrollback is capped at 2 MiB per session and allocated as needed.
+
+### Memory sample
+
+On this Mac, revision 19's VSC-VPP app used about 35 MiB physical footprint after 28 seconds with seven idle zsh tabs. Its RSS was about 86 MiB, and peak footprint was 77 MiB. This sample excludes the dictation helper and running agent tools. The Ultra model cache measured 603 MiB on disk and loads only when dictation starts. Recent cached-model dictations loaded in 0.19–0.43 seconds. Recognition helper peak RSS was 77–87 MiB for 0.5–82 seconds of audio; recognition took 8.44 seconds for 8 seconds of audio, 25.84 seconds for 25 seconds, 49.10 seconds for 49 seconds, and 81.58 seconds for 82 seconds. A 0.5-second capture contained no recognized speech. Mica does not retain a second cleanup model in memory or send transcripts to one. FluidVoice was not running during these measurements, so there is no directly comparable FluidVoice process-memory sample here. Actual usage varies with window size, scrollback, and command-line tools.
+
+Version `0.0.1`, revision `20`.

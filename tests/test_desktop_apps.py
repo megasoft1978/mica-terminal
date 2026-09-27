@@ -3,6 +3,10 @@
 
 import importlib.util
 import plistlib
+import json
+import os
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -25,10 +29,19 @@ def write_plist(path: Path, value: dict) -> None:
 def make_base_app(path: Path) -> None:
     (path / "Contents/MacOS").mkdir(parents=True)
     (path / "Contents/Resources").mkdir()
+    (path / "Contents/Helpers").mkdir()
     (path / "Contents/MacOS/Mica").write_bytes(b"shared-mica-executable")
-    (path / "Contents/Resources/Mica.icns").write_bytes(
-        (ROOT / "build/Mica.app/Contents/Resources/Mica.icns").read_bytes()
-    )
+    helper = path / "Contents/Helpers/mica-voice"
+    helper.write_bytes(b"local-voice-helper")
+    helper.chmod(0o755)
+    icon_path = Path(os.environ.get(
+        "MICA_TEST_APP_ICON", ROOT / "build/Mica.app/Contents/Resources/Mica.icns"
+    ))
+    (path / "Contents/Resources/Mica.icns").write_bytes(icon_path.read_bytes())
+    (path / "Contents/Resources/THIRD_PARTY_NOTICES.md").write_text("model and runtime credits\n", encoding="utf-8")
+    (path / "Contents/Resources/ThirdPartyLicenses").mkdir()
+    (path / "Contents/Resources/ThirdPartyLicenses/example.txt").write_text("test license\n", encoding="utf-8")
+    (path / "Contents/Resources/LICENSE-FluidAudio.txt").write_text("Apache License\n", encoding="utf-8")
     write_plist(path / "Contents/Info.plist", {
         "CFBundleDisplayName": "Mica Terminal",
         "CFBundleExecutable": "Mica",
@@ -36,6 +49,9 @@ def make_base_app(path: Path) -> None:
         "CFBundleName": "Mica",
         "CFBundlePackageType": "APPL",
         "LSMinimumSystemVersion": "13.0",
+        "NSMicrophoneUsageDescription": "Dictation microphone test notice",
+        "NSDesktopFolderUsageDescription": "Project folder access test notice",
+        "NSDocumentsFolderUsageDescription": "Project folder access test notice",
         "NSPrincipalClass": "NSApplication",
     })
 
@@ -95,13 +111,29 @@ def main() -> None:
         assert alpha_info["CFBundleIdentifier"] != beta_info["CFBundleIdentifier"]
         assert alpha_info["CFBundleIconFile"] == "Mica.icns"
         assert beta_info["CFBundleIconFile"] == "Mica.icns"
+        assert alpha_info["NSMicrophoneUsageDescription"] == "Dictation microphone test notice"
+        assert alpha_info["NSDesktopFolderUsageDescription"] == "Project folder access test notice"
+        assert alpha_info["NSDocumentsFolderUsageDescription"] == "Project folder access test notice"
         assert alpha_info["MicaProjectName"] == "Alpha Project"
         assert alpha_info["MicaProjectLayout"] == str((layout_dir / "alpha.mica").resolve())
         assert beta_info["MicaProjectLayoutName"] == "beta"
+        for app in (old_app, output / "Beta.app"):
+            assert (app / "Contents/Helpers/mica-voice").read_bytes() == b"local-voice-helper"
+            assert os.access(app / "Contents/Helpers/mica-voice", os.X_OK)
+            assert (app / "Contents/Resources/THIRD_PARTY_NOTICES.md").is_file()
+            assert (app / "Contents/Resources/LICENSE-FluidAudio.txt").is_file()
+            assert (app / "Contents/Resources/ThirdPartyLicenses/example.txt").is_file()
         alpha_icon = (old_app / "Contents/Resources/Mica.icns").read_bytes()
         beta_icon = (output / "Beta.app/Contents/Resources/Mica.icns").read_bytes()
         assert alpha_icon.startswith(b"icns") and beta_icon.startswith(b"icns")
         assert alpha_icon != beta_icon, "each project app should have its own marked icon"
+        decoded_iconset = root / "Alpha.iconset"
+        subprocess.run(
+            ["iconutil", "--convert", "iconset", "--output", str(decoded_iconset),
+             str(old_app / "Contents/Resources/Mica.icns")],
+            check=True,
+        )
+        assert (decoded_iconset / "icon_512x512@2x.png").is_file()
         assert (old_app / "Contents/Resources/Scripts/main.scpt").is_file() is False
         try:
             assert (old_app / "Contents/MacOS/Mica").samefile(base_app / "Contents/MacOS/Mica")
@@ -116,6 +148,92 @@ def main() -> None:
         new_script = launch_script.read_text(encoding="utf-8")
         assert "open -n" in new_script and "Alpha.app" in new_script
         assert (backups / "launch-alpha.sh").read_text(encoding="utf-8") == original_launcher
+
+    with tempfile.TemporaryDirectory(prefix="mica-new-instance-") as temporary:
+        root = Path(temporary)
+        base_app = root / "Mica.app"
+        layout_dir = root / "config" / "layouts"
+        desktop = root / "Desktop"
+        manifest = root / "config" / "desktop-apps.json"
+        project_folder = root / "A project folder"
+        project_folder.mkdir()
+        make_base_app(base_app)
+        icon_tool = Path(os.environ.get("MICA_PROJECT_ICON_TOOL", INSTALLER.DEFAULT_PROJECT_ICON_TOOL))
+        create = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "install-desktop-apps.py"),
+                "--new-instance",
+                "--no-register",
+                "--layouts", str(layout_dir),
+                "--output", str(desktop),
+                "--manifest", str(manifest),
+                "--base-app", str(base_app),
+                "--project-icon-tool", str(icon_tool),
+            ],
+            input=f"Demo Project\n{project_folder}\n\n",
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        layout = layout_dir / "demo-project.mica"
+        app = desktop / "demo-project.app"
+        assert layout.read_text(encoding="utf-8") == (
+            f"# Mica layout v1\nShell\t{project_folder.resolve()}\t\n"
+        )
+        app_info = INSTALLER.read_plist(app / "Contents/Info.plist")
+        assert app_info["CFBundleDisplayName"] == "Demo Project"
+        assert app_info["MicaProjectLayout"] == str(layout.resolve())
+        assert app_info["CFBundleIdentifier"] == "com.megasoft78.mica.project.demo-project"
+        assert not (app / "Contents/Resources/Scripts/main.scpt").exists()
+        assert json.loads(manifest.read_text(encoding="utf-8"))[0]["launch_script"] is None
+        assert "created " in create.stdout and "opens a zsh shell" in create.stdout
+
+        conflict = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "install-desktop-apps.py"),
+                "--new-instance",
+                "--no-register",
+                "--layouts", str(layout_dir),
+                "--output", str(desktop),
+                "--manifest", str(manifest),
+                "--base-app", str(base_app),
+                "--project-icon-tool", str(icon_tool),
+            ],
+            input=f"Demo Project\n{project_folder}\n\n",
+            text=True,
+            capture_output=True,
+        )
+        assert conflict.returncode != 0
+        assert app.is_dir() and layout.is_file()
+        assert len(json.loads(manifest.read_text(encoding="utf-8"))) == 1
+
+        command_create = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "install-desktop-apps.py"),
+                "--new-instance",
+                "--no-register",
+                "--layouts", str(layout_dir),
+                "--output", str(desktop),
+                "--manifest", str(manifest),
+                "--base-app", str(base_app),
+                "--project-icon-tool", str(icon_tool),
+            ],
+            input=f"Agent Project\n{project_folder}\ncodex\n",
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        command_layout = layout_dir / "agent-project.mica"
+        command_app = desktop / "agent-project.app"
+        assert command_layout.read_text(encoding="utf-8") == (
+            f"# Mica layout v1\nShell\t{project_folder.resolve()}\tcodex\n"
+        )
+        assert INSTALLER.read_plist(command_app / "Contents/Info.plist")["MicaProjectLayout"] == str(command_layout.resolve())
+        assert "prefilled in the shell" in command_create.stdout
+        assert len(json.loads(manifest.read_text(encoding="utf-8"))) == 2
 
     print("desktop app packaging tests passed")
 
