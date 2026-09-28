@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -21,6 +22,7 @@
 #define MICA_HISTORY_INITIAL 32
 #define MICA_READ_BUFFER 16384
 #define MICA_POLL_READ_BUDGET (64 * 1024)
+#define MICA_PENDING_INPUT_LIMIT (1024 * 1024)
 #define MICA_TITLE_MAX_BYTES 512
 #define MICA_FOLD_LIMIT 128
 
@@ -74,6 +76,14 @@ struct MicaSession {
     char *current_command;
     char *title;
     char *startup_dir;
+    char title_fragments[MICA_TITLE_MAX_BYTES + 1];
+    size_t title_fragment_length;
+    bool title_fragment_active;
+    char osc_fragments[4096];
+    size_t osc_fragment_length;
+    int osc_fragment_command;
+    bool osc_fragment_active;
+    bool osc_fragment_overflow;
 };
 
 static void remove_fold_at(MicaSession *session, size_t index) {
@@ -252,6 +262,7 @@ static char *create_prefill_startup_dir(void) {
         "original=\"$MICA_ORIGINAL_ZDOTDIR\"\n"
         "export ZDOTDIR=\"$original\"\n"
         "[[ -r \"$original/.zshenv\" ]] && source \"$original/.zshenv\"\n"
+        "export MICA_ORIGINAL_ZDOTDIR=\"${ZDOTDIR:-$original}\"\n"
         "export ZDOTDIR=\"$MICA_ZSH_WRAPPER\"\n"
         "fi\n";
     static const char profile[] =
@@ -259,6 +270,7 @@ static char *create_prefill_startup_dir(void) {
         "original=\"$MICA_ORIGINAL_ZDOTDIR\"\n"
         "export ZDOTDIR=\"$original\"\n"
         "[[ -r \"$original/.zprofile\" ]] && source \"$original/.zprofile\"\n"
+        "export MICA_ORIGINAL_ZDOTDIR=\"${ZDOTDIR:-$original}\"\n"
         "export ZDOTDIR=\"$MICA_ZSH_WRAPPER\"\n"
         "fi\n";
     static const char interactive[] =
@@ -271,6 +283,7 @@ static char *create_prefill_startup_dir(void) {
         "original=\"$MICA_ORIGINAL_ZDOTDIR\"\n"
         "export ZDOTDIR=\"$original\"\n"
         "[[ -r \"$original/.zshrc\" ]] && source \"$original/.zshrc\"\n"
+        "export MICA_ORIGINAL_ZDOTDIR=\"${ZDOTDIR:-$original}\"\n"
         "export ZDOTDIR=\"$MICA_ZSH_WRAPPER\"\n"
         "[[ -n $HISTFILE ]] || HISTFILE=\"$original/.zsh_history\"\n"
         "if [[ -n $MICA_INITIAL_COMMAND ]]; then\n"
@@ -316,6 +329,7 @@ static char *create_prefill_startup_dir(void) {
         "original=\"$MICA_ORIGINAL_ZDOTDIR\"\n"
         "export ZDOTDIR=\"$original\"\n"
         "[[ -r \"$original/.zlogin\" ]] && source \"$original/.zlogin\"\n"
+        "export MICA_ORIGINAL_ZDOTDIR=\"${ZDOTDIR:-$original}\"\n"
         "export ZDOTDIR=\"$MICA_ZSH_WRAPPER\"\n"
         "fi\n";
     if (!write_startup_file(directory, ".zshenv", startup) ||
@@ -366,6 +380,28 @@ static int damage_callback(VTermRect rect, void *user) {
     return 1;
 }
 
+static int cursor_callback(VTermPos position, VTermPos old_position, int visible, void *user) {
+    (void)visible;
+    MicaSession *session = user;
+    if (!session) return 1;
+    int first = position.row < old_position.row ? position.row : old_position.row;
+    int last = position.row > old_position.row ? position.row : old_position.row;
+    if (first < 0) first = 0;
+    if (last >= session->rows) last = session->rows - 1;
+    if (first <= last) {
+        if (!session->has_dirty_rows) {
+            session->dirty_rows.start_row = first;
+            session->dirty_rows.end_row = last + 1;
+            session->has_dirty_rows = true;
+        } else {
+            if (first < session->dirty_rows.start_row) session->dirty_rows.start_row = first;
+            if (last + 1 > session->dirty_rows.end_row) session->dirty_rows.end_row = last + 1;
+        }
+    }
+    session->revision++;
+    return 1;
+}
+
 static int property_callback(VTermProp prop, VTermValue *value, void *user) {
     MicaSession *session = user;
     if (!session || !value) return 1;
@@ -373,14 +409,30 @@ static int property_callback(VTermProp prop, VTermValue *value, void *user) {
     if (prop == VTERM_PROP_MOUSE) session->mouse_mode = value->number;
     if (prop == VTERM_PROP_FOCUSREPORT) session->focus_report = value->boolean != 0;
     if (prop == VTERM_PROP_TITLE) {
-        char *title = copy_title(value->string);
-        if (title) {
-            if (!session->title || strcmp(session->title, title) != 0) {
+        VTermStringFragment fragment = value->string;
+        if (fragment.initial || !session->title_fragment_active) {
+            session->title_fragment_length = 0;
+            session->title_fragment_active = true;
+        }
+        size_t available = MICA_TITLE_MAX_BYTES + 1 - session->title_fragment_length;
+        size_t append = fragment.len < available ? fragment.len : available;
+        if (append && fragment.str) {
+            memcpy(session->title_fragments + session->title_fragment_length, fragment.str, append);
+            session->title_fragment_length += append;
+        }
+        if (fragment.final) {
+            VTermStringFragment complete = {
+                .str = session->title_fragments,
+                .len = session->title_fragment_length,
+                .initial = true,
+                .final = true,
+            };
+            char *title = copy_title(complete);
+            session->title_fragment_active = false;
+            if (title && (!session->title || strcmp(session->title, title) != 0)) {
                 free(session->title);
                 session->title = title;
-            } else {
-                free(title);
-            }
+            } else free(title);
         }
     }
     session->revision++;
@@ -395,6 +447,27 @@ static int bell_callback(void *user) {
 
 static int notification_osc(int command, VTermStringFragment fragment, void *user) {
     MicaSession *session = user;
+    if (!session || (!fragment.str && fragment.len > 0)) return 1;
+    if (fragment.initial || !session->osc_fragment_active || command != session->osc_fragment_command) {
+        session->osc_fragment_length = 0;
+        session->osc_fragment_command = command;
+        session->osc_fragment_active = true;
+        session->osc_fragment_overflow = false;
+    }
+    if (fragment.len > sizeof(session->osc_fragments) - session->osc_fragment_length) {
+        session->osc_fragment_overflow = true;
+    } else if (!session->osc_fragment_overflow && fragment.len > 0) {
+        memcpy(session->osc_fragments + session->osc_fragment_length, fragment.str, fragment.len);
+        session->osc_fragment_length += fragment.len;
+    }
+    if (!fragment.final) return 1;
+    bool overflow = session->osc_fragment_overflow;
+    fragment.str = session->osc_fragments;
+    fragment.len = session->osc_fragment_length;
+    fragment.initial = true;
+    fragment.final = true;
+    session->osc_fragment_active = false;
+    if (overflow) return 1;
     static const char started_prefix[] = "mica;command-started;";
     static const char completion_prefix[] = "mica;command-finished;";
     if (session && command == 777 && fragment.final && fragment.str &&
@@ -489,17 +562,26 @@ typedef struct {
 
 static size_t snapshot_process_tree(pid_t root_pid, MicaProcessIdentity **tree_out) {
     *tree_out = NULL;
-    int required_bytes = proc_listallpids(NULL, 0);
-    if (required_bytes <= 0) return 0;
-    size_t capacity = (size_t)required_bytes / sizeof(pid_t) + 16;
-    pid_t *pids = calloc(capacity, sizeof(*pids));
-    if (!pids) return 0;
-    int returned_bytes = proc_listallpids(pids, (int)(capacity * sizeof(*pids)));
-    if (returned_bytes <= 0) {
+    int required_count = proc_listallpids(NULL, 0);
+    if (required_count <= 0) return 0;
+    size_t capacity = (size_t)required_count + 16;
+    pid_t *pids = NULL;
+    int returned_count = 0;
+    for (;;) {
+        if (capacity > (size_t)INT_MAX / sizeof(*pids)) break;
+        pid_t *grown = realloc(pids, capacity * sizeof(*pids));
+        if (!grown) break;
+        pids = grown;
+        returned_count = proc_listallpids(pids, (int)(capacity * sizeof(*pids)));
+        if (returned_count <= 0 || (size_t)returned_count < capacity) break;
+        if (capacity > (size_t)INT_MAX / sizeof(*pids) / 2) break;
+        capacity *= 2;
+    }
+    if (returned_count <= 0 || (size_t)returned_count >= capacity) {
         free(pids);
         return 0;
     }
-    size_t pid_count = (size_t)returned_bytes / sizeof(*pids);
+    size_t pid_count = (size_t)returned_count;
     struct proc_bsdinfo *processes = calloc(pid_count ? pid_count : 1, sizeof(*processes));
     bool *included = calloc(pid_count ? pid_count : 1, sizeof(*included));
     if (!processes || !included) {
@@ -575,23 +657,28 @@ static size_t snapshot_terminal_processes(uint32_t terminal_device,
                                          MicaProcessIdentity **processes_out) {
     *processes_out = NULL;
     if (terminal_device == UINT32_MAX) return 0;
-    int required_bytes = proc_listallpids(NULL, 0);
-    if (required_bytes <= 0) return 0;
-    size_t capacity = (size_t)required_bytes / sizeof(pid_t) + 16;
-    pid_t *pids = calloc(capacity, sizeof(*pids));
-    MicaProcessIdentity *processes = calloc(capacity, sizeof(*processes));
-    if (!pids || !processes) {
+    int required_count = proc_listallpids(NULL, 0);
+    if (required_count <= 0) return 0;
+    size_t capacity = (size_t)required_count + 16;
+    pid_t *pids = NULL;
+    int returned_count = 0;
+    for (;;) {
+        if (capacity > (size_t)INT_MAX / sizeof(*pids)) break;
+        pid_t *grown = realloc(pids, capacity * sizeof(*pids));
+        if (!grown) break;
+        pids = grown;
+        returned_count = proc_listallpids(pids, (int)(capacity * sizeof(*pids)));
+        if (returned_count <= 0 || (size_t)returned_count < capacity) break;
+        if (capacity > (size_t)INT_MAX / sizeof(*pids) / 2) break;
+        capacity *= 2;
+    }
+    if (returned_count <= 0 || (size_t)returned_count >= capacity) {
         free(pids);
-        free(processes);
         return 0;
     }
-    int returned_bytes = proc_listallpids(pids, (int)(capacity * sizeof(*pids)));
-    if (returned_bytes <= 0) {
-        free(pids);
-        free(processes);
-        return 0;
-    }
-    size_t pid_count = (size_t)returned_bytes / sizeof(*pids);
+    size_t pid_count = (size_t)returned_count;
+    MicaProcessIdentity *processes = calloc(pid_count, sizeof(*processes));
+    if (!processes) { free(pids); return 0; }
     size_t process_count = 0;
     for (size_t index = 0; index < pid_count; index++) {
         if (pids[index] <= 0) continue;
@@ -613,11 +700,36 @@ static size_t snapshot_terminal_processes(uint32_t terminal_device,
     return process_count;
 }
 
-static uint32_t terminal_device_for_process(pid_t pid) {
-    struct proc_bsdinfo info;
-    if (pid <= 0 || proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, sizeof(info)) != sizeof(info))
-        return UINT32_MAX;
-    return info.e_tdev;
+static uint32_t terminal_device_for_master(int master_fd) {
+    char slave_path[PATH_MAX];
+    struct stat slave_info;
+    if (master_fd < 0 || ioctl(master_fd, TIOCPTYGNAME, slave_path) < 0 ||
+        stat(slave_path, &slave_info) < 0) return UINT32_MAX;
+    return (uint32_t)slave_info.st_rdev;
+}
+
+static bool reserve_pending_input(MicaSession *session, size_t additional) {
+    size_t queued = session->pending_input_length - session->pending_input_offset;
+    if (additional > MICA_PENDING_INPUT_LIMIT - queued) return false;
+    if (session->pending_input_offset > 0 && queued > 0)
+        memmove(session->pending_input, session->pending_input + session->pending_input_offset, queued);
+    session->pending_input_offset = 0;
+    session->pending_input_length = queued;
+    size_t needed = queued + additional;
+    if (needed <= session->pending_input_capacity) return true;
+    size_t capacity = session->pending_input_capacity ? session->pending_input_capacity : 4096;
+    while (capacity < needed) {
+        if (capacity > MICA_PENDING_INPUT_LIMIT / 2) {
+            capacity = MICA_PENDING_INPUT_LIMIT;
+            break;
+        }
+        capacity *= 2;
+    }
+    char *grown = realloc(session->pending_input, capacity);
+    if (!grown) return false;
+    session->pending_input = grown;
+    session->pending_input_capacity = capacity;
+    return true;
 }
 
 static void write_nonblocking(MicaSession *session, const char *bytes, size_t length) {
@@ -639,25 +751,9 @@ static void write_nonblocking(MicaSession *session, const char *bytes, size_t le
     }
 
     size_t queued = session->pending_input_length - session->pending_input_offset;
-    if (session->pending_input_offset > 0 && queued > 0)
-        memmove(session->pending_input, session->pending_input + session->pending_input_offset, queued);
-    session->pending_input_offset = 0;
-    session->pending_input_length = queued;
-    if (length > SIZE_MAX - queued) return;
-    size_t needed = queued + length;
-    if (needed > session->pending_input_capacity) {
-        size_t capacity = session->pending_input_capacity ? session->pending_input_capacity : 4096;
-        while (capacity < needed) {
-            if (capacity > SIZE_MAX / 2) { capacity = needed; break; }
-            capacity *= 2;
-        }
-        char *grown = realloc(session->pending_input, capacity);
-        if (!grown) return;
-        session->pending_input = grown;
-        session->pending_input_capacity = capacity;
-    }
+    if (length > SIZE_MAX - queued || !reserve_pending_input(session, length)) return;
     memcpy(session->pending_input + queued, bytes, length);
-    session->pending_input_length = needed;
+    session->pending_input_length = queued + length;
 }
 
 static void output_callback(const char *bytes, size_t length, void *user) {
@@ -736,6 +832,7 @@ static int history_clear(void *user) {
 
 static const VTermScreenCallbacks screen_callbacks = {
     .damage = damage_callback,
+    .movecursor = cursor_callback,
     .settermprop = property_callback,
     .bell = bell_callback,
     .sb_pushline = history_push,
@@ -805,7 +902,7 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
     session->command = command ? strdup(command) : strdup("/bin/zsh -l -i");
     session->startup_dir = create_prefill_startup_dir();
     session->vt = vterm_new(rows, cols);
-    if (!session->command || !session->vt) goto fail;
+    if (!session->command || !session->vt || (prefilled && command && !session->startup_dir)) goto fail;
 
     vterm_set_utf8(session->vt, 1);
     session->state = vterm_obtain_state(session->vt);
@@ -877,9 +974,14 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
     }
     session->master_fd = master;
     session->child_pid = pid;
-    session->terminal_device = terminal_device_for_process(pid);
+    session->terminal_device = terminal_device_for_master(master);
     int flags = fcntl(master, F_GETFL, 0);
     if (flags >= 0) fcntl(master, F_SETFL, flags | O_NONBLOCK);
+    int descriptor_flags = fcntl(master, F_GETFD, 0);
+    if (descriptor_flags < 0 || fcntl(master, F_SETFD, descriptor_flags | FD_CLOEXEC) < 0) {
+        mica_session_destroy(session);
+        return NULL;
+    }
     return session;
 
 fail:
@@ -901,16 +1003,14 @@ void mica_session_destroy(MicaSession *session) {
     size_t process_count = session->child_pid > 0
         ? snapshot_process_tree(session->child_pid, &process_tree) : 0;
     MicaProcessIdentity *terminal_processes = NULL;
-    size_t terminal_process_count = snapshot_terminal_processes(
-        session->terminal_device, &terminal_processes);
+    size_t terminal_process_count = session->master_fd >= 0
+        ? snapshot_terminal_processes(session->terminal_device, &terminal_processes) : 0;
     if (session->master_fd >= 0) close(session->master_fd);
     if (session->running) {
         signal_process_tree(process_tree, process_count, SIGHUP);
         signal_process_tree(terminal_processes, terminal_process_count, SIGHUP);
     }
     if (session->child_pid > 0 && session->running) {
-        kill(-session->child_pid, SIGHUP);
-        kill(session->child_pid, SIGHUP);
         // Give the shell and its descendants a short grace period, then kill
         // the captured tree even if the shell leader already exited. Children
         // can have separate process groups and ignore the terminal hangup.
@@ -927,10 +1027,12 @@ void mica_session_destroy(MicaSession *session) {
         }
         signal_process_tree(process_tree, process_count, SIGKILL);
         signal_process_tree(terminal_processes, terminal_process_count, SIGKILL);
-        (void)kill(-session->child_pid, SIGKILL);
-        (void)kill(session->child_pid, SIGKILL);
-        if (!childReaped)
+        if (!childReaped) {
+            // The child has not been reaped, so its PID cannot have been
+            // recycled. Do not signal it after waitpid has reaped it.
+            (void)kill(session->child_pid, SIGKILL);
             while (waitpid(session->child_pid, &status, 0) < 0 && errno == EINTR) {}
+        }
     } else {
         // The interactive shell may already have exited while a child it
         // started remains attached to this PTY. Its controlling-terminal ID
@@ -1020,9 +1122,26 @@ void mica_session_text(MicaSession *session, uint32_t codepoint, VTermModifier m
 
 void mica_session_paste(MicaSession *session, const char *utf8, size_t length) {
     if (!session || !session->vt || !session->running || !utf8) return;
+    // Reserve the sanitized paste and both six-byte bracket markers as one
+    // transaction. Never leave the shell inside bracketed-paste mode or send
+    // a truncated paste if the queue is already full.
+    if (length > MICA_PENDING_INPUT_LIMIT - 12) return;
+    char *safe = malloc(length ? length : 1);
+    if (!safe) return;
+    size_t safe_length = 0;
+    for (size_t index = 0; index < length; index++)
+        if ((unsigned char)utf8[index] != 0x1b) safe[safe_length++] = utf8[index];
+    if (!reserve_pending_input(session, safe_length + 12)) {
+        free(safe);
+        return;
+    }
     vterm_keyboard_start_paste(session->vt);
-    write_nonblocking(session, utf8, length);
+    // Clipboard contents are untrusted terminal input. In particular, an ESC
+    // can terminate bracketed-paste mode and turn a following newline into an
+    // executable command in the user's shell.
+    write_nonblocking(session, safe, safe_length);
     vterm_keyboard_end_paste(session->vt);
+    free(safe);
 }
 
 void mica_session_mouse(MicaSession *session, int row, int col, int button, bool pressed) {

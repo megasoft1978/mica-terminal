@@ -5,6 +5,7 @@ import importlib.util
 import plistlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -69,6 +70,30 @@ def main() -> None:
         (layout_dir / "alpha.mica").write_text("# Mica layout v1\nShell\t/tmp\t\n", encoding="utf-8")
         (layout_dir / "beta.mica").write_text("# Mica layout v1\nCodex\t/tmp\t\n", encoding="utf-8")
 
+        malicious_manifest = root / "malicious-manifest.json"
+        malicious_manifest.write_text(json.dumps([{
+            "app_name": "../Outside.app",
+            "layout_name": "alpha",
+        }]), encoding="utf-8")
+        try:
+            INSTALLER.load_projects(malicious_manifest, output, layout_dir, output)
+            raise AssertionError("installer accepted an app path outside its output directory")
+        except RuntimeError as error:
+            assert "invalid app name" in str(error)
+
+        malicious_script = root / "launch-malicious.sh"
+        try:
+            INSTALLER.migrate_launch_script({
+                "launch_script": str(malicious_script),
+                "display_name": "Project\n touch /tmp/mica-installer-injected",
+                "app_name": "Alpha.app",
+                "layout_path": str((layout_dir / "alpha.mica").resolve()),
+            }, root / "backups", True, base_app)
+            raise AssertionError("installer accepted a newline in the project name")
+        except RuntimeError as error:
+            assert "invalid project display name" in str(error)
+        assert not malicious_script.exists()
+
         old_app = output / "Alpha.app"
         write_plist(old_app / "Contents/Info.plist", {
             "CFBundleName": "Alpha",
@@ -118,11 +143,13 @@ def main() -> None:
         assert alpha_info["MicaProjectLayout"] == str((layout_dir / "alpha.mica").resolve())
         assert beta_info["MicaProjectLayoutName"] == "beta"
         for app in (old_app, output / "Beta.app"):
-            assert (app / "Contents/Helpers/mica-voice").read_bytes() == b"local-voice-helper"
-            assert os.access(app / "Contents/Helpers/mica-voice", os.X_OK)
-            assert (app / "Contents/Resources/THIRD_PARTY_NOTICES.md").is_file()
-            assert (app / "Contents/Resources/LICENSE-FluidAudio.txt").is_file()
-            assert (app / "Contents/Resources/ThirdPartyLicenses/example.txt").is_file()
+            launcher = app / "Contents/MacOS/Mica"
+            assert launcher.read_text(encoding="utf-8").startswith("#!/bin/sh\n")
+            assert os.access(launcher, os.X_OK)
+            assert f"open -n {shlex.quote(str(base_app.resolve()))} --args" in launcher.read_text(encoding="utf-8")
+            assert "--layout" in launcher.read_text(encoding="utf-8")
+            assert "--project-name" in launcher.read_text(encoding="utf-8")
+            assert not (app / "Contents/Helpers").exists()
         alpha_icon = (old_app / "Contents/Resources/Mica.icns").read_bytes()
         beta_icon = (output / "Beta.app/Contents/Resources/Mica.icns").read_bytes()
         assert alpha_icon.startswith(b"icns") and beta_icon.startswith(b"icns")
@@ -135,18 +162,12 @@ def main() -> None:
         )
         assert (decoded_iconset / "icon_512x512@2x.png").is_file()
         assert (old_app / "Contents/Resources/Scripts/main.scpt").is_file() is False
-        try:
-            assert (old_app / "Contents/MacOS/Mica").samefile(base_app / "Contents/MacOS/Mica")
-            assert (output / "Beta.app/Contents/MacOS/Mica").samefile(base_app / "Contents/MacOS/Mica")
-        except OSError:
-            assert (old_app / "Contents/MacOS/Mica").read_bytes() == b"shared-mica-executable"
-            assert (output / "Beta.app/Contents/MacOS/Mica").read_bytes() == b"shared-mica-executable"
-
         backed_up_app = backups / "Alpha.app"
         assert (backed_up_app / "Contents/Resources/Scripts/main.scpt").read_bytes() == b"old launcher script"
-        INSTALLER.migrate_launch_script(projects[0], backups, True)
+        INSTALLER.migrate_launch_script(projects[0], backups, True, base_app)
         new_script = launch_script.read_text(encoding="utf-8")
-        assert "open -n" in new_script and "Alpha.app" in new_script
+        assert "open -n" in new_script and str(base_app.resolve()) in new_script
+        assert "--layout" in new_script and "--project-name 'Alpha Project'" in new_script
         assert (backups / "launch-alpha.sh").read_text(encoding="utf-8") == original_launcher
 
     with tempfile.TemporaryDirectory(prefix="mica-new-instance-") as temporary:
@@ -179,12 +200,15 @@ def main() -> None:
         layout = layout_dir / "demo-project.mica"
         app = desktop / "demo-project.app"
         assert layout.read_text(encoding="utf-8") == (
-            f"# Mica layout v1\nShell\t{project_folder.resolve()}\t\n"
+            f"# Mica layout v1\n# Mica project: Demo Project\nShell\t{project_folder.resolve()}\t\n"
         )
         app_info = INSTALLER.read_plist(app / "Contents/Info.plist")
         assert app_info["CFBundleDisplayName"] == "Demo Project"
         assert app_info["MicaProjectLayout"] == str(layout.resolve())
         assert app_info["CFBundleIdentifier"] == "com.megasoft78.mica.project.demo-project"
+        launcher = app / "Contents/MacOS/Mica"
+        assert str(base_app.resolve()) in launcher.read_text(encoding="utf-8")
+        assert "--layout" in launcher.read_text(encoding="utf-8")
         assert not (app / "Contents/Resources/Scripts/main.scpt").exists()
         assert json.loads(manifest.read_text(encoding="utf-8"))[0]["launch_script"] is None
         assert "created " in create.stdout and "opens a zsh shell" in create.stdout
@@ -229,7 +253,7 @@ def main() -> None:
         command_layout = layout_dir / "agent-project.mica"
         command_app = desktop / "agent-project.app"
         assert command_layout.read_text(encoding="utf-8") == (
-            f"# Mica layout v1\nShell\t{project_folder.resolve()}\tcodex\n"
+            f"# Mica layout v1\n# Mica project: Agent Project\nShell\t{project_folder.resolve()}\tcodex\n"
         )
         assert INSTALLER.read_plist(command_app / "Contents/Info.plist")["MicaProjectLayout"] == str(command_layout.resolve())
         assert "prefilled in the shell" in command_create.stdout

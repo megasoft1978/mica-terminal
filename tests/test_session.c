@@ -301,6 +301,29 @@ color_checked:
     assert(screen_contains(paste_session, "LARGE-PASTE-DONE"));
     mica_session_destroy(paste_session);
 
+    char paste_attack_directory[] = "/tmp/mica-paste-attack-XXXXXX";
+    char *paste_attack_root = mkdtemp(paste_attack_directory);
+    assert(paste_attack_root != NULL);
+    char paste_marker[PATH_MAX];
+    assert(snprintf(paste_marker, sizeof(paste_marker), "%s/EXECUTED", paste_attack_root) > 0);
+    char paste_ready_command[PATH_MAX + 64];
+    assert(snprintf(paste_ready_command, sizeof(paste_ready_command),
+        "stty -echo; printf 'PASTE-ATTACK-READY\\n'; sleep 0.1") > 0);
+    MicaSession *paste_attack_session = mica_session_create("/tmp", paste_ready_command, 6, 100);
+    assert(paste_attack_session != NULL);
+    for (int i = 0; i < 500 && !screen_contains(paste_attack_session, "PASTE-ATTACK-READY"); i++)
+        mica_session_poll(paste_attack_session, 10);
+    assert(screen_contains(paste_attack_session, "PASTE-ATTACK-READY"));
+    poll_for(paste_attack_session, 250);
+    char paste_attack[PATH_MAX + 64];
+    int paste_attack_length = snprintf(paste_attack, sizeof(paste_attack), "\033[201~touch '%s'\r", paste_marker);
+    assert(paste_attack_length > 0 && (size_t)paste_attack_length < sizeof(paste_attack));
+    mica_session_paste(paste_attack_session, paste_attack, (size_t)paste_attack_length);
+    poll_for(paste_attack_session, 250);
+    assert(access(paste_marker, F_OK) != 0);
+    mica_session_destroy(paste_attack_session);
+    assert(rmdir(paste_attack_root) == 0);
+
     MicaSession *exit_session = mica_session_create("/tmp", "printf 'EXIT-READY\\n'; sleep 0.1", 6, 80);
     assert(exit_session != NULL);
     for (int i = 0; i < 500 && !screen_contains(exit_session, "[command exited: 0]"); i++) mica_session_poll(exit_session, 10);
@@ -599,6 +622,43 @@ color_checked:
         mica_session_poll(claude_session, 10);
     assert(screen_contains(claude_session, expected_claude_start));
     mica_session_destroy(claude_session);
+
+    char custom_zdotdir[PATH_MAX], custom_zprofile_path[PATH_MAX];
+    char custom_zshrc_path[PATH_MAX], custom_zlogin_path[PATH_MAX], custom_zcompdump_path[PATH_MAX];
+    char custom_zcompdump_compiled_path[PATH_MAX], profile_zshenv_path[PATH_MAX];
+    assert(snprintf(custom_zdotdir, sizeof(custom_zdotdir), "%s/custom-zdotdir", profile_dir) > 0);
+    assert(mkdir(custom_zdotdir, 0700) == 0);
+    assert(snprintf(profile_zshenv_path, sizeof(profile_zshenv_path), "%s/.zshenv", profile_dir) > 0);
+    assert(snprintf(custom_zprofile_path, sizeof(custom_zprofile_path), "%s/.zprofile", custom_zdotdir) > 0);
+    assert(snprintf(custom_zshrc_path, sizeof(custom_zshrc_path), "%s/.zshrc", custom_zdotdir) > 0);
+    assert(snprintf(custom_zlogin_path, sizeof(custom_zlogin_path), "%s/.zlogin", custom_zdotdir) > 0);
+    assert(snprintf(custom_zcompdump_path, sizeof(custom_zcompdump_path), "%s/.zcompdump", custom_zdotdir) > 0);
+    assert(snprintf(custom_zcompdump_compiled_path, sizeof(custom_zcompdump_compiled_path),
+        "%s/.zcompdump.zwc", custom_zdotdir) > 0);
+    char custom_zshenv_contents[PATH_MAX + 32];
+    assert(snprintf(custom_zshenv_contents, sizeof(custom_zshenv_contents),
+        "export ZDOTDIR='%s'\n", custom_zdotdir) > 0);
+    write_test_file(profile_zshenv_path, custom_zshenv_contents, 0600);
+    write_test_file(custom_zprofile_path, "export MICA_CUSTOM_PROFILE=loaded\n", 0600);
+    write_test_file(custom_zshrc_path, "export MICA_CUSTOM_RC=loaded\n", 0600);
+    write_test_file(custom_zlogin_path, "export MICA_CUSTOM_LOGIN=loaded\n", 0600);
+    MicaSession *custom_zdot_session = mica_session_create(profile_dir,
+        "printf 'MICA-CUSTOM-ZDOTDIR:%s|%s|%s\\n' \"$MICA_CUSTOM_PROFILE\" \"$MICA_CUSTOM_RC\" \"$MICA_CUSTOM_LOGIN\"; sleep 0.5",
+        8, 120);
+    assert(custom_zdot_session != NULL);
+    for (int i = 0; i < 500 && !screen_contains(custom_zdot_session, "MICA-CUSTOM-ZDOTDIR:"); i++)
+        mica_session_poll(custom_zdot_session, 10);
+    if (!screen_contains(custom_zdot_session, "MICA-CUSTOM-ZDOTDIR:loaded|loaded|loaded"))
+        print_screen(custom_zdot_session);
+    assert(screen_contains(custom_zdot_session, "MICA-CUSTOM-ZDOTDIR:loaded|loaded|loaded"));
+    mica_session_destroy(custom_zdot_session);
+    unlink(profile_zshenv_path);
+    unlink(custom_zprofile_path);
+    unlink(custom_zshrc_path);
+    unlink(custom_zlogin_path);
+    unlink(custom_zcompdump_path);
+    unlink(custom_zcompdump_compiled_path);
+    assert(rmdir(custom_zdotdir) == 0);
 
     char nested_wrapper_template[] = "/tmp/mica-parent-zsh-XXXXXX";
     char *nested_wrapper_dir = mkdtemp(nested_wrapper_template);

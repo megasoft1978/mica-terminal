@@ -375,6 +375,17 @@
     self.audioPipe = nil;
     self.audioWriter = nil;
 
+    if (self.processExitCode != 0 && !self.helperError.length) {
+        if (self.processTerminationReason == NSTaskTerminationReasonUncaughtSignal) {
+            const char *signalDescription = strsignal(self.processExitCode);
+            self.helperError = [NSString stringWithFormat:
+                @"Local speech helper was interrupted by signal %d (%@).", self.processExitCode,
+                signalDescription ? [NSString stringWithUTF8String:signalDescription] : @"unknown signal"];
+        } else {
+            self.helperError = [NSString stringWithFormat:
+                @"Local speech helper exited unexpectedly (status %d).", self.processExitCode];
+        }
+    }
     if (self.helperError.length) {
         [self failWithMessage:self.helperError];
         return;

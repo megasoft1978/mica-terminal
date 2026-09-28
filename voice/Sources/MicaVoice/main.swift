@@ -118,7 +118,20 @@ private struct MicaVoiceCLI {
                 }
             )
 
-            let manager = SlidingWindowAsrManager(config: .streaming)
+            // FluidAudio 0.17.4's `hypothesisChunkSeconds` is currently not
+            // used by SlidingWindowAsrManager's processing loop. The default
+            // 11s chunk plus 2s right context therefore delays the first live
+            // result until 13s of audio. A shorter 5s window with 1s lookahead
+            // yields an initial update after about 6s while retaining context.
+            let streamingConfig = SlidingWindowAsrConfig(
+                chunkSeconds: 5.0,
+                hypothesisChunkSeconds: 1.0,
+                leftContextSeconds: 2.0,
+                rightContextSeconds: 1.0,
+                minContextForConfirmation: 6.0,
+                confirmationThreshold: 0.80
+            )
+            let manager = SlidingWindowAsrManager(config: streamingConfig)
             try await manager.loadModels(models)
             let updates = await manager.transcriptionUpdates
             try await manager.startStreaming(source: .microphone)
@@ -130,6 +143,7 @@ private struct MicaVoiceCLI {
             emit(HelperMessage(type: "ready", message: "Listening — speak now"))
 
             let updateTask = Task {
+                var firstTranscriptReported = false
                 for await _ in updates {
                     if Task.isCancelled { break }
                     let confirmed = await manager.confirmedTranscript
@@ -137,6 +151,13 @@ private struct MicaVoiceCLI {
                     let text = [confirmed, volatile]
                         .filter { !$0.isEmpty }
                         .joined(separator: " ")
+                    if !firstTranscriptReported && !text.isEmpty {
+                        firstTranscriptReported = true
+                        emit(HelperMessage(type: "diagnostic", message: resourceSample(
+                            stage: "first_transcript",
+                            elapsed: ProcessInfo.processInfo.systemUptime - recognitionStartedAt
+                        )))
+                    }
                     emit(HelperMessage(
                         type: "transcript",
                         text: text,

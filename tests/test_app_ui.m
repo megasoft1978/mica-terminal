@@ -120,10 +120,16 @@ static NSString *MicaUITestScreenTail(MicaSession *session) {
     return [[lines subarrayWithRange:NSMakeRange(start, lines.count - start)] componentsJoinedByString:@" | "];
 }
 
-static BOOL MicaUITestCheckColor(NSColor *color, uint32_t expectedRGB) {
-    return fabs(color.redComponent - ((expectedRGB >> 16) & 0xff) / 255.0) < 0.01 &&
-        fabs(color.greenComponent - ((expectedRGB >> 8) & 0xff) / 255.0) < 0.01 &&
-        fabs(color.blueComponent - (expectedRGB & 0xff) / 255.0) < 0.01;
+static NSColor *MicaUITestColor(uint32_t rgb, NSColorSpace *colorSpace) {
+    NSColor *sRGB = [NSColor colorWithSRGBRed:((rgb >> 16) & 0xff) / 255.0
+        green:((rgb >> 8) & 0xff) / 255.0 blue:(rgb & 0xff) / 255.0 alpha:1.0];
+    return [sRGB colorUsingColorSpace:colorSpace] ?: sRGB;
+}
+
+static BOOL MicaUITestCheckColor(NSColor *color, NSColor *expected) {
+    return fabs(color.redComponent - expected.redComponent) < 0.01 &&
+        fabs(color.greenComponent - expected.greenComponent) < 0.01 &&
+        fabs(color.blueComponent - expected.blueComponent) < 0.01;
 }
 
 static void MicaUITestRecord(NSMutableString *report, BOOL *allPassed, BOOL passed, NSString *message) {
@@ -1502,6 +1508,9 @@ static int MicaRunUISelfTest(void) {
                              [NSString stringWithFormat:@"offscreen AppKit render saved to %@", imagePath]);
 
             if (bitmapReady) {
+                NSColor *reverseBackground = MicaUITestColor(0xd4d4d4, bitmap.colorSpace);
+                NSColor *blockBackground = MicaUITestColor(0x123456, bitmap.colorSpace);
+                NSColor *terminalBackground = MicaUITestColor(0x1e1e1e, bitmap.colorSpace);
                 NSInteger blockRow = 0, blockCol = 0;
                 NSFont *font = delegate.terminalView.terminalFont;
                 NSDictionary *fontAttrs = @{ NSFontAttributeName: font };
@@ -1527,7 +1536,7 @@ static int MicaRunUISelfTest(void) {
                     NSInteger startY = flipped ? bitmap.pixelsHigh - reverseY - reverseHeight : reverseY;
                     for (NSInteger y = MAX(0, startY); reverseAttr && y < MIN(bitmap.pixelsHigh, startY + reverseHeight); y++) {
                         for (NSInteger x = MAX(0, reverseX); x < MIN(bitmap.pixelsWide, reverseX + reverseWidth); x++) {
-                            if (MicaUITestCheckColor([bitmap colorAtX:x y:y], 0xd4d4d4)) orientationPixels++;
+                            if (MicaUITestCheckColor([bitmap colorAtX:x y:y], reverseBackground)) orientationPixels++;
                         }
                     }
                     reverseBackgroundPixels = MAX(reverseBackgroundPixels, orientationPixels);
@@ -1545,7 +1554,7 @@ static int MicaRunUISelfTest(void) {
                     NSInteger startY = flipped ? bitmap.pixelsHigh - blockY - blockHeight : blockY;
                     for (NSInteger y = MAX(0, startY); blockFound && y < MIN(bitmap.pixelsHigh, startY + blockHeight); y++) {
                         for (NSInteger x = MAX(0, blockX); x < MIN(bitmap.pixelsWide, blockX + blockWidth); x++) {
-                            if (MicaUITestCheckColor([bitmap colorAtX:x y:y], 0x123456)) orientationPixels++;
+                            if (MicaUITestCheckColor([bitmap colorAtX:x y:y], blockBackground)) orientationPixels++;
                         }
                     }
                     rgbPixels = MAX(rgbPixels, orientationPixels);
@@ -1569,7 +1578,7 @@ static int MicaRunUISelfTest(void) {
                     for (NSInteger y = MAX(0, startY); emojiFound && y < MIN(bitmap.pixelsHigh, startY + emojiHeight); y++) {
                         for (NSInteger x = MAX(0, emojiX); x < MIN(bitmap.pixelsWide, emojiX + emojiWidth); x++) {
                             NSColor *pixel = [bitmap colorAtX:x y:y];
-                            if (!MicaUITestCheckColor(pixel, 0x1e1e1e)) orientationPixels++;
+                            if (!MicaUITestCheckColor(pixel, terminalBackground)) orientationPixels++;
                             CGFloat highest = MAX(pixel.redComponent, MAX(pixel.greenComponent, pixel.blueComponent));
                             CGFloat lowest = MIN(pixel.redComponent, MIN(pixel.greenComponent, pixel.blueComponent));
                             if (highest - lowest > 0.08) orientationColorPixels++;
@@ -1668,7 +1677,7 @@ static int MicaRunUISelfTest(void) {
         NSString *projectBLayout = [projectLayoutRoot stringByAppendingPathComponent:@"beta.mica"];
         NSString *commandLayout = [projectLayoutRoot stringByAppendingPathComponent:@"commands.mica"];
         NSString *layoutCommandScript = [projectLayoutRoot stringByAppendingPathComponent:@"r.sh"];
-        NSString *projectALayoutContents = @"# Mica layout v1\n"
+        NSString *projectALayoutContents = @"# Mica layout v1\n# Mica project: Project Alpha\n"
             "Claude Code 1\t/tmp\tprintf 'PROJECT-A-PREFILLED'\nShell\t/tmp\t\n";
         NSString *projectBLayoutContents = @"# Mica layout v1\n"
             "Codex\t/tmp\tprintf 'PROJECT-B-PREFILLED'\nShell\t/tmp\t\n";
@@ -1687,8 +1696,9 @@ static int MicaRunUISelfTest(void) {
         NSDictionary *projectA = @{};
         NSDictionary *projectB = @{};
         if (projectLayoutsWritten) {
-            projectA = MicaResolveLaunchConfiguration(@[@"mica", @"--layout", projectALayout],
-                @{@"MicaProjectName": @"Project Alpha", @"MicaProjectLayout": projectBLayout}, @"/tmp");
+            projectA = MicaResolveLaunchConfiguration(@[@"mica", @"--layout", projectALayout,
+                @"--project-name", @"Stale Script Name"],
+                @{@"MicaProjectName": @"Stale Bundle Name", @"MicaProjectLayout": projectBLayout}, @"/tmp");
             projectB = MicaResolveLaunchConfiguration(@[@"mica"],
                 @{@"MicaProjectName": @"Project Beta", @"MicaProjectLayout": projectBLayout}, @"/tmp");
         }
@@ -1723,6 +1733,30 @@ static int MicaRunUISelfTest(void) {
                           (unsigned long)projectATabs.count, projectAFirstTab[@"name"],
                           (unsigned long)projectBTabs.count, projectBFirstTab[@"name"],
                           projectLayoutError ? [NSString stringWithFormat:@" error: %@", projectLayoutError.localizedDescription] : @""]);
+
+        MicaAppDelegate *settingsOwner = [[MicaAppDelegate alloc] init];
+        settingsOwner.projectName = @"Project Alpha";
+        settingsOwner.projectLayoutPath = projectALayout;
+        MicaUITestAttachWindow(settingsOwner);
+        MicaProjectSettingsController *projectSettings = [[MicaProjectSettingsController alloc] initWithOwner:settingsOwner];
+        BOOL settingsLoadedRows = projectSettings.rows.count == 2 && [projectSettings.rows[0][0] isEqualToString:@"Claude Code 1"];
+        projectSettings.projectNameField.stringValue = @"Renamed Alpha";
+        projectSettings.rows[0][0] = @"Claude";
+        projectSettings.rows[0][2] = @"printf 'UPDATED-SETTINGS'";
+        [settingsOwner.window beginSheet:projectSettings.window completionHandler:nil];
+        [projectSettings save:nil];
+        NSDictionary *savedSettings = MicaResolveLaunchConfiguration(@[@"mica", @"--layout", projectALayout,
+            @"--project-name", @"Old Launcher Name"], @{}, @"/tmp");
+        NSArray<NSDictionary *> *savedSettingTabs = savedSettings[@"tabs"];
+        BOOL projectSettingsPersisted = settingsLoadedRows &&
+            [savedSettings[@"projectName"] isEqualToString:@"Renamed Alpha"] &&
+            [savedSettingTabs.firstObject[@"name"] isEqualToString:@"Claude"] &&
+            [savedSettingTabs.firstObject[@"command"] isEqualToString:@"printf 'UPDATED-SETTINGS'"] &&
+            [settingsOwner.projectName isEqualToString:@"Renamed Alpha"];
+        MicaUITestRecord(report, &allPassed, projectSettingsPersisted,
+                         [NSString stringWithFormat:@"project settings edit and persist the project name and startup tabs (%lu rows)",
+                          (unsigned long)savedSettingTabs.count]);
+        [settingsOwner.window orderOut:nil];
 
         MicaAppDelegate *layoutDelegate = [[MicaAppDelegate alloc] init];
         layoutDelegate.tabs = [NSMutableArray array];

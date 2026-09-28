@@ -38,17 +38,17 @@ Use a project layout when you want commands ready at their prompts for review be
 
 Click a tab to select it. Tabs share the available window width; when there are more tabs than fit, use the overflow menu. Hover over a tab for its full title and details. Codex and Claude Code tabs show their current activity. The status bar shows the selected tab’s folder or current task. Drag a file into the terminal to insert its quoted path without running it.
 
-## Create a project app
+## Project launchers and settings
 
-To make a separate Mica app for a project, run:
+To create a project launcher, run:
 
 ```sh
 make new-instance
 ```
 
-The prompts ask for a name, project folder, and optional startup command. Mica creates a project layout and app on your Desktop. An optional command is placed at the shell prompt; press Return when you are ready to run it. You can open several project apps at once.
+The prompts ask for a name, project folder, and optional startup command. Mica creates a `.mica` project layout and a small Desktop launcher. The launcher starts a fresh instance of the shared `build/Mica.app`, so every new launch uses the binary produced by the latest `make app`; project launchers no longer contain their own Mica or voice-helper copies. An optional command is placed at the shell prompt; press Return when you are ready to run it. You can open several project launchers at once.
 
-The **Mica → New Instance** menu item opens another general Mica window. `make new-instance` creates a named project app; these are different actions.
+Use **Project → Settings…** (⌘,) in a project window to change its name and edit startup tabs, working folders, and commands in a table. Those changes are saved to its `.mica` file and apply the next time that project launcher opens. The project name is stored in the layout, so it remains changed even if an older launcher passes its original name. The **Mica → New Instance** menu item opens another general Mica window; `make new-instance` creates a project layout and launcher.
 
 You can also define tabs in a `.mica` layout file, with one tab per line and tab-separated fields for name, folder, and optional command:
 
@@ -62,7 +62,7 @@ Git	/Users/me/Projects/work	lazygit
 Open the layout with:
 
 ```sh
-open build/Mica.app --args --layout "$HOME/.config/mica/layouts/work.mica"
+open -n build/Mica.app --args --layout "$HOME/.config/mica/layouts/work.mica" --project-name "Work"
 ```
 
 Layout commands wait at their prompts until you press Return. The Git example uses [lazygit](https://github.com/jesseduffield/lazygit), which you can install with `brew install lazygit`. When a shell exits, Mica closes that tab and resizes the remaining tabs.
@@ -84,8 +84,9 @@ Mica’s terminal and dictation require macOS 14 or later. Scrollback is allocat
 ## Build and validate
 
 ```sh
-make test       # PTY, UI, project-app, memory-limit, and local CLI-fixture checks
+make test       # PTY, UI, project-launcher, memory-limit, and local CLI-fixture checks
 make app        # build the app and local speech helper
+make install-desktop-apps # refresh project launcher wrappers and scripts
 make validate   # run tests, build, and check the app bundle
 make memory     # sample memory use for running Mica processes
 ```

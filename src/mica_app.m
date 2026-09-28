@@ -251,6 +251,8 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, strong) NSMutableArray<MicaTab *> *tabs;
 @property(nonatomic, assign) NSInteger activeIndex;
 @property(nonatomic, copy) NSString *projectName;
+@property(nonatomic, copy) NSString *projectLayoutPath;
+@property(nonatomic, strong) id projectSettingsController;
 @property(nonatomic, strong) NSTimer *pollTimer;
 @property(nonatomic, assign) NSTimeInterval lastSlowPollLogAt;
 @property(nonatomic, strong) MicaVoiceController *voiceController;
@@ -277,7 +279,17 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)beginDictationForActiveTab;
 - (void)cancelDictation;
 - (void)openDiagnosticLogs:(id)sender;
+- (void)openProjectSettings:(id)sender;
 @property(nonatomic, assign) MicaUIMode uiMode;
+@end
+
+@interface MicaProjectSettingsController : NSWindowController <NSTableViewDataSource, NSTableViewDelegate>
+@property(nonatomic, weak) MicaAppDelegate *appDelegate;
+@property(nonatomic, strong) NSTextField *projectNameField;
+@property(nonatomic, strong) NSTableView *tableView;
+@property(nonatomic, strong) NSMutableArray<NSMutableArray<NSString *> *> *rows;
+- (instancetype)initWithOwner:(MicaAppDelegate *)owner;
+- (void)save:(id)sender;
 @end
 
 static NSMenuItem *AddMenuItem(NSMenu *menu, NSString *title, SEL selector, NSString *key, NSEventModifierFlags modifiers) {
@@ -1656,8 +1668,10 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     NSString *layoutPath = [bundledLayoutPath isKindOfClass:NSString.class] ? bundledLayoutPath : @"";
     NSString *cwd = defaultCwd.length ? defaultCwd : NSFileManager.defaultManager.currentDirectoryPath;
     NSString *command = @"";
+    __block NSString *layoutProjectName = @"";
     for (NSUInteger i = 1; i + 1 < args.count; i++) {
         if ([args[i] isEqualToString:@"--layout"]) layoutPath = args[++i];
+        else if ([args[i] isEqualToString:@"--project-name"]) projectName = args[++i];
         else if ([args[i] isEqualToString:@"--cwd"]) cwd = args[++i];
         else if ([args[i] isEqualToString:@"--command"]) command = args[++i];
     }
@@ -1667,6 +1681,10 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
         NSString *contents = [NSString stringWithContentsOfFile:layoutPath encoding:NSUTF8StringEncoding error:nil];
         [contents enumerateLinesUsingBlock:^(NSString *line, BOOL *stop) {
             (void)stop;
+            if ([line hasPrefix:@"# Mica project: "]) {
+                layoutProjectName = [line substringFromIndex:[@"# Mica project: " length]];
+                return;
+            }
             if (!line.length || [line hasPrefix:@"#"]) return;
             NSArray<NSString *> *parts = [line componentsSeparatedByString:@"\t"];
             if (parts.count < 2) return;
@@ -1685,6 +1703,7 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
             }];
         }];
     }
+    if (layoutProjectName.length) projectName = layoutProjectName;
     BOOL layoutLoaded = tabs.count > 0;
     if (!layoutLoaded) {
         [tabs addObject:@{
@@ -1704,6 +1723,176 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
         @"activeIndex": @0
     };
 }
+
+@implementation MicaProjectSettingsController
+- (instancetype)initWithOwner:(MicaAppDelegate *)owner {
+    self = [super initWithWindow:nil];
+    if (!self) return nil;
+    self.appDelegate = owner;
+    self.rows = [NSMutableArray array];
+    NSString *layout = owner.projectLayoutPath;
+    NSString *contents = [NSString stringWithContentsOfFile:layout encoding:NSUTF8StringEncoding error:nil] ?: @"";
+    [contents enumerateLinesUsingBlock:^(NSString *line, BOOL *stop) {
+        (void)stop;
+        if (!line.length || [line hasPrefix:@"#"]) return;
+        NSArray<NSString *> *parts = [line componentsSeparatedByString:@"\t"];
+        if (parts.count < 2) return;
+        NSMutableArray<NSString *> *row = [NSMutableArray arrayWithObjects:parts[0], parts[1], @"", nil];
+        if (parts.count > 2) row[2] = [[parts subarrayWithRange:NSMakeRange(2, parts.count - 2)] componentsJoinedByString:@"\t"];
+        [self.rows addObject:row];
+    }];
+
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 760, 510)
+        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
+    window.title = @"Project Settings";
+    window.releasedWhenClosed = NO;
+    self.window = window;
+    NSView *content = window.contentView;
+
+    NSTextField *nameLabel = [NSTextField labelWithString:@"Project name"];
+    self.projectNameField = [NSTextField textFieldWithString:owner.projectName ?: @""];
+    NSTextField *tabsLabel = [NSTextField labelWithString:@"Startup tabs — changes take effect the next time this project opens"];
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+    scroll.hasVerticalScroller = YES;
+    scroll.borderType = NSBezelBorder;
+    self.tableView = [[NSTableView alloc] initWithFrame:NSZeroRect];
+    self.tableView.usesAlternatingRowBackgroundColors = YES;
+    self.tableView.gridStyleMask = NSTableViewSolidHorizontalGridLineMask | NSTableViewSolidVerticalGridLineMask;
+    self.tableView.dataSource = self;
+    self.tableView.delegate = self;
+    NSArray<NSString *> *titles = @[@"Tab name", @"Working folder", @"Startup command (optional)"];
+    NSArray<NSString *> *identifiers = @[@"name", @"folder", @"command"];
+    NSArray<NSNumber *> *widths = @[@145, @310, @285];
+    for (NSUInteger index = 0; index < identifiers.count; index++) {
+        NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:identifiers[index]];
+        column.title = titles[index];
+        column.width = widths[index].doubleValue;
+        column.editable = YES;
+        [self.tableView addTableColumn:column];
+    }
+    scroll.documentView = self.tableView;
+    NSButton *addButton = [NSButton buttonWithTitle:@"Add Tab" target:self action:@selector(addTab:)];
+    NSButton *removeButton = [NSButton buttonWithTitle:@"Remove Tab" target:self action:@selector(removeTab:)];
+    NSButton *cancelButton = [NSButton buttonWithTitle:@"Cancel" target:self action:@selector(cancel:)];
+    NSButton *saveButton = [NSButton buttonWithTitle:@"Save" target:self action:@selector(save:)];
+    saveButton.keyEquivalent = @"\r";
+
+    for (NSView *view in @[nameLabel, self.projectNameField, tabsLabel, scroll, addButton, removeButton, cancelButton, saveButton]) {
+        view.translatesAutoresizingMaskIntoConstraints = NO;
+        [content addSubview:view];
+    }
+    [NSLayoutConstraint activateConstraints:@[
+        [nameLabel.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:20],
+        [nameLabel.topAnchor constraintEqualToAnchor:content.topAnchor constant:20],
+        [self.projectNameField.leadingAnchor constraintEqualToAnchor:nameLabel.trailingAnchor constant:14],
+        [self.projectNameField.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-20],
+        [self.projectNameField.centerYAnchor constraintEqualToAnchor:nameLabel.centerYAnchor],
+        [tabsLabel.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:20],
+        [tabsLabel.topAnchor constraintEqualToAnchor:nameLabel.bottomAnchor constant:24],
+        [scroll.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:20],
+        [scroll.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-20],
+        [scroll.topAnchor constraintEqualToAnchor:tabsLabel.bottomAnchor constant:8],
+        [scroll.bottomAnchor constraintEqualToAnchor:addButton.topAnchor constant:-12],
+        [addButton.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:20],
+        [addButton.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-18],
+        [removeButton.leadingAnchor constraintEqualToAnchor:addButton.trailingAnchor constant:8],
+        [removeButton.centerYAnchor constraintEqualToAnchor:addButton.centerYAnchor],
+        [saveButton.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-20],
+        [saveButton.centerYAnchor constraintEqualToAnchor:addButton.centerYAnchor],
+        [cancelButton.trailingAnchor constraintEqualToAnchor:saveButton.leadingAnchor constant:-8],
+        [cancelButton.centerYAnchor constraintEqualToAnchor:addButton.centerYAnchor]
+    ]];
+    return self;
+}
+
+- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView { (void)tableView; return (NSInteger)self.rows.count; }
+- (id)tableView:(NSTableView *)tableView objectValueForTableColumn:(NSTableColumn *)column row:(NSInteger)row {
+    (void)tableView;
+    NSUInteger field = [@{@"name": @0, @"folder": @1, @"command": @2}[column.identifier] unsignedIntegerValue];
+    return self.rows[(NSUInteger)row][field];
+}
+- (void)tableView:(NSTableView *)tableView setObjectValue:(id)value forTableColumn:(NSTableColumn *)column row:(NSInteger)row {
+    (void)tableView;
+    NSNumber *field = @{@"name": @0, @"folder": @1, @"command": @2}[column.identifier];
+    if (field && row >= 0 && row < (NSInteger)self.rows.count)
+        self.rows[(NSUInteger)row][field.unsignedIntegerValue] = [value isKindOfClass:NSString.class] ? value : @"";
+}
+- (void)addTab:(id)sender {
+    (void)sender;
+    NSString *folder = self.rows.lastObject.count > 1 ? self.rows.lastObject[1] : NSFileManager.defaultManager.currentDirectoryPath;
+    [self.rows addObject:[NSMutableArray arrayWithObjects:@"Shell", folder, @"", nil]];
+    [self.tableView reloadData];
+    [self.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:self.rows.count - 1] byExtendingSelection:NO];
+    [self.tableView editColumn:0 row:(NSInteger)self.rows.count - 1 withEvent:nil select:YES];
+}
+- (void)removeTab:(id)sender {
+    (void)sender;
+    NSInteger selected = self.tableView.selectedRow;
+    if (selected < 0 || selected >= (NSInteger)self.rows.count) return;
+    [self.rows removeObjectAtIndex:(NSUInteger)selected];
+    [self.tableView reloadData];
+}
+- (void)cancel:(id)sender {
+    (void)sender;
+    [self.appDelegate.window endSheet:self.window returnCode:NSModalResponseCancel];
+    [self.window orderOut:nil];
+}
+- (void)save:(id)sender {
+    (void)sender;
+    [self.tableView.window makeFirstResponder:self.tableView];
+    NSString *name = [self.projectNameField.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!name.length || [name rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location != NSNotFound ||
+        [name containsString:@"\t"] || [name rangeOfString:@"\0"].location != NSNotFound) {
+        [self showError:@"Enter a project name on one line without tab characters."];
+        return;
+    }
+    if (self.rows.count == 0) {
+        [self showError:@"A project layout must contain at least one startup tab."];
+        return;
+    }
+    NSMutableString *contents = [NSMutableString stringWithFormat:@"# Mica layout v1\n# Mica project: %@\n", name];
+    for (NSUInteger index = 0; index < self.rows.count; index++) {
+        NSArray<NSString *> *row = self.rows[index];
+        NSString *tabName = [row[0] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSString *folder = [row[1] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSString *command = row[2];
+        if (!tabName.length || !folder.length ||
+            [tabName rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location != NSNotFound ||
+            [folder rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location != NSNotFound ||
+            [command rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location != NSNotFound ||
+            [tabName hasPrefix:@"#"] || [tabName containsString:@"\t"] || [folder containsString:@"\t"] ||
+            [tabName rangeOfString:@"\0"].location != NSNotFound || [folder rangeOfString:@"\0"].location != NSNotFound ||
+            [command rangeOfString:@"\0"].location != NSNotFound) {
+            [self showError:[NSString stringWithFormat:@"Tab %lu has an empty name or folder, or contains an unsupported tab/newline.", (unsigned long)(index + 1)]];
+            return;
+        }
+        NSString *expandedFolder = folder.stringByExpandingTildeInPath;
+        BOOL isDirectory = NO;
+        if (![expandedFolder isAbsolutePath] || ![NSFileManager.defaultManager fileExistsAtPath:expandedFolder isDirectory:&isDirectory] || !isDirectory) {
+            [self showError:[NSString stringWithFormat:@"The working folder for “%@” must be an existing folder.", tabName]];
+            return;
+        }
+        [contents appendFormat:@"%@\t%@\t%@\n", tabName, expandedFolder, command];
+    }
+    NSError *error = nil;
+    NSURL *url = [NSURL fileURLWithPath:self.appDelegate.projectLayoutPath];
+    if (![contents writeToURL:url atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
+        [self showError:error.localizedDescription ?: @"Mica could not save the project layout."];
+        return;
+    }
+    self.appDelegate.projectName = name;
+    [self.appDelegate updateWindowTitle];
+    [self.appDelegate.window endSheet:self.window returnCode:NSModalResponseOK];
+    [self.window orderOut:nil];
+}
+- (void)showError:(NSString *)message {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Project settings could not be saved";
+    alert.informativeText = message;
+    [alert addButtonWithTitle:@"OK"];
+    [alert beginSheetModalForWindow:self.window completionHandler:nil];
+}
+@end
 
 @implementation MicaAppDelegate
 - (NSString *)windowTitleForTab:(MicaTab *)tab {
@@ -1783,6 +1972,11 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     AddMenuItem(appMenu, @"Quit Mica", @selector(terminate:), @"q", NSEventModifierFlagCommand);
     appRoot.submenu = appMenu;
     [main addItem:appRoot];
+    NSMenuItem *projectRoot = [[NSMenuItem alloc] initWithTitle:@"Project" action:nil keyEquivalent:@""];
+    NSMenu *projectMenu = [[NSMenu alloc] initWithTitle:@"Project"];
+    AddMenuItem(projectMenu, @"Settings…", @selector(openProjectSettings:), @",", NSEventModifierFlagCommand).target = self;
+    projectRoot.submenu = projectMenu;
+    [main addItem:projectRoot];
     NSMenuItem *sessionsRoot = [[NSMenuItem alloc] initWithTitle:@"Session" action:nil keyEquivalent:@""];
     NSMenu *sessionMenu = [[NSMenu alloc] initWithTitle:@"Session"];
     AddMenuItem(sessionMenu, @"New Shell Tab", @selector(newShell:), @"t", NSEventModifierFlagCommand).target = self;
@@ -1823,6 +2017,24 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     [[NSWorkspace sharedWorkspace] openURL:directory];
 }
 
+- (void)openProjectSettings:(id)sender {
+    (void)sender;
+    if (!self.projectLayoutPath.length) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"This window has no project layout";
+        alert.informativeText = @"Open Mica with a project .mica layout to edit its startup tabs.";
+        [alert addButtonWithTitle:@"OK"];
+        [alert beginSheetModalForWindow:self.window completionHandler:nil];
+        return;
+    }
+    MicaProjectSettingsController *settings = [[MicaProjectSettingsController alloc] initWithOwner:self];
+    self.projectSettingsController = settings;
+    [self.window beginSheet:settings.window completionHandler:^(NSModalResponse returnCode) {
+        (void)returnCode;
+        self.projectSettingsController = nil;
+    }];
+}
+
 - (void)loadLaunchConfiguration {
     [self loadLaunchConfigurationFromArguments:NSProcessInfo.processInfo.arguments
                                     bundleInfo:NSBundle.mainBundle.infoDictionary];
@@ -1832,6 +2044,7 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     NSDictionary *configuration = MicaResolveLaunchConfiguration(args, bundleInfo,
         NSFileManager.defaultManager.currentDirectoryPath);
     NSString *projectName = configuration[@"projectName"];
+    self.projectLayoutPath = configuration[@"layoutPath"];
     self.projectName = projectName.length ? projectName : nil;
     NSArray<NSDictionary *> *tabSpecs = configuration[@"tabs"];
     MicaDiagnosticsLog(@"launch", [NSString stringWithFormat:@"configuration project=%@ layout=%d tabs=%lu",

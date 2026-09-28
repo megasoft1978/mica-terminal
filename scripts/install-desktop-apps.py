@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install one Mica app bundle for each configured project on macOS."""
+"""Install lightweight project launchers for Mica layouts on macOS."""
 
 from __future__ import annotations
 
@@ -35,10 +35,20 @@ def read_plist(path: Path) -> dict:
 
 
 def write_json_atomic(path: Path, payload: object) -> None:
+    serialized = json.dumps(payload, indent=2) + "\n"
+    if path.is_file() and path.read_text(encoding="utf-8") == serialized:
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(serialized)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def discover_launchers(launcher_dir: Path, layout_dir: Path) -> list[dict]:
@@ -78,7 +88,7 @@ def discover_launchers(launcher_dir: Path, layout_dir: Path) -> list[dict]:
         })
     if not projects:
         raise RuntimeError(
-            f"no Desktop AppleScript launchers with matching .mica layouts were found in {launcher_dir}"
+            f"no Desktop Mica launchers with matching .mica layouts were found in {launcher_dir}"
         )
     return projects
 
@@ -91,11 +101,16 @@ def load_projects(manifest: Path, launcher_dir: Path, layout_dir: Path, output_d
         projects = records
     else:
         projects = discover_launchers(launcher_dir, layout_dir)
+    app_paths: set[str] = set()
     for project in projects:
         app_name = project.get("app_name")
         layout_name = project.get("layout_name")
-        if not isinstance(app_name, str) or not app_name.endswith(".app"):
+        if (not isinstance(app_name, str) or not app_name.endswith(".app")
+                or Path(app_name).name != app_name or app_name in {".", ".."}):
             raise RuntimeError(f"invalid app name in desktop manifest: {app_name!r}")
+        lexical_target = output_dir / app_name
+        if lexical_target.is_symlink():
+            raise RuntimeError(f"refusing to replace a symlink as a Mica launcher: {lexical_target}")
         if not isinstance(layout_name, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", layout_name):
             raise RuntimeError(f"invalid layout name for {app_name}: {layout_name!r}")
         layout_path = layout_dir / f"{layout_name}.mica"
@@ -103,7 +118,15 @@ def load_projects(manifest: Path, launcher_dir: Path, layout_dir: Path, output_d
             raise RuntimeError(f"missing Mica layout for {app_name}: {layout_path}")
         project["layout_path"] = str(layout_path.resolve())
         project["app_path"] = str((output_dir / app_name).resolve())
+        if Path(project["app_path"]).parent != output_dir.resolve():
+            raise RuntimeError(f"project app path escapes output directory: {app_name!r}")
+        if project["app_path"] in app_paths:
+            raise RuntimeError(f"duplicate project app target: {app_name!r}")
+        app_paths.add(project["app_path"])
         project.setdefault("display_name", Path(app_name).stem)
+        if (not isinstance(project["display_name"], str) or
+                any(char in project["display_name"] for char in "\0\r\n")):
+            raise RuntimeError(f"invalid project display name for {app_name}")
         project.setdefault("bundle_identifier", None)
         project.setdefault("launch_script", None)
     return projects
@@ -131,18 +154,18 @@ def install_bundle(
     project_icon_tool: Path = DEFAULT_PROJECT_ICON_TOOL,
 ) -> None:
     target = Path(project["app_path"])
+    if target == base_app.expanduser().resolve():
+        raise RuntimeError(f"refusing to replace the shared Mica.app with a project launcher: {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
     binary = base_app / "Contents/MacOS/Mica"
-    voice_helper = base_app / "Contents/Helpers/mica-voice"
     icon = base_app / "Contents/Resources/Mica.icns"
-    third_party_notices = base_app / "Contents/Resources/THIRD_PARTY_NOTICES.md"
-    third_party_licenses = base_app / "Contents/Resources/ThirdPartyLicenses"
     base_info = read_plist(base_app / "Contents/Info.plist")
-    if (not binary.is_file() or not voice_helper.is_file() or not icon.is_file()
-            or not third_party_notices.is_file() or not project_icon_tool.is_file()):
-        raise RuntimeError(f"build the base Mica.app before installing project apps: {base_app}")
+    if not binary.is_file() or not icon.is_file() or not project_icon_tool.is_file():
+        raise RuntimeError(f"build the shared Mica.app before installing project launchers: {base_app}")
 
     current_info = None
+    if target.is_symlink():
+        raise RuntimeError(f"refusing to replace a symlink as a Mica launcher: {target}")
     if target.is_dir() and (target / "Contents/Info.plist").is_file():
         current_info = read_plist(target / "Contents/Info.plist")
     if current_info and current_info.get("MicaProjectLayoutName") == project["layout_name"]:
@@ -174,20 +197,19 @@ def install_bundle(
     contents = staging / "Contents"
     (contents / "MacOS").mkdir(parents=True)
     (contents / "Resources").mkdir()
-    (contents / "Helpers").mkdir()
-    (contents / "Resources/ThirdPartyLicenses").mkdir(parents=True)
     try:
-        try:
-            os.link(binary, contents / "MacOS/Mica")
-        except OSError:
-            shutil.copy2(binary, contents / "MacOS/Mica")
-        shutil.copy2(voice_helper, contents / "Helpers/mica-voice")
-        shutil.copy2(third_party_notices, contents / "Resources/THIRD_PARTY_NOTICES.md")
-        if third_party_licenses.is_dir():
-            shutil.copytree(third_party_licenses, contents / "Resources/ThirdPartyLicenses", dirs_exist_ok=True)
-        fluid_audio_license = base_app / "Contents/Resources/LICENSE-FluidAudio.txt"
-        if fluid_audio_license.is_file():
-            shutil.copy2(fluid_audio_license, contents / "Resources/LICENSE-FluidAudio.txt")
+        # The project bundle remains a Finder-friendly icon and keeps its own
+        # identity, but its tiny executable delegates to the one built app.
+        # This avoids hardlink/copy snapshots that stay stale after `make app`.
+        launcher = (
+            "#!/bin/sh\nset -eu\n\n"
+            f"exec /usr/bin/open -n {shlex.quote(str(base_app.resolve()))} --args "
+            f"--layout {shlex.quote(project['layout_path'])} "
+            f"--project-name {shlex.quote(display_name)}\n"
+        )
+        executable = contents / "MacOS/Mica"
+        executable.write_text(launcher, encoding="utf-8")
+        executable.chmod(0o755)
         project_icon_png = staging_parent / "Mica-project.png"
         subprocess.run(
             [str(project_icon_tool), str(icon), str(project_icon_png), display_name],
@@ -223,12 +245,26 @@ def install_bundle(
     project["bundle_identifier"] = identifier
 
 
-def migrate_launch_script(project: dict, backup_dir: Path, install: bool) -> None:
+def migrate_launch_script(
+    project: dict, backup_dir: Path, install: bool, base_app: Path = DEFAULT_BASE_APP
+) -> None:
     raw_path = project.get("launch_script")
     if not raw_path:
         return
     script_path = Path(raw_path)
-    expected = f"exec /usr/bin/open -n {shlex.quote(project['app_path'])}"
+    if not re.fullmatch(r"launch-[A-Za-z0-9_-]+\.sh", script_path.name):
+        raise RuntimeError(f"refusing to migrate an unexpected launcher script path: {script_path}")
+    if script_path.is_symlink():
+        raise RuntimeError(f"refusing to migrate a symlink launcher script: {script_path}")
+    base_app = base_app.expanduser().resolve()
+    display_name = project["display_name"]
+    if not isinstance(display_name, str) or any(char in display_name for char in "\0\r\n"):
+        raise RuntimeError(f"invalid project display name for {project['app_name']}")
+    expected = (
+        f"exec /usr/bin/open -n {shlex.quote(str(base_app))} --args "
+        f"--layout {shlex.quote(project['layout_path'])} "
+        f"--project-name {shlex.quote(project['display_name'])}"
+    )
     if not install:
         print(f"would route {script_path} to {project['app_name']}")
         return
@@ -243,7 +279,7 @@ def migrate_launch_script(project: dict, backup_dir: Path, install: bool) -> Non
     script_path.parent.mkdir(parents=True, exist_ok=True)
     script_path.write_text(
         "#!/bin/zsh\nset -eu\n\n"
-        f"# Open the dedicated Mica app for {project['display_name']}.\n"
+        "# Open a project in the shared Mica build.\n"
         f"{expected}\n",
         encoding="utf-8",
     )
@@ -286,12 +322,15 @@ def create_instance_record(name: str, cwd: Path, command: str, layout_dir: Path,
     if app_path.exists():
         raise FileExistsError(f"Mica app already exists: {app_path}")
 
-    layout_contents = f"# Mica layout v1\nShell\t{project_dir}\t{command.strip()}\n"
+    layout_contents = f"# Mica layout v1\n# Mica project: {display_name}\nShell\t{project_dir}\t{command.strip()}\n"
+    created_layout = False
     try:
         with layout_path.open("x", encoding="utf-8") as stream:
+            created_layout = True
             stream.write(layout_contents)
     except Exception:
-        layout_path.unlink(missing_ok=True)
+        if created_layout:
+            layout_path.unlink(missing_ok=True)
         raise
     return {
         "app_name": app_name,
@@ -325,6 +364,7 @@ def create_instance_from_prompts(
         if not isinstance(existing, list) or any(not isinstance(item, dict) for item in existing):
             raise ValueError(f"invalid desktop app manifest: {manifest}")
     project = create_instance_record(name, project_dir, command, layouts, output)
+    bundle_installed = False
     try:
         for item in existing:
             if item.get("app_name") == project["app_name"] or item.get("layout_name") == project["layout_name"]:
@@ -334,11 +374,14 @@ def create_instance_from_prompts(
             if isinstance(item, dict) and isinstance(item.get("bundle_identifier"), str)
         }
         install_bundle(project, base_app, used_ids, Path(tempfile.gettempdir()), project_icon_tool)
+        bundle_installed = True
         all_projects = [*existing, project]
         write_json_atomic(manifest, all_projects)
     except Exception:
-        shutil.rmtree(Path(project["app_path"]), ignore_errors=True)
-        Path(project["layout_path"]).unlink(missing_ok=True)
+        # Once the bundle is installed, keep its layout alongside it if the
+        # manifest write fails; that pair remains launchable and recoverable.
+        if not bundle_installed:
+            Path(project["layout_path"]).unlink(missing_ok=True)
         raise
     if register:
         register_app_bundle(Path(project["app_path"]))
@@ -356,7 +399,7 @@ def main() -> int:
     parser.add_argument("--project-icon-tool", type=Path, default=DEFAULT_PROJECT_ICON_TOOL)
     parser.add_argument("--new-instance", action="store_true", help="create a project layout and Desktop app interactively")
     parser.add_argument("--no-register", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--install", action="store_true", help="install bundles and migrate matched shell launchers")
+    parser.add_argument("--install", action="store_true", help="install lightweight launchers and migrate matched shell scripts")
     args = parser.parse_args()
 
     try:
@@ -393,12 +436,12 @@ def main() -> int:
             if args.install:
                 install_bundle(project, base_app, used_ids, backup_dir, project_icon_tool)
                 register_app_bundle(Path(project["app_path"]))
-                migrate_launch_script(project, backup_dir, True)
+                migrate_launch_script(project, backup_dir, True, base_app)
                 print(f"installed {project['app_name']} [{project['bundle_identifier']}] -> {project['layout_name']}.mica")
             else:
                 identifier = project.get("bundle_identifier") or normalized_identifier(project, used_ids)
                 print(f"would install {project['app_name']} [{identifier}] -> {project['layout_name']}.mica")
-                migrate_launch_script(project, backup_dir, False)
+                migrate_launch_script(project, backup_dir, False, base_app)
         if args.install:
             write_json_atomic(manifest, projects)
             print(f"backup copies: {backup_dir}")
