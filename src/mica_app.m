@@ -5,17 +5,31 @@
 
 #include <unistd.h>
 
-static const CGFloat kHeaderHeight = 32.0;
+static const CGFloat kHeaderHeight = 28.0;
 static const CGFloat kStatusHeight = 32.0;
 static const CGFloat kFontSizeDefault = 16.0;
 static const CGFloat kTabTitleFontSize = 10.5;
 static const CGFloat kTabMinimumWidth = 140.0;
 static const CGFloat kTabOverflowWidth = 56.0;
 
+static void MicaLogSessionCleanup(pid_t pid, const char *stage, bool started, double elapsedMilliseconds) {
+    MicaDiagnosticsLog(@"shutdown", [NSString stringWithFormat:
+        @"pid=%d stage=%s phase=%@ duration_ms=%.1f", pid, stage ?: "unknown",
+        started ? @"start" : @"end", elapsedMilliseconds]);
+}
+
 typedef NS_ENUM(NSInteger, MicaUIMode) {
     MicaUIModeNormal = 0,
     MicaUIModeTab,
     MicaUIModeScroll,
+};
+
+typedef NS_ENUM(NSInteger, MicaTabActivityState) {
+    MicaTabActivityStateIdle = 0,
+    MicaTabActivityStateRunning,
+    MicaTabActivityStateWaiting,
+    MicaTabActivityStateComplete,
+    MicaTabActivityStateNeedsAttention,
 };
 
 static NSColor *MicaColor(uint32_t rgb) {
@@ -97,6 +111,16 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 @property(nonatomic, assign) BOOL reportedProcessExit;
 @property(nonatomic, assign) int completionStatus;
 @property(nonatomic, copy) NSString *completionLabel;
+@property(nonatomic, assign) NSTimeInterval outputMetricsStartedAt;
+@property(nonatomic, assign) NSTimeInterval lastOutputReadAt;
+@property(nonatomic, assign) NSTimeInterval lastOutputDrawnAt;
+@property(nonatomic, assign) NSUInteger outputBytes;
+@property(nonatomic, assign) NSUInteger outputReadCalls;
+@property(nonatomic, assign) NSUInteger outputLargestRead;
+@property(nonatomic, assign) double outputParseMilliseconds;
+@property(nonatomic, assign) double outputPollMilliseconds;
+@property(nonatomic, assign) double outputToDrawMaximumMilliseconds;
+@property(nonatomic, assign) NSTimeInterval lastActivityScanAt;
 @end
 @implementation MicaTab
 - (void)destroySession {
@@ -135,6 +159,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
     NSString *activity = nil;
     NSString *activityLine = nil;
     NSString *recentAction = nil;
+    BOOL hasInputPromptGlyph = NO;
     for (int row = rows - 1; row >= firstRow; row--) {
         NSMutableString *line = [NSMutableString string];
         for (int col = 0; col < cols; col++) {
@@ -142,6 +167,8 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
             if (!mica_session_get_cell(session, row, col, &cell) || CellIsContinuation(cell)) continue;
             for (NSUInteger i = 0; i < VTERM_MAX_CHARS_PER_CELL && cell.chars[i]; i++) {
                 uint32_t codepoint = cell.chars[i];
+                if (row >= rows - 2 && (codepoint == 0x276f || codepoint == 0x203a))
+                    hasInputPromptGlyph = YES;
                 if (codepoint >= 0x20 && codepoint <= 0x7e) [line appendFormat:@"%c", (char)codepoint];
                 else [line appendString:@" "];
             }
@@ -151,8 +178,17 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
         NSString *upper = trimmed.uppercaseString;
         NSString *lineActivity = nil;
         if ([upper containsString:@"TRUST THIS FOLDER"] || [upper containsString:@"NEEDS APPROVAL"] ||
+            [upper containsString:@"WAITING FOR APPROVAL"] || [upper containsString:@"CONFIRMATION REQUIRED"] ||
             [upper containsString:@"APPROVE THIS"] || [upper containsString:@"ALLOW THIS"]) {
             lineActivity = @"Needs approval";
+        } else if ([upper containsString:@"WAITING FOR YOUR INPUT"] ||
+                   [upper containsString:@"WAITING FOR INPUT"] ||
+                   [upper containsString:@"PRESS ENTER TO CONTINUE"] ||
+                   [upper containsString:@"PRESS RETURN TO CONTINUE"] ||
+                   [upper containsString:@"SELECT AN OPTION"] || [upper containsString:@"CHOOSE AN OPTION"] ||
+                   [upper containsString:@"TYPE YOUR ANSWER"] || [upper containsString:@"ENTER TO SUBMIT"] ||
+                   [upper containsString:@"(Y/N)"] || [upper containsString:@"[Y/N]"]) {
+            lineActivity = @"Needs input";
         } else if ([upper containsString:@"RESUME A PREVIOUS SESSION"] ||
                    [upper containsString:@"RESUME SESSION"]) {
             lineActivity = @"Choosing session";
@@ -195,6 +231,11 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
             activityLine = trimmed;
         }
     }
+    if (hasInputPromptGlyph && (!activity || [activity isEqualToString:@"Ready"] ||
+                                [activity isEqualToString:@"Running"])) {
+        activity = @"Needs input";
+        if (!activityLine) activityLine = @"Input prompt";
+    }
     if (detailOut) *detailOut = recentAction ?: activityLine;
     return activity ?: @"Running";
 }
@@ -229,6 +270,9 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)scheduleGridResize;
 - (void)commitGridResize:(NSTimer *)timer;
 - (void)recordDrawDuration:(NSTimeInterval)duration;
+- (NSString *)labelForTab:(MicaTab *)tab active:(BOOL)active;
+- (MicaTabActivityState)activityStateForTab:(MicaTab *)tab;
+- (void)drawActivityIndicatorForTab:(MicaTab *)tab at:(NSPoint)center;
 - (NSString *)view:(NSView *)view stringForToolTip:(NSToolTipTag)tag point:(NSPoint)point userData:(void *)data;
 - (BOOL)insertFileURLs:(NSArray<NSURL *> *)fileURLs;
 - (BOOL)hasTextSelection;
@@ -255,11 +299,14 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, strong) id projectSettingsController;
 @property(nonatomic, strong) NSTimer *pollTimer;
 @property(nonatomic, assign) NSTimeInterval lastSlowPollLogAt;
+@property(nonatomic, assign) NSTimeInterval lastPollTimerTickAt;
+@property(nonatomic, assign) BOOL terminationCleanupStarted;
+@property(nonatomic, assign) NSTimeInterval lastActivityAnimationAt;
+@property(nonatomic, assign) NSUInteger activityAnimationFrame;
 @property(nonatomic, strong) MicaVoiceController *voiceController;
 @property(nonatomic, strong) MicaTab *voiceTargetTab;
 @property(nonatomic, assign) NSInteger attentionRequest;
 - (MicaTab *)activeTab;
-- (NSString *)displayNameForTab:(MicaTab *)tab;
 - (NSString *)windowTitleForTab:(MicaTab *)tab;
 - (void)newTabWithName:(NSString *)name command:(NSString *)command;
 - (void)addTabWithName:(NSString *)name cwd:(NSString *)cwd command:(NSString *)command prefilled:(BOOL)prefilled;
@@ -279,6 +326,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)beginDictationForActiveTab;
 - (void)cancelDictation;
 - (void)openDiagnosticLogs:(id)sender;
+- (void)showKeyboardShortcuts:(id)sender;
 - (void)openProjectSettings:(id)sender;
 @property(nonatomic, assign) MicaUIMode uiMode;
 @end
@@ -286,6 +334,8 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @interface MicaProjectSettingsController : NSWindowController <NSTableViewDataSource, NSTableViewDelegate>
 @property(nonatomic, weak) MicaAppDelegate *appDelegate;
 @property(nonatomic, strong) NSTextField *projectNameField;
+@property(nonatomic, copy) NSString *originalLayoutContents;
+- (BOOL)layoutChangedOnDisk;
 @property(nonatomic, strong) NSTableView *tableView;
 @property(nonatomic, strong) NSMutableArray<NSMutableArray<NSString *> *> *rows;
 - (instancetype)initWithOwner:(MicaAppDelegate *)owner;
@@ -632,6 +682,12 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 
 - (void)recordDrawDuration:(NSTimeInterval)duration {
     NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
+    MicaTab *activeTab = self.owner.activeTab;
+    if (activeTab.lastOutputReadAt > activeTab.lastOutputDrawnAt) {
+        double outputToDraw = MAX(0, now - activeTab.lastOutputReadAt) * 1000.0;
+        activeTab.outputToDrawMaximumMilliseconds = MAX(activeTab.outputToDrawMaximumMilliseconds, outputToDraw);
+        activeTab.lastOutputDrawnAt = activeTab.lastOutputReadAt;
+    }
     if (self.drawingStatsStartedAt == 0) self.drawingStatsStartedAt = now;
     self.drawingStatsCount++;
     self.drawingStatsTotalDuration += duration;
@@ -661,10 +717,63 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 }
 
 - (NSString *)labelForTab:(MicaTab *)tab active:(BOOL)active {
-    NSUInteger index = [self.owner.tabs indexOfObjectIdenticalTo:tab] + 1;
-    NSString *marker = tab.needsAttention ? @"! " :
-        (tab.completedCommand ? (tab.completionStatus == 0 ? @"✓ " : @"× ") : (active ? @"● " : @""));
-    return [NSString stringWithFormat:@"%lu %@%@", (unsigned long)index, marker, [self.owner displayNameForTab:tab]];
+    (void)active;
+    return tab.name.length ? tab.name : @"Terminal";
+}
+
+- (MicaTabActivityState)activityStateForTab:(MicaTab *)tab {
+    if (!tab) return MicaTabActivityStateIdle;
+    if (tab.currentCommand.length) {
+        if ([tab.agentActivity isEqualToString:@"Needs approval"] ||
+            [tab.agentActivity isEqualToString:@"Needs input"] ||
+            [tab.agentActivity isEqualToString:@"Ready"] ||
+            [tab.agentActivity isEqualToString:@"Choosing session"])
+            return MicaTabActivityStateWaiting;
+        if (tab.needsAttention) return MicaTabActivityStateNeedsAttention;
+        return MicaTabActivityStateRunning;
+    }
+    if (tab.needsAttention) return MicaTabActivityStateNeedsAttention;
+    if (tab.completedCommand) return MicaTabActivityStateComplete;
+    return MicaTabActivityStateIdle;
+}
+
+- (void)drawActivityIndicatorForTab:(MicaTab *)tab at:(NSPoint)center {
+    MicaTabActivityState state = [self activityStateForTab:tab];
+    if (state == MicaTabActivityStateIdle) return;
+    CGFloat phase = (CGFloat)(self.owner.activityAnimationFrame % 8) / 8.0;
+    if (state == MicaTabActivityStateRunning) {
+        for (NSUInteger index = 0; index < 8; index++) {
+            CGFloat angle = (CGFloat)index * (CGFloat)M_PI / 4.0;
+            CGFloat x = cos(angle), y = sin(angle);
+            CGFloat alpha = 0.15 + 0.85 * (CGFloat)((index + 8 - self.owner.activityAnimationFrame % 8) % 8) / 7.0;
+            NSBezierPath *spoke = [NSBezierPath bezierPath];
+            spoke.lineWidth = 1.6;
+            [spoke moveToPoint:NSMakePoint(center.x + x * 2.0, center.y + y * 2.0)];
+            [spoke lineToPoint:NSMakePoint(center.x + x * 4.7, center.y + y * 4.7)];
+            [[NSColor.controlAccentColor colorWithAlphaComponent:alpha] setStroke];
+            [spoke stroke];
+        }
+        return;
+    }
+    if (state == MicaTabActivityStateWaiting || state == MicaTabActivityStateNeedsAttention) {
+        CGFloat pulse = 0.62 + 0.38 * sin(phase * (CGFloat)(2.0 * M_PI));
+        NSColor *color = state == MicaTabActivityStateWaiting ? NSColor.systemOrangeColor : NSColor.systemRedColor;
+        [[color colorWithAlphaComponent:pulse] setFill];
+        [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(center.x - 5.5, center.y - 5.5, 11, 11)] fill];
+        NSDictionary *attributes = @{
+            NSFontAttributeName: [NSFont systemFontOfSize:8 weight:NSFontWeightBold],
+            NSForegroundColorAttributeName: NSColor.whiteColor,
+        };
+        [@"!" drawAtPoint:NSMakePoint(center.x - 2.1, center.y - 4.3) withAttributes:attributes];
+        return;
+    }
+    NSColor *color = tab.completionStatus == 0 ? NSColor.systemGreenColor : NSColor.systemRedColor;
+    NSDictionary *attributes = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:11 weight:NSFontWeightBold],
+        NSForegroundColorAttributeName: color,
+    };
+    [(tab.completionStatus == 0 ? @"✓" : @"×") drawAtPoint:NSMakePoint(center.x - 4.5, center.y - 5.5)
+        withAttributes:attributes];
 }
 
 - (NSRect)tabRectAtIndex:(NSUInteger)index {
@@ -887,12 +996,17 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     }
 
     NSString *folderName = tab.cwd.length ? tab.cwd : @"/";
-    NSString *context = [NSString stringWithFormat:@"Folder: %@", folderName];
+    NSString *context = [NSString stringWithFormat:@"Ready · Folder: %@", folderName];
     NSColor *contextColor = [NSColor.labelColor colorWithAlphaComponent:0.76];
     if (mode == MicaUIModeTab) {
         context = @"Choose a tab";
     } else if (mode == MicaUIModeScroll) {
         context = @"Use arrows or j/k to scroll";
+    } else if (tab.currentCommand.length &&
+               [self activityStateForTab:tab] == MicaTabActivityStateWaiting) {
+        NSString *tool = MicaAgentNameForTab(tab) ?: tab.currentCommand.lastPathComponent;
+        context = [NSString stringWithFormat:@"Needs your input · %@", tool];
+        contextColor = NSColor.systemOrangeColor;
     } else if (tab.currentCommand.length) {
         NSString *agent = MicaAgentNameForTab(tab);
         if (agent) {
@@ -920,7 +1034,8 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         NSForegroundColorAttributeName: contextColor
     };
 
-    NSArray<NSString *> *hintParts = @[@"⌥ Dictate", @"⌘1–8 Switch tab", @"⌘T New tab"];
+    NSArray<NSString *> *hintParts = @[@"⌘/ Shortcuts", @"⌥ Dictate", @"⌘1–8 Switch tab",
+        @"⌘T New tab", @"⌘Q Quit"];
     NSDictionary *hintAttrs = @{
         NSFontAttributeName: [NSFont systemFontOfSize:10.5],
         NSForegroundColorAttributeName: [NSColor.labelColor colorWithAlphaComponent:0.70]
@@ -933,7 +1048,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     CGFloat hintX = MAX(contextX + 18, hintRight - hintWidth);
     CGFloat availableWidth = MAX(0, hintX - contextX - 18);
     if (!modeName && !tab.currentCommand.length && !tab.completedCommand && viewOffset == 0) {
-        NSString *folderLabel = @"Folder: ";
+        NSString *folderLabel = @"Ready · ";
         CGFloat labelWidth = [folderLabel sizeWithAttributes:contextAttrs].width;
         CGFloat pathWidth = MAX(0, availableWidth - labelWidth);
         context = [folderLabel stringByAppendingString:
@@ -1150,12 +1265,15 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
             BOOL active = i == (NSUInteger)self.owner.activeIndex;
             NSString *label = [self labelForTab:candidate active:active];
             NSRect tabRect = [self tabRectAtIndex:i];
-            NSRect textRect = NSInsetRect(tabRect, 12, 3);
+            NSRect textRect = NSMakeRect(NSMinX(tabRect) + 28, NSMinY(tabRect) + 2,
+                                         MAX(0, tabRect.size.width - 36), tabRect.size.height - 4);
             if (active) {
                 NSRect selectedTab = NSInsetRect(tabRect, 3, 3);
                 [[NSColor.controlAccentColor colorWithAlphaComponent:0.20] setFill];
                 [[NSBezierPath bezierPathWithRoundedRect:selectedTab xRadius:7 yRadius:7] fill];
             }
+            [self drawActivityIndicatorForTab:candidate at:NSMakePoint(NSMinX(tabRect) + 15,
+                NSMidY(tabRect))];
             NSDictionary *tabAttrs = @{
                 NSFontAttributeName: tabFont,
                 NSForegroundColorAttributeName: active ? NSColor.labelColor
@@ -1732,6 +1850,7 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     self.rows = [NSMutableArray array];
     NSString *layout = owner.projectLayoutPath;
     NSString *contents = [NSString stringWithContentsOfFile:layout encoding:NSUTF8StringEncoding error:nil] ?: @"";
+    self.originalLayoutContents = contents;
     [contents enumerateLinesUsingBlock:^(NSString *line, BOOL *stop) {
         (void)stop;
         if (!line.length || [line hasPrefix:@"#"]) return;
@@ -1837,6 +1956,11 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     [self.appDelegate.window endSheet:self.window returnCode:NSModalResponseCancel];
     [self.window orderOut:nil];
 }
+- (BOOL)layoutChangedOnDisk {
+    NSURL *url = [NSURL fileURLWithPath:self.appDelegate.projectLayoutPath];
+    NSString *current = [NSString stringWithContentsOfURL:url encoding:NSUTF8StringEncoding error:nil];
+    return !current || ![current isEqualToString:self.originalLayoutContents ?: @""];
+}
 - (void)save:(id)sender {
     (void)sender;
     [self.tableView.window makeFirstResponder:self.tableView];
@@ -1876,6 +2000,10 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     }
     NSError *error = nil;
     NSURL *url = [NSURL fileURLWithPath:self.appDelegate.projectLayoutPath];
+    if ([self layoutChangedOnDisk]) {
+        [self showError:@"This project layout changed after these settings were opened. Close this sheet, reopen Project Settings, and apply your edits to the latest version."];
+        return;
+    }
     if (![contents writeToURL:url atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
         [self showError:error.localizedDescription ?: @"Mica could not save the project layout."];
         return;
@@ -1896,33 +2024,15 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
 
 @implementation MicaAppDelegate
 - (NSString *)windowTitleForTab:(MicaTab *)tab {
-    NSString *tabName = tab ? [self displayNameForTab:tab] : @"Mica";
+    (void)tab;
     if (self.projectName.length)
-        return [NSString stringWithFormat:@"%@ — %@ — Mica", tabName, self.projectName];
-    return [NSString stringWithFormat:@"%@ — Mica Terminal", tabName];
+        return [NSString stringWithFormat:@"Mica — %@", self.projectName];
+    return @"Mica Terminal";
 }
 
 - (MicaTab *)activeTab {
     if (self.activeIndex < 0 || self.activeIndex >= (NSInteger)self.tabs.count) return nil;
     return self.tabs[(NSUInteger)self.activeIndex];
-}
-
-- (NSString *)displayNameForTab:(MicaTab *)tab {
-    if (tab.currentCommand.length) {
-        NSString *agent = MicaAgentNameForTab(tab);
-        if (agent) {
-            NSString *activity = tab.agentActivity.length ? tab.agentActivity : @"Starting";
-            NSString *work = tab.agentActivityDetail.length ? tab.agentActivityDetail : activity;
-            return [NSString stringWithFormat:@"%@ · %@", agent, work];
-        }
-        NSTimeInterval elapsed = tab.commandStartedAt > 0 ? NSProcessInfo.processInfo.systemUptime - tab.commandStartedAt : 0;
-        NSUInteger seconds = (NSUInteger)MAX(0, elapsed);
-        NSString *command = tab.currentCommand.lastPathComponent.length ? tab.currentCommand.lastPathComponent : tab.currentCommand;
-        return [NSString stringWithFormat:@"%@ · %lu:%02lu", command,
-            (unsigned long)(seconds / 60), (unsigned long)(seconds % 60)];
-    }
-    if (!tab.terminalTitle.length) return tab.name;
-    return [NSString stringWithFormat:@"%@ · %@", tab.name, tab.terminalTitle];
 }
 
 - (void)updateWindowTitle {
@@ -1931,6 +2041,7 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     (void)notification;
+    mica_session_set_cleanup_logger(MicaLogSessionCleanup);
     MicaDiagnosticsLog(@"launch", [NSString stringWithFormat:@"opened app=%@ bundle=%@ pid=%d",
         NSBundle.mainBundle.infoDictionary[@"CFBundleDisplayName"] ?: @"Mica",
         NSBundle.mainBundle.bundleIdentifier ?: @"unknown", getpid()]);
@@ -2000,11 +2111,35 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     [main addItem:editRoot];
     NSMenuItem *helpRoot = [[NSMenuItem alloc] initWithTitle:@"Help" action:nil keyEquivalent:@""];
     NSMenu *helpMenu = [[NSMenu alloc] initWithTitle:@"Help"];
+    AddMenuItem(helpMenu, @"Keyboard Shortcuts…", @selector(showKeyboardShortcuts:), @"/",
+                NSEventModifierFlagCommand).target = self;
+    [helpMenu addItem:NSMenuItem.separatorItem];
     AddMenuItem(helpMenu, @"Open Diagnostic Logs", @selector(openDiagnosticLogs:), @"", 0).target = self;
     helpRoot.submenu = helpMenu;
     [main addItem:helpRoot];
     NSApp.helpMenu = helpMenu;
     [NSApp setMainMenu:main];
+}
+
+- (void)showKeyboardShortcuts:(id)sender {
+    (void)sender;
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Keyboard Shortcuts";
+    alert.informativeText = [@[
+        @"⌘Q  Quit Mica",
+        @"⌘T  New shell tab",
+        @"⌘W  Close tab",
+        @"⌘1–8  Switch to tab",
+        @"⌘9  Switch to last tab",
+        @"⌘⇧P  Choose tab",
+        @"⌘⇧S  Browse scrollback",
+        @"⌘⇧[ / ⌘⇧]  Previous / next tab",
+        @"⌘+ / ⌘−  Increase / decrease font size",
+        @"Hold left ⌥  Dictate; release to finish",
+        @"Esc  Cancel dictation or return to live terminal"
+    ] componentsJoinedByString:@"\n"];
+    [alert addButtonWithTitle:@"Done"];
+    [alert beginSheetModalForWindow:self.window completionHandler:nil];
 }
 
 - (void)openDiagnosticLogs:(id)sender {
@@ -2281,9 +2416,48 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     BOOL redraw = NO;
     NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
     NSTimeInterval pollStartedAt = now;
+    if (self.lastPollTimerTickAt > 0 && now - self.lastPollTimerTickAt >= 0.050 &&
+        now - self.lastSlowPollLogAt >= 1.0) {
+        MicaDiagnosticsLog(@"performance", [NSString stringWithFormat:
+            @"poll-timer-gap duration_ms=%.1f tabs=%lu", (now - self.lastPollTimerTickAt) * 1000.0,
+            (unsigned long)self.tabs.count]);
+        self.lastSlowPollLogAt = now;
+    }
+    self.lastPollTimerTickAt = now;
     for (MicaTab *tab in self.tabs) {
         if (!tab.session) continue;
+        NSTimeInterval tabPollStartedAt = NSProcessInfo.processInfo.systemUptime;
         mica_session_poll(tab.session, 0);
+        NSTimeInterval tabPollEndedAt = NSProcessInfo.processInfo.systemUptime;
+        MicaSessionOutputMetrics outputMetrics = {0};
+        BOOL receivedOutput = mica_session_take_output_metrics(tab.session, &outputMetrics);
+        if (tab.outputMetricsStartedAt == 0) tab.outputMetricsStartedAt = now;
+        tab.outputPollMilliseconds += (tabPollEndedAt - tabPollStartedAt) * 1000.0;
+        if (receivedOutput) {
+            tab.outputBytes += outputMetrics.bytes_read;
+            tab.outputReadCalls += outputMetrics.read_calls;
+            tab.outputLargestRead = MAX(tab.outputLargestRead, outputMetrics.largest_read);
+            tab.outputParseMilliseconds += outputMetrics.parse_milliseconds;
+            tab.lastOutputReadAt = tabPollEndedAt;
+        }
+        NSTimeInterval outputWindow = now - tab.outputMetricsStartedAt;
+        if (outputWindow >= 1.0) {
+            if (tab.outputBytes) {
+                MicaDiagnosticsLog(@"performance", [NSString stringWithFormat:
+                    @"pty-output tab=%@ pid=%d bytes_per_sec=%.0f reads_per_sec=%.1f largest_read=%lu parse_ms=%.2f poll_ms=%.2f read_to_draw_max_ms=%.1f",
+                    tab.name ?: @"Terminal", mica_session_pid(tab.session),
+                    tab.outputBytes / outputWindow, tab.outputReadCalls / outputWindow,
+                    (unsigned long)tab.outputLargestRead, tab.outputParseMilliseconds,
+                    tab.outputPollMilliseconds, tab.outputToDrawMaximumMilliseconds]);
+            }
+            tab.outputMetricsStartedAt = now;
+            tab.outputBytes = 0;
+            tab.outputReadCalls = 0;
+            tab.outputLargestRead = 0;
+            tab.outputParseMilliseconds = 0;
+            tab.outputPollMilliseconds = 0;
+            tab.outputToDrawMaximumMilliseconds = 0;
+        }
         MicaDirtyRows dirtyRows = {0};
         BOOL hasDirtyRows = mica_session_take_dirty_rows(tab.session, &dirtyRows);
         const char *rawTitle = mica_session_title(tab.session);
@@ -2292,7 +2466,6 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
             : nil;
         if (MicaStringChanged(terminalTitle, tab.terminalTitle)) {
             tab.terminalTitle = terminalTitle;
-            if (tab == self.activeTab) [self updateWindowTitle];
             redraw = YES;
         }
         const char *rawCommand = mica_session_current_command(tab.session);
@@ -2307,18 +2480,17 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
             tab.agentActivity = currentCommand.length && MicaAgentNameForTab(tab) ? @"Starting" : nil;
             tab.agentActivityDetail = nil;
             tab.agentActivityStartedAt = currentCommand.length ? now : 0;
-            if (tab == self.activeTab) [self updateWindowTitle];
             redraw = YES;
         }
         if (currentCommand.length) {
-            BOOL isAgent = MicaAgentNameForTab(tab) != nil;
-            NSTimeInterval startedAt = isAgent && tab.agentActivityStartedAt > 0
-                ? tab.agentActivityStartedAt : tab.commandStartedAt;
+            NSTimeInterval startedAt = tab.commandStartedAt;
             NSInteger second = (NSInteger)MAX(0, floor(now - startedAt));
             if (second != tab.commandClockSecond) {
                 tab.commandClockSecond = second;
-                if (tab == self.activeTab) [self updateWindowTitle];
-                redraw = YES;
+                if (tab == self.activeTab) {
+                    NSRect status = NSMakeRect(0, 0, self.terminalView.bounds.size.width, kStatusHeight);
+                    [self.terminalView setNeedsDisplayInRect:status];
+                }
             }
         }
         uint64_t attentionCount = mica_session_attention_count(tab.session);
@@ -2360,7 +2532,8 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
         uint64_t revision = mica_session_revision(tab.session);
         if (revision != tab.revision) {
             tab.revision = revision;
-            if (currentCommand.length && MicaAgentNameForTab(tab)) {
+            if (currentCommand.length && now - tab.lastActivityScanAt >= 0.20) {
+                tab.lastActivityScanAt = now;
                 NSString *detail = nil;
                 NSString *activity = MicaAgentActivityForSession(tab.session, &detail);
                 if (MicaStringChanged(activity, tab.agentActivity)) {
@@ -2368,11 +2541,9 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
                     tab.agentActivityDetail = detail;
                     tab.agentActivityStartedAt = now;
                     tab.commandClockSecond = -1;
-                    if (tab == self.activeTab) [self updateWindowTitle];
                     redraw = YES;
                 } else if (MicaStringChanged(detail, tab.agentActivityDetail)) {
                     tab.agentActivityDetail = detail;
-                    if (tab == self.activeTab) [self updateWindowTitle];
                     redraw = YES;
                 }
             }
@@ -2420,6 +2591,22 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
         }
         redraw = YES;
     }
+    BOOL animatesTab = NO;
+    for (MicaTab *tab in self.tabs) {
+        MicaTabActivityState state = [self.terminalView activityStateForTab:tab];
+        if (state == MicaTabActivityStateRunning || state == MicaTabActivityStateWaiting ||
+            state == MicaTabActivityStateNeedsAttention) {
+            animatesTab = YES;
+            break;
+        }
+    }
+    if (animatesTab && now - self.lastActivityAnimationAt >= 0.12) {
+        self.lastActivityAnimationAt = now;
+        self.activityAnimationFrame++;
+        NSRect header = NSMakeRect(0, MAX(0, self.terminalView.bounds.size.height - kHeaderHeight),
+            self.terminalView.bounds.size.width, kHeaderHeight);
+        [self.terminalView setNeedsDisplayInRect:header];
+    }
     if (redraw) [self.terminalView setNeedsDisplay:YES];
     NSTimeInterval pollEndedAt = NSProcessInfo.processInfo.systemUptime;
     NSTimeInterval pollDuration = pollEndedAt - pollStartedAt;
@@ -2435,19 +2622,43 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender { (void)sender; return YES; }
-- (void)applicationWillTerminate:(NSNotification *)notification {
-    (void)notification;
-    MicaDiagnosticsLog(@"app", @"application is terminating");
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
+    (void)sender;
+    if (self.terminationCleanupStarted) return NSTerminateLater;
+    self.terminationCleanupStarted = YES;
+    MicaDiagnosticsLog(@"app", @"application termination requested");
     [self.pollTimer invalidate];
     self.pollTimer = nil;
     [self.voiceController cancel];
-    MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"terminating all sessions count=%lu",
-        (unsigned long)self.tabs.count]);
+    NSMutableArray<NSValue *> *sessions = [NSMutableArray arrayWithCapacity:self.tabs.count];
     for (MicaTab *tab in self.tabs) {
-        MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"terminating session tab=%@ pid=%d",
-            tab.name ?: @"Terminal", tab.session ? mica_session_pid(tab.session) : -1]);
-        [tab destroySession];
+        if (!tab.session) continue;
+        MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"queued session cleanup tab=%@ pid=%d",
+            tab.name ?: @"Terminal", mica_session_pid(tab.session)]);
+        [sessions addObject:[NSValue valueWithPointer:tab.session]];
+        tab.session = NULL;
     }
+    MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"queued all sessions count=%lu",
+        (unsigned long)sessions.count]);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        @autoreleasepool {
+            for (NSValue *sessionValue in sessions) {
+                MicaSession *session = sessionValue.pointerValue;
+                pid_t sessionPID = mica_session_pid(session);
+                mica_session_destroy(session);
+                MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"session cleanup complete pid=%d", sessionPID]);
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            MicaDiagnosticsLog(@"app", @"all session cleanup complete");
+            [NSApp replyToApplicationShouldTerminate:YES];
+        });
+    });
+    return NSTerminateLater;
+}
+- (void)applicationWillTerminate:(NSNotification *)notification {
+    (void)notification;
+    MicaDiagnosticsLog(@"app", @"application is terminating");
 }
 - (void)applicationWillResignActive:(NSNotification *)notification {
     (void)notification;

@@ -129,6 +129,44 @@ def main() -> None:
         for project in projects:
             INSTALLER.install_bundle(project, base_app, used_ids, backups)
 
+        recovery_target = output / "Recovery.app"
+        (recovery_target / "Contents").mkdir(parents=True)
+        (recovery_target / "Contents/original.txt").write_text("keep me", encoding="utf-8")
+        recovery_project = {
+            "app_name": "Recovery.app",
+            "display_name": "Recovery Project",
+            "bundle_identifier": None,
+            "layout_name": "recovery",
+            "layout_path": str((layout_dir / "alpha.mica").resolve()),
+            "app_path": str(recovery_target),
+            "launch_script": None,
+        }
+        real_replace = INSTALLER.os.replace
+        replace_calls = 0
+
+        def fail_install_and_restore(source: Path, destination: Path) -> None:
+            nonlocal replace_calls
+            replace_calls += 1
+            if replace_calls == 2:
+                recovery_target.mkdir()
+                (recovery_target / "concurrent-writer.txt").write_text("present", encoding="utf-8")
+                raise OSError("simulated concurrent target creation")
+            if replace_calls == 3:
+                raise OSError("simulated restore failure")
+            real_replace(source, destination)
+
+        INSTALLER.os.replace = fail_install_and_restore
+        try:
+            try:
+                INSTALLER.install_bundle(recovery_project, base_app, set(), backups)
+                raise AssertionError("launcher install unexpectedly succeeded after both renames failed")
+            except RuntimeError as error:
+                assert "previous launcher is preserved at" in str(error)
+                preserved_path = Path(str(error).rsplit(" ", 1)[-1])
+                assert (preserved_path / "Contents/original.txt").read_text(encoding="utf-8") == "keep me"
+        finally:
+            INSTALLER.os.replace = real_replace
+
         alpha_info = INSTALLER.read_plist(old_app / "Contents/Info.plist")
         beta_info = INSTALLER.read_plist(output / "Beta.app/Contents/Info.plist")
         assert alpha_info["CFBundleIdentifier"] == "com.megasoft78.mica.project.alpha"
@@ -178,6 +216,16 @@ def main() -> None:
         manifest = root / "config" / "desktop-apps.json"
         project_folder = root / "A project folder"
         project_folder.mkdir()
+        desktop.mkdir()
+        escaped_target = root / "Outside.app"
+        (desktop / "demo-project.app").symlink_to(escaped_target)
+        try:
+            INSTALLER.create_instance_record("Demo Project", project_folder, "", layout_dir, desktop)
+            raise AssertionError("new-instance accepted a symlink launcher target")
+        except FileExistsError as error:
+            assert "symlink" in str(error)
+        assert not (layout_dir / "demo-project.mica").exists()
+        (desktop / "demo-project.app").unlink()
         make_base_app(base_app)
         icon_tool = Path(os.environ.get("MICA_PROJECT_ICON_TOOL", INSTALLER.DEFAULT_PROJECT_ICON_TOOL))
         create = subprocess.run(

@@ -194,6 +194,9 @@ private struct MicaVoiceCLI {
                     return
                 case .samples(let samples):
                     sampleCount += UInt64(samples.count)
+                    guard sampleCount <= 16_000 * 600 else {
+                        throw VoiceHelperError.recordingTooLong
+                    }
                     guard let buffer = AVAudioPCMBuffer(
                         pcmFormat: audioFormat,
                         frameCapacity: AVAudioFrameCount(samples.count)
@@ -252,12 +255,14 @@ private struct MicaVoiceCLI {
     private enum VoiceHelperError: LocalizedError {
         case truncatedAudioPacket
         case invalidAudioBuffer
+        case recordingTooLong
         case audioReadFailed
 
         var errorDescription: String? {
             switch self {
             case .truncatedAudioPacket: return "The audio stream ended mid-packet"
             case .invalidAudioBuffer: return "Could not create an audio buffer"
+            case .recordingTooLong: return "Dictation is limited to 10 minutes per recording"
             case .audioReadFailed: return "Could not read the audio stream"
             }
         }

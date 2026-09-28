@@ -194,6 +194,7 @@ def install_bundle(
 
     staging_parent = Path(tempfile.mkdtemp(prefix=f".{target.stem}.mica-", dir=target.parent))
     staging = staging_parent / target.name
+    preserve_staging_parent = False
     contents = staging / "Contents"
     (contents / "MacOS").mkdir(parents=True)
     (contents / "Resources").mkdir()
@@ -234,14 +235,22 @@ def install_bundle(
             os.replace(target, displaced)
             try:
                 os.replace(staging, target)
-            except Exception:
-                os.replace(displaced, target)
-                raise
+            except Exception as install_error:
+                try:
+                    os.replace(displaced, target)
+                except Exception as restore_error:
+                    preserve_staging_parent = True
+                    raise RuntimeError(
+                        f"could not install {target} or restore its previous version; "
+                        f"the previous launcher is preserved at {displaced}"
+                    ) from restore_error
+                raise install_error
             shutil.rmtree(displaced, ignore_errors=True)
         else:
             os.replace(staging, target)
     finally:
-        shutil.rmtree(staging_parent, ignore_errors=True)
+        if not preserve_staging_parent:
+            shutil.rmtree(staging_parent, ignore_errors=True)
     project["bundle_identifier"] = identifier
 
 
@@ -299,13 +308,13 @@ def register_app_bundle(path: Path) -> None:
 
 def create_instance_record(name: str, cwd: Path, command: str, layout_dir: Path, output_dir: Path) -> dict:
     display_name = name.strip()
-    if not display_name or any(char in display_name for char in "\t\r\n/\\"):
-        raise ValueError("instance name must be non-empty and cannot contain tabs, newlines, or slashes")
+    if not display_name or any(ord(char) < 0x20 or ord(char) == 0x7f or char in "/\\" for char in display_name):
+        raise ValueError("instance name must be non-empty and cannot contain control characters or slashes")
     slug = re.sub(r"[^a-z0-9]+", "-", display_name.lower()).strip("-")
     if not slug:
         raise ValueError("instance name must include at least one letter or number")
-    if any(char in command for char in "\t\r\n"):
-        raise ValueError("startup command cannot contain tabs or newlines")
+    if any(char in command for char in "\t\r\n\0"):
+        raise ValueError("startup command cannot contain tabs, newlines, or NUL characters")
 
     project_dir = cwd.expanduser().resolve(strict=True)
     if not project_dir.is_dir():
@@ -314,13 +323,18 @@ def create_instance_record(name: str, cwd: Path, command: str, layout_dir: Path,
         raise ValueError("project folder path cannot contain tabs or newlines")
     layout_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
+    layout_dir = layout_dir.resolve()
+    output_dir = output_dir.resolve()
     layout_path = layout_dir / f"{slug}.mica"
     app_name = f"{slug}.app"
     app_path = output_dir / app_name
+    if app_path.is_symlink() or os.path.lexists(app_path):
+        raise FileExistsError(f"Mica app already exists or is a symlink: {app_path}")
+    resolved_app_path = app_path.resolve()
+    if resolved_app_path.parent != output_dir:
+        raise ValueError(f"project app path escapes output directory: {app_path}")
     if layout_path.exists():
         raise FileExistsError(f"Mica layout already exists: {layout_path}")
-    if app_path.exists():
-        raise FileExistsError(f"Mica app already exists: {app_path}")
 
     layout_contents = f"# Mica layout v1\n# Mica project: {display_name}\nShell\t{project_dir}\t{command.strip()}\n"
     created_layout = False
@@ -338,7 +352,7 @@ def create_instance_record(name: str, cwd: Path, command: str, layout_dir: Path,
         "bundle_identifier": None,
         "layout_name": slug,
         "layout_path": str(layout_path.resolve()),
-        "app_path": str(app_path.resolve()),
+        "app_path": str(resolved_app_path),
         "launch_script": None,
     }
 

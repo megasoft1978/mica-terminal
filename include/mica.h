@@ -26,10 +26,22 @@ typedef struct {
     int end_row;
 } MicaDirtyRows;
 
+typedef struct {
+    size_t bytes_read;
+    size_t read_calls;
+    size_t largest_read;
+    double parse_milliseconds;
+} MicaSessionOutputMetrics;
+
+typedef void (*MicaSessionCleanupLogger)(pid_t pid, const char *stage,
+                                         bool started, double elapsed_ms);
+
 MicaSession *mica_session_create(const char *cwd, const char *command, int rows, int cols);
 MicaSession *mica_session_create_prefilled(const char *cwd, const char *command, int rows, int cols);
 void mica_session_destroy(MicaSession *session);
 int mica_session_poll(MicaSession *session, int timeout_ms);
+bool mica_session_take_output_metrics(MicaSession *session, MicaSessionOutputMetrics *metrics);
+void mica_session_set_cleanup_logger(MicaSessionCleanupLogger logger);
 void mica_session_write(MicaSession *session, const void *bytes, size_t length);
 void mica_session_key(MicaSession *session, VTermKey key, VTermModifier modifiers);
 void mica_session_text(MicaSession *session, uint32_t codepoint, VTermModifier modifiers);

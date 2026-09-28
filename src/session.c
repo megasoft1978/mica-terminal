@@ -56,11 +56,13 @@ struct MicaSession {
     bool has_dirty_rows;
     uint64_t attention_count;
     uint64_t command_completion_count;
+    MicaSessionOutputMetrics output_metrics;
     bool focus_report;
     VTerm *vt;
     VTermScreen *screen;
     VTermState *state;
     VTermScreenCell *history;
+    size_t history_cols;
     size_t history_capacity;
     size_t history_start;
     size_t history_count;
@@ -85,6 +87,28 @@ struct MicaSession {
     bool osc_fragment_active;
     bool osc_fragment_overflow;
 };
+
+static MicaSessionCleanupLogger cleanup_logger;
+
+static double monotonic_milliseconds(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return now.tv_sec * 1000.0 + now.tv_nsec / 1000000.0;
+}
+
+static double cleanup_stage_begin(pid_t pid, const char *stage) {
+    if (cleanup_logger) cleanup_logger(pid, stage, true, 0);
+    return monotonic_milliseconds();
+}
+
+static void cleanup_stage_end(pid_t pid, const char *stage, double started_at) {
+    if (cleanup_logger)
+        cleanup_logger(pid, stage, false, monotonic_milliseconds() - started_at);
+}
+
+void mica_session_set_cleanup_logger(MicaSessionCleanupLogger logger) {
+    cleanup_logger = logger;
+}
 
 static void remove_fold_at(MicaSession *session, size_t index) {
     if (!session || index >= session->fold_count) return;
@@ -765,17 +789,18 @@ static int history_push(int cols, const VTermScreenCell *cells, void *user) {
     MicaSession *session = user;
     if (!session || cols <= 0 || (size_t)cols != (size_t)session->cols) return 1;
     size_t old_display_count = display_history_count(session);
-    size_t limit = history_limit_lines(session->cols);
+    if (session->history_cols == 0) session->history_cols = (size_t)session->cols;
+    size_t limit = history_limit_lines((int)session->history_cols);
     if (session->history_count == session->history_capacity && session->history_capacity < limit) {
         size_t next_capacity = session->history_capacity ? session->history_capacity * 2 : MICA_HISTORY_INITIAL;
         if (next_capacity > limit) next_capacity = limit;
-        VTermScreenCell *grown = allocate_history(next_capacity, session->cols);
+        VTermScreenCell *grown = allocate_history(next_capacity, (int)session->history_cols);
         if (grown) {
             for (size_t i = 0; i < session->history_count; i++) {
                 size_t old_slot = (session->history_start + i) % session->history_capacity;
-                memcpy(grown + i * (size_t)session->cols,
-                       session->history + old_slot * (size_t)session->cols,
-                       (size_t)session->cols * sizeof(*grown));
+                memcpy(grown + i * session->history_cols,
+                       session->history + old_slot * session->history_cols,
+                       session->history_cols * sizeof(*grown));
             }
             free(session->history);
             session->history = grown;
@@ -793,8 +818,9 @@ static int history_push(int cols, const VTermScreenCell *cells, void *user) {
         slot = session->history_start;
         session->history_start = (session->history_start + 1) % session->history_capacity;
     }
-    memcpy(session->history + slot * (size_t)session->cols, cells,
-           (size_t)session->cols * sizeof(*cells));
+    VTermScreenCell *destination = session->history + slot * session->history_cols;
+    memset(destination, 0, session->history_cols * sizeof(*destination));
+    memcpy(destination, cells, (size_t)session->cols * sizeof(*cells));
     size_t new_display_count = display_history_count(session);
     if (new_display_count > old_display_count && session->view_offset > 0 &&
         session->view_offset < new_display_count)
@@ -805,9 +831,10 @@ static int history_push(int cols, const VTermScreenCell *cells, void *user) {
 
 static int history_pop(int cols, VTermScreenCell *cells, void *user) {
     MicaSession *session = user;
-    if (!session || session->history_count == 0 || cols != session->cols) return 0;
+    if (!session || session->history_count == 0 || cols != session->cols ||
+        session->history_cols > (size_t)cols) return 0;
     size_t slot = (session->history_start + session->history_count - 1) % session->history_capacity;
-    memcpy(cells, session->history + slot * (size_t)session->cols,
+    memcpy(cells, session->history + slot * session->history_cols,
            (size_t)session->cols * sizeof(*cells));
     session->history_count--;
     adjust_folds_after_history_pop(session);
@@ -823,6 +850,7 @@ static int history_clear(void *user) {
     free(session->history);
     session->history = NULL;
     session->history_capacity = 0;
+    session->history_cols = 0;
     session->history_start = 0;
     session->history_count = 0;
     session->view_offset = 0;
@@ -999,16 +1027,28 @@ MicaSession *mica_session_create_prefilled(const char *cwd, const char *command,
 
 void mica_session_destroy(MicaSession *session) {
     if (!session) return;
+    pid_t pid = session->child_pid;
     MicaProcessIdentity *process_tree = NULL;
+    double stage_started = cleanup_stage_begin(pid, "snapshot_process_tree");
     size_t process_count = session->child_pid > 0
         ? snapshot_process_tree(session->child_pid, &process_tree) : 0;
+    cleanup_stage_end(pid, "snapshot_process_tree", stage_started);
     MicaProcessIdentity *terminal_processes = NULL;
+    stage_started = cleanup_stage_begin(pid, "snapshot_terminal_processes");
     size_t terminal_process_count = session->master_fd >= 0
         ? snapshot_terminal_processes(session->terminal_device, &terminal_processes) : 0;
-    if (session->master_fd >= 0) close(session->master_fd);
+    cleanup_stage_end(pid, "snapshot_terminal_processes", stage_started);
+    if (session->master_fd >= 0) {
+        double close_started = cleanup_stage_begin(pid, "close_pty");
+        close(session->master_fd);
+        cleanup_stage_end(pid, "close_pty", close_started);
+        session->master_fd = -1;
+    }
     if (session->running) {
+        stage_started = cleanup_stage_begin(pid, "signal_hangup");
         signal_process_tree(process_tree, process_count, SIGHUP);
         signal_process_tree(terminal_processes, terminal_process_count, SIGHUP);
+        cleanup_stage_end(pid, "signal_hangup", stage_started);
     }
     if (session->child_pid > 0 && session->running) {
         // Give the shell and its descendants a short grace period, then kill
@@ -1016,6 +1056,7 @@ void mica_session_destroy(MicaSession *session) {
         // can have separate process groups and ignore the terminal hangup.
         int status = 0;
         bool childReaped = false;
+        stage_started = cleanup_stage_begin(pid, "graceful_wait");
         for (int attempt = 0; attempt < 40; attempt++) {
             pid_t result = waitpid(session->child_pid, &status, WNOHANG);
             if (result == session->child_pid || (result < 0 && errno == ECHILD)) {
@@ -1025,25 +1066,42 @@ void mica_session_destroy(MicaSession *session) {
             struct timespec pause = { .tv_sec = 0, .tv_nsec = 5000000 };
             nanosleep(&pause, NULL);
         }
+        cleanup_stage_end(pid, "graceful_wait", stage_started);
+        stage_started = cleanup_stage_begin(pid, "signal_kill");
         signal_process_tree(process_tree, process_count, SIGKILL);
         signal_process_tree(terminal_processes, terminal_process_count, SIGKILL);
+        cleanup_stage_end(pid, "signal_kill", stage_started);
         if (!childReaped) {
             // The child has not been reaped, so its PID cannot have been
             // recycled. Do not signal it after waitpid has reaped it.
             (void)kill(session->child_pid, SIGKILL);
-            while (waitpid(session->child_pid, &status, 0) < 0 && errno == EINTR) {}
+            stage_started = cleanup_stage_begin(pid, "forced_reap");
+            for (int attempt = 0; attempt < 50; attempt++) {
+                pid_t result = waitpid(session->child_pid, &status, WNOHANG);
+                if (result == session->child_pid || (result < 0 && errno == ECHILD)) break;
+                struct timespec pause = { .tv_sec = 0, .tv_nsec = 5000000 };
+                nanosleep(&pause, NULL);
+            }
+            cleanup_stage_end(pid, "forced_reap", stage_started);
         }
     } else {
         // The interactive shell may already have exited while a child it
         // started remains attached to this PTY. Its controlling-terminal ID
         // still lets us clean up that process without trusting a stale PID.
+        stage_started = cleanup_stage_begin(pid, "signal_orphan_hangup");
         signal_process_tree(terminal_processes, terminal_process_count, SIGHUP);
+        cleanup_stage_end(pid, "signal_orphan_hangup", stage_started);
         if (terminal_process_count) {
+            stage_started = cleanup_stage_begin(pid, "orphan_grace_wait");
             struct timespec pause = { .tv_sec = 0, .tv_nsec = 50000000 };
             nanosleep(&pause, NULL);
+            cleanup_stage_end(pid, "orphan_grace_wait", stage_started);
+            stage_started = cleanup_stage_begin(pid, "signal_orphan_kill");
             signal_process_tree(terminal_processes, terminal_process_count, SIGKILL);
+            cleanup_stage_end(pid, "signal_orphan_kill", stage_started);
         }
     }
+    double release_started = cleanup_stage_begin(pid, "release_session_resources");
     free(process_tree);
     free(terminal_processes);
     if (session->vt) vterm_free(session->vt);
@@ -1054,6 +1112,7 @@ void mica_session_destroy(MicaSession *session) {
     free(session->current_command);
     free(session->title);
     remove_prefill_startup_dir(session->startup_dir);
+    cleanup_stage_end(pid, "release_session_resources", release_started);
     free(session);
 }
 
@@ -1072,7 +1131,17 @@ int mica_session_poll(MicaSession *session, int timeout_ms) {
             while (bytes_read < MICA_POLL_READ_BUDGET) {
                 ssize_t n = read(session->master_fd, buffer, sizeof(buffer));
                 if (n > 0) {
+                    struct timespec parse_started, parse_finished;
+                    clock_gettime(CLOCK_MONOTONIC, &parse_started);
                     vterm_input_write(session->vt, buffer, (size_t)n);
+                    clock_gettime(CLOCK_MONOTONIC, &parse_finished);
+                    double parse_ms = (parse_finished.tv_sec - parse_started.tv_sec) * 1000.0 +
+                        (parse_finished.tv_nsec - parse_started.tv_nsec) / 1000000.0;
+                    session->output_metrics.bytes_read += (size_t)n;
+                    session->output_metrics.read_calls++;
+                    if ((size_t)n > session->output_metrics.largest_read)
+                        session->output_metrics.largest_read = (size_t)n;
+                    session->output_metrics.parse_milliseconds += parse_ms;
                     bytes_read += (size_t)n;
                     received_output = true;
                     continue;
@@ -1098,6 +1167,13 @@ int mica_session_poll(MicaSession *session, int timeout_ms) {
         }
     }
     return 0;
+}
+
+bool mica_session_take_output_metrics(MicaSession *session, MicaSessionOutputMetrics *metrics) {
+    if (!session || !metrics) return false;
+    *metrics = session->output_metrics;
+    memset(&session->output_metrics, 0, sizeof(session->output_metrics));
+    return metrics->bytes_read > 0;
 }
 
 void mica_session_write(MicaSession *session, const void *bytes, size_t length) {
@@ -1178,7 +1254,7 @@ void mica_session_resize_pixels(MicaSession *session, int rows, int cols, int pi
         if (session->view_offset > session->history_count)
             session->view_offset = session->history_count;
     }
-    if (cols != session->cols) {
+    if ((size_t)cols > session->history_cols) {
         size_t capacity = session->history_capacity;
         size_t limit = history_limit_lines(cols);
         if (capacity > limit) capacity = limit;
@@ -1187,16 +1263,18 @@ void mica_session_resize_pixels(MicaSession *session, int rows, int cols, int pi
         size_t kept = session->history_count;
         if (kept > capacity) kept = capacity;
         size_t skip = session->history_count - kept;
-        size_t copy_cols = (size_t)(cols < session->cols ? cols : session->cols);
+        size_t copy_cols = (size_t)cols < session->history_cols
+            ? (size_t)cols : session->history_cols;
         for (size_t i = 0; i < kept; i++) {
             size_t old_slot = (session->history_start + skip + i) % session->history_capacity;
             memcpy(new_history + i * (size_t)cols,
-                   session->history + old_slot * (size_t)session->cols,
+                   session->history + old_slot * session->history_cols,
                    copy_cols * sizeof(*new_history));
         }
         free(session->history);
         session->history = new_history;
         session->history_capacity = capacity;
+        session->history_cols = (size_t)cols;
         session->history_count = kept;
         session->history_start = 0;
         if (session->view_offset > kept) session->view_offset = kept;
@@ -1356,7 +1434,9 @@ bool mica_session_get_cell(const MicaSession *session, int row, int col, MicaCel
         if (!session->history_capacity || !session->history) return false;
         size_t history_row = history_index_for_display_row(session, display_row, NULL);
         size_t slot = (session->history_start + history_row) % session->history_capacity;
-        source = session->history[slot * (size_t)session->cols + (size_t)col];
+        memset(&source, 0, sizeof(source));
+        if ((size_t)col < session->history_cols)
+            source = session->history[slot * session->history_cols + (size_t)col];
     } else {
         VTermPos pos = { .row = (int)(display_row - visible_history_count), .col = col };
         if (pos.row < 0 || pos.row >= session->rows || !vterm_screen_get_cell(session->screen, pos, &source))

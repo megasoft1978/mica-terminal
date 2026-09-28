@@ -39,10 +39,11 @@
 @property(nonatomic, strong) NSDate *recordingStartedAt;
 @property(nonatomic, copy) NSString *lastLoggedHelperStatus;
 @property(nonatomic, assign) NSInteger lastLoggedProgressBucket;
+@property(nonatomic, assign) NSUInteger recordingGeneration;
 - (void)beginForWorkingDirectory:(NSString *)workingDirectory;
 - (void)helperBecameReady;
-- (void)writeAudioPayload:(NSData *)payload frames:(unsigned int)frames toWriter:(NSFileHandle *)writer;
-- (void)flushPreparationAudioToWriter:(NSFileHandle *)writer;
+- (void)writeAudioPayload:(NSData *)payload frames:(unsigned int)frames toWriter:(NSFileHandle *)writer generation:(unsigned)generation;
+- (void)flushPreparationAudioToWriter:(NSFileHandle *)writer generation:(unsigned)generation;
 - (void)finishAudioStreamWithWriter:(NSFileHandle *)writer;
 - (void)forceFinishExitedHelper:(NSTimer *)timer;
 - (void)releaseOutputPipe;
@@ -56,6 +57,8 @@
     atomic_bool _audioOverflowReported;
     atomic_bool _audioHelperReady;
     atomic_uint _queuedAudioFrames;
+    atomic_uint_fast64_t _recordedAudioFrames;
+    atomic_uint _audioGeneration;
     NSFileHandle *_audioStreamWriter;
     NSMutableData *_preparationAudio;
     NSUInteger _preparationAudioFrames;
@@ -73,6 +76,8 @@
         atomic_init(&_audioOverflowReported, false);
         atomic_init(&_audioHelperReady, false);
         atomic_init(&_queuedAudioFrames, 0);
+        atomic_init(&_recordedAudioFrames, 0);
+        atomic_init(&_audioGeneration, 0);
     }
     return self;
 }
@@ -120,6 +125,8 @@
 }
 
 - (void)beginForWorkingDirectory:(NSString *)workingDirectory {
+    NSUInteger generation = ++self.recordingGeneration;
+    atomic_store(&_audioGeneration, (unsigned)generation);
     if (NSProcessInfo.processInfo.operatingSystemVersion.majorVersion < 14) {
         [self failWithMessage:@"Dictation requires macOS 14 or later. Mica's terminal works on macOS 13 and later."];
         return;
@@ -155,7 +162,8 @@
         [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio completionHandler:^(BOOL granted) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 MicaVoiceController *strongSelf = weakSelf;
-                if (!strongSelf || strongSelf.state != MicaVoiceControllerStatePreparing) return;
+                if (!strongSelf || strongSelf.recordingGeneration != generation ||
+                    strongSelf.state != MicaVoiceControllerStatePreparing) return;
                 if (granted) [strongSelf launchASRHelper];
                 else [strongSelf failWithMessage:@"Microphone access was denied. Enable Mica in System Settings → Privacy & Security → Microphone."];
             });
@@ -168,6 +176,8 @@
 
 - (void)cancel {
     NSAssert(NSThread.isMainThread, @"Voice actions must run on the main thread");
+    self.recordingGeneration++;
+    atomic_store(&_audioGeneration, (unsigned)self.recordingGeneration);
     [self stopAudioCaptureSendingCancel:YES];
     [self.elapsedTimer invalidate];
     self.elapsedTimer = nil;
@@ -466,13 +476,15 @@
     atomic_store(&_acceptAudio, true);
     atomic_store(&_discardQueuedAudio, false);
     atomic_store(&_audioOverflowReported, false);
-    atomic_store(&_queuedAudioFrames, 0);
+    atomic_store(&_recordedAudioFrames, 0);
 
+    unsigned audioGeneration = atomic_load(&_audioGeneration);
     __weak typeof(self) weakSelf = self;
     [input installTapOnBus:0 bufferSize:4096 format:inputFormat block:^(AVAudioPCMBuffer *buffer, AVAudioTime *when) {
         (void)when;
         MicaVoiceController *strongSelf = weakSelf;
-        if (!strongSelf || !atomic_load(&strongSelf->_acceptAudio)) return;
+        if (!strongSelf || !atomic_load(&strongSelf->_acceptAudio) ||
+            atomic_load(&strongSelf->_audioGeneration) != audioGeneration) return;
         AVAudioFrameCount capacity = (AVAudioFrameCount)ceil(buffer.frameLength * 16000.0 / inputFormat.sampleRate) + 64;
         AVAudioPCMBuffer *converted = [[AVAudioPCMBuffer alloc] initWithPCMFormat:targetFormat frameCapacity:capacity];
         if (!converted) return;
@@ -491,6 +503,7 @@
             }];
         if (status == AVAudioConverterOutputStatus_Error || conversionError) {
             dispatch_async(dispatch_get_main_queue(), ^{
+                if (atomic_load(&strongSelf->_audioGeneration) != audioGeneration) return;
                 [strongSelf failWithMessage:[NSString stringWithFormat:@"Could not convert microphone audio: %@",
                     conversionError.localizedDescription ?: @"unknown audio format"]];
             });
@@ -499,12 +512,27 @@
         if (converted.frameLength == 0) return;
 
         unsigned int frameCountValue = converted.frameLength;
+        uint64_t recordedFrames = atomic_fetch_add(&strongSelf->_recordedAudioFrames, frameCountValue) + frameCountValue;
+        if (recordedFrames > 16000ull * 600ull) {
+            atomic_store(&strongSelf->_acceptAudio, false);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (atomic_load(&strongSelf->_audioGeneration) != audioGeneration) return;
+                if (strongSelf.recordingStartedAt && (strongSelf.state == MicaVoiceControllerStatePreparing ||
+                    strongSelf.state == MicaVoiceControllerStateListening)) {
+                    [strongSelf setState:strongSelf.state
+                        status:@"10-minute dictation limit reached. Finishing the transcript…" progress:-1];
+                    [strongSelf stopListening];
+                }
+            });
+            return;
+        }
         unsigned int queuedFrames = atomic_fetch_add(&strongSelf->_queuedAudioFrames, frameCountValue);
         if (queuedFrames + frameCountValue > 64000) {
             atomic_fetch_sub(&strongSelf->_queuedAudioFrames, frameCountValue);
             if (!atomic_exchange(&strongSelf->_audioOverflowReported, true)) {
                 atomic_store(&strongSelf->_acceptAudio, false);
                 dispatch_async(dispatch_get_main_queue(), ^{
+                    if (atomic_load(&strongSelf->_audioGeneration) != audioGeneration) return;
                     [strongSelf failWithMessage:@"Live speech recognition fell behind the microphone. Stop and try a shorter dictation."];
                 });
             }
@@ -514,9 +542,10 @@
         NSData *payload = [NSData dataWithBytes:converted.floatChannelData[0]
             length:(NSUInteger)converted.frameLength * sizeof(float)];
         dispatch_async(strongSelf->_audioWriteQueue, ^{
-            if (!atomic_load(&strongSelf->_discardQueuedAudio)) {
+            if (atomic_load(&strongSelf->_audioGeneration) == audioGeneration &&
+                !atomic_load(&strongSelf->_discardQueuedAudio)) {
                 if (atomic_load(&strongSelf->_audioHelperReady)) {
-                    [strongSelf writeAudioPayload:payload frames:frameCountValue toWriter:strongSelf->_audioStreamWriter];
+                    [strongSelf writeAudioPayload:payload frames:frameCountValue toWriter:strongSelf->_audioStreamWriter generation:audioGeneration];
                 } else {
                     const NSUInteger maximumBufferedFrames = 16000u * 120u;
                     if (strongSelf->_preparationAudioFrames + frameCountValue <= maximumBufferedFrames) {
@@ -524,6 +553,7 @@
                         strongSelf->_preparationAudioFrames += frameCountValue;
                     } else if (!atomic_exchange(&strongSelf->_audioOverflowReported, true)) {
                         dispatch_async(dispatch_get_main_queue(), ^{
+                            if (atomic_load(&strongSelf->_audioGeneration) != audioGeneration) return;
                             [strongSelf failWithMessage:@"Speech model preparation took too long. Dictation buffers up to two minutes while the model loads; try again after setup finishes."];
                         });
                     }
@@ -567,15 +597,19 @@
 }
 
 - (void)helperBecameReady {
+    unsigned audioGeneration = atomic_load(&_audioGeneration);
     dispatch_async(_audioWriteQueue, ^{
+        if (atomic_load(&self->_audioGeneration) != audioGeneration) return;
         if (atomic_load(&self->_discardQueuedAudio)) return;
         NSFileHandle *writer = self->_audioStreamWriter;
-        [self flushPreparationAudioToWriter:writer];
-        if (atomic_load(&self->_discardQueuedAudio)) return;
+        [self flushPreparationAudioToWriter:writer generation:audioGeneration];
+        if (atomic_load(&self->_audioGeneration) != audioGeneration ||
+            atomic_load(&self->_discardQueuedAudio)) return;
         atomic_store(&self->_audioHelperReady, true);
         if (self->_audioFinishRequested) [self finishAudioStreamWithWriter:writer];
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (self.state != MicaVoiceControllerStatePreparing || !self.recordingStartedAt) return;
+            if (atomic_load(&self->_audioGeneration) != audioGeneration ||
+                self.state != MicaVoiceControllerStatePreparing || !self.recordingStartedAt) return;
             [self setState:MicaVoiceControllerStateListening
                     status:@"Listening — release left ⌥ to finish · Esc cancels"
                   progress:-1];
@@ -583,8 +617,9 @@
     });
 }
 
-- (void)writeAudioPayload:(NSData *)payload frames:(unsigned int)frames toWriter:(NSFileHandle *)writer {
-    if (!writer || !payload.length || !frames) return;
+- (void)writeAudioPayload:(NSData *)payload frames:(unsigned int)frames toWriter:(NSFileHandle *)writer generation:(unsigned)audioGeneration {
+    if (!writer || !payload.length || !frames ||
+        atomic_load(&_audioGeneration) != audioGeneration) return;
     uint32_t littleEndianCount = CFSwapInt32HostToLittle(frames);
     NSMutableData *packet = [NSMutableData dataWithBytes:&littleEndianCount length:sizeof(littleEndianCount)];
     [packet appendData:payload];
@@ -593,24 +628,26 @@
     } @catch (NSException *exception) {
         if (atomic_load(&_discardQueuedAudio)) return;
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (atomic_load(&self->_audioGeneration) != audioGeneration) return;
             [self failWithMessage:[NSString stringWithFormat:@"The live transcript stream stopped: %@",
                 exception.reason ?: @"speech helper closed"]];
         });
     }
 }
 
-- (void)flushPreparationAudioToWriter:(NSFileHandle *)writer {
+- (void)flushPreparationAudioToWriter:(NSFileHandle *)writer generation:(unsigned)audioGeneration {
     if (!writer || !self->_preparationAudio.length) return;
     const NSUInteger bytesPerFrame = sizeof(float);
     const NSUInteger maximumPacketFrames = 160000;
     NSData *buffer = [self->_preparationAudio copy];
     NSUInteger offset = 0;
-    while (offset < buffer.length && !atomic_load(&_discardQueuedAudio)) {
+    while (offset < buffer.length && !atomic_load(&_discardQueuedAudio) &&
+           atomic_load(&_audioGeneration) == audioGeneration) {
         NSUInteger remainingFrames = (buffer.length - offset) / bytesPerFrame;
         NSUInteger frames = MIN(maximumPacketFrames, remainingFrames);
         NSUInteger count = frames * bytesPerFrame;
         NSData *payload = [buffer subdataWithRange:NSMakeRange(offset, count)];
-        [self writeAudioPayload:payload frames:(unsigned int)frames toWriter:writer];
+        [self writeAudioPayload:payload frames:(unsigned int)frames toWriter:writer generation:audioGeneration];
         offset += count;
     }
     self->_preparationAudio = nil;
@@ -675,6 +712,8 @@
 }
 
 - (void)failWithMessage:(NSString *)message {
+    self.recordingGeneration++;
+    atomic_store(&_audioGeneration, (unsigned)self.recordingGeneration);
     MicaDiagnosticsLog(@"dictation", [NSString stringWithFormat:@"failed: %@", message ?: @"unknown error"]);
     [self stopAudioCaptureSendingCancel:YES];
     [self.elapsedTimer invalidate];

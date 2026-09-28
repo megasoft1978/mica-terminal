@@ -415,6 +415,7 @@ static int MicaRunUISelfTest(void) {
         NSMenuItem *scrollbackMenuItem = [sessionMenu itemWithTitle:@"Browse Scrollback"];
         NSMenu *helpMenu = [NSApp.mainMenu itemWithTitle:@"Help"].submenu;
         NSMenuItem *diagnosticLogsMenuItem = [helpMenu itemWithTitle:@"Open Diagnostic Logs"];
+        NSMenuItem *shortcutsMenuItem = [helpMenu itemWithTitle:@"Keyboard Shortcuts…"];
         MicaUITestRecord(report, &allPassed,
                          newShellMenuItem.target == delegate &&
                          [newShellMenuItem.keyEquivalent isEqualToString:@"t"] &&
@@ -429,11 +430,14 @@ static int MicaRunUISelfTest(void) {
                           (NSEventModifierFlagCommand | NSEventModifierFlagShift)) ==
                             (NSEventModifierFlagCommand | NSEventModifierFlagShift) &&
                          diagnosticLogsMenuItem.target == delegate &&
+                         shortcutsMenuItem.target == delegate &&
+                         [shortcutsMenuItem.keyEquivalent isEqualToString:@"/"] &&
+                         (shortcutsMenuItem.keyEquivalentModifierMask & NSEventModifierFlagCommand) != 0 &&
                          [quitMenuItem.keyEquivalent isEqualToString:@"q"] &&
                          (quitMenuItem.keyEquivalentModifierMask & NSEventModifierFlagCommand) != 0 &&
                          [sessionMenu itemWithTitle:@"New Claude Code Tab"] == nil &&
                          [sessionMenu itemWithTitle:@"New Codex Tab"] == nil,
-                         @"Quit Mica keeps Command-Q while Dictation uses left Option press and release");
+                         @"Command-Q quits Mica and the shortcut list is available in Help and the status bar");
 
         MicaAppDelegate *voiceDelegate = [[MicaAppDelegate alloc] init];
         voiceDelegate.tabs = [NSMutableArray array];
@@ -845,35 +849,83 @@ static int MicaRunUISelfTest(void) {
             [agentDetail containsString:@"Explored src directory"],
             [NSString stringWithFormat:@"agent progress reads the active phase and keeps a recent action for the tooltip (phase=%@ detail=%@)",
                 agentActivity, agentDetail]);
+        MicaSession *waitingProbe = mica_session_create("/tmp",
+            "printf 'PRESS ENTER TO CONTINUE\\n'; sleep 2", 6, 80);
+        BOOL waitingPromptFound = NO;
+        for (int attempt = 0; waitingProbe && attempt < 100; attempt++) {
+            mica_session_poll(waitingProbe, 10);
+            if (MicaUITestFindText(waitingProbe, @"PRESS ENTER TO CONTINUE", NULL, NULL)) {
+                waitingPromptFound = YES;
+                break;
+            }
+        }
+        NSString *waitingDetail = nil;
+        NSString *waitingActivity = waitingProbe
+            ? MicaAgentActivityForSession(waitingProbe, &waitingDetail) : nil;
+        MicaUITestRecord(report, &allPassed,
+            waitingPromptFound && [waitingActivity isEqualToString:@"Needs input"],
+            @"the shared activity detector marks a generic command waiting for terminal input");
+        if (waitingProbe) mica_session_destroy(waitingProbe);
+        MicaSession *glyphPromptProbe = mica_session_create("/tmp", "printf '\\033[5;1H\\u276f'; sleep 2", 6, 80);
+        BOOL glyphPromptFound = NO;
+        for (int attempt = 0; glyphPromptProbe && attempt < 100; attempt++) {
+            mica_session_poll(glyphPromptProbe, 10);
+            if (MicaUITestFindCodepoint(glyphPromptProbe, 0x276f, NULL, NULL)) {
+                glyphPromptFound = YES;
+                break;
+            }
+        }
+        NSString *glyphPromptActivity = glyphPromptProbe
+            ? MicaAgentActivityForSession(glyphPromptProbe, NULL) : nil;
+        MicaUITestRecord(report, &allPassed,
+            glyphPromptFound && [glyphPromptActivity isEqualToString:@"Needs input"],
+            [NSString stringWithFormat:@"a Claude-style input prompt glyph is classified as waiting for input (found=%d activity=%@ screen=%@)",
+                glyphPromptFound, glyphPromptActivity, MicaUITestScreenTail(glyphPromptProbe)]);
+        if (glyphPromptProbe) mica_session_destroy(glyphPromptProbe);
         MicaTab *agentLabelTab = delegate.tabs[0];
         NSString *savedCommand = agentLabelTab.currentCommand;
         NSString *savedName = agentLabelTab.name;
         agentLabelTab.currentCommand = @"codex";
         agentLabelTab.name = @"Codex";
         agentLabelTab.agentActivity = @"Working";
-        agentLabelTab.agentActivityDetail = @"Ran make test";
-        NSString *firstAgentLabel = [delegate displayNameForTab:agentLabelTab];
+        NSString *firstAgentLabel = [delegate.terminalView labelForTab:agentLabelTab active:YES];
+        BOOL reportsRunning = [delegate.terminalView activityStateForTab:agentLabelTab] == MicaTabActivityStateRunning;
+        agentLabelTab.agentActivity = @"Needs approval";
+        BOOL reportsWaiting = [delegate.terminalView activityStateForTab:agentLabelTab] == MicaTabActivityStateWaiting;
+        agentLabelTab.needsAttention = YES;
+        agentLabelTab.currentCommand = nil;
+        BOOL reportsNeedsAttention = [delegate.terminalView activityStateForTab:agentLabelTab] == MicaTabActivityStateNeedsAttention;
+        agentLabelTab.needsAttention = NO;
+        agentLabelTab.completedCommand = YES;
+        BOOL reportsComplete = [delegate.terminalView activityStateForTab:agentLabelTab] == MicaTabActivityStateComplete;
+        agentLabelTab.completedCommand = NO;
+        agentLabelTab.currentCommand = @"codex";
+        agentLabelTab.agentActivity = @"Working";
         agentLabelTab.agentActivityDetail = @"Read src/mica_app.m";
-        NSString *updatedAgentLabel = [delegate displayNameForTab:agentLabelTab];
-        BOOL agentTitleShowsAction = [firstAgentLabel isEqualToString:@"Codex · Ran make test"] &&
-            [updatedAgentLabel isEqualToString:@"Codex · Read src/mica_app.m"];
+        NSString *updatedAgentLabel = [delegate.terminalView labelForTab:agentLabelTab active:YES];
+        BOOL configuredTabNameIsStable = [firstAgentLabel isEqualToString:@"Codex"] &&
+            [updatedAgentLabel isEqualToString:firstAgentLabel] && reportsRunning && reportsWaiting &&
+            reportsNeedsAttention && reportsComplete;
         agentLabelTab.currentCommand = savedCommand;
         agentLabelTab.name = savedName;
         agentLabelTab.agentActivity = nil;
         agentLabelTab.agentActivityDetail = nil;
-        MicaUITestRecord(report, &allPassed, agentTitleShowsAction,
-            [NSString stringWithFormat:@"agent tab title follows action changes without elapsed-time noise (%@ → %@)",
+        MicaUITestRecord(report, &allPassed, configuredTabNameIsStable,
+            [NSString stringWithFormat:@"tab label stays configured while its indicator distinguishes running, waiting and completion (%@ → %@)",
                 firstAgentLabel, updatedAgentLabel]);
         MicaUITestRecord(report, &allPassed, delegate.terminalView.terminalFont.pointSize >= 16,
                          @"default terminal font remains at least 16 points");
-        MicaUITestRecord(report, &allPassed, kTabTitleFontSize <= 11.0 && kHeaderHeight <= 32.0,
-                         @"tab titles use a compact 10.5-point system font and a 32-point header");
+        MicaUITestRecord(report, &allPassed, kTabTitleFontSize <= 11.0 && kHeaderHeight == 28.0,
+                         @"tab titles use a compact 10.5-point system font and a shorter 28-point header");
         NSDictionary *footerTextAttrs = @{ NSFontAttributeName: [NSFont systemFontOfSize:10.5] };
         NSFont *footerFont = footerTextAttrs[NSFontAttributeName];
+        NSFont *tabFont = [NSFont systemFontOfSize:kTabTitleFontSize weight:NSFontWeightMedium];
+        CGFloat tabBaseline = MicaCenteredTextBaseline(tabFont, kHeaderHeight);
+        CGFloat footerBaseline = MicaCenteredTextBaseline(footerFont, kStatusHeight);
         MicaUITestRecord(report, &allPassed,
-            fabs(MicaCenteredTextBaseline([NSFont systemFontOfSize:kTabTitleFontSize weight:NSFontWeightMedium], kHeaderHeight) -
-                 MicaCenteredTextBaseline(footerFont, kStatusHeight)) < 0.01,
-            @"tab labels and footer text share a vertically centered baseline");
+            tabBaseline + tabFont.descender >= 0 && tabBaseline + tabFont.ascender <= kHeaderHeight &&
+                footerBaseline + footerFont.descender >= 0 && footerBaseline + footerFont.ascender <= kStatusHeight,
+            @"tab labels and footer text stay vertically centered at their separate row heights");
         NSDictionary *pathAttrs = @{ NSFontAttributeName: [NSFont systemFontOfSize:10.5] };
         NSString *samplePath = @"/Users/me/Desktop/Freelance/vsc-vpp-compliance";
         NSString *shortPath = MicaTruncatedPath(samplePath, 170, pathAttrs);
@@ -1724,8 +1776,8 @@ static int MicaRunUISelfTest(void) {
             [projectBFirstTab[@"command"] isEqualToString:@"printf 'PROJECT-B-PREFILLED'"] &&
             [projectA[@"projectName"] isEqualToString:@"Project Alpha"] &&
             [projectB[@"projectName"] isEqualToString:@"Project Beta"] &&
-            [[projectATitle windowTitleForTab:projectATitleTab] containsString:@"Project Alpha"] &&
-            [[projectBTitle windowTitleForTab:projectBTitleTab] containsString:@"Project Beta"] &&
+            [[projectATitle windowTitleForTab:projectATitleTab] isEqualToString:@"Mica — Project Alpha"] &&
+            [[projectBTitle windowTitleForTab:projectBTitleTab] isEqualToString:@"Mica — Project Beta"] &&
             [projectA[@"activeIndex"] integerValue] == 0 &&
             [projectB[@"activeIndex"] integerValue] == 0;
         MicaUITestRecord(report, &allPassed, projectAppsIndependent,
@@ -1738,6 +1790,7 @@ static int MicaRunUISelfTest(void) {
         settingsOwner.projectName = @"Project Alpha";
         settingsOwner.projectLayoutPath = projectALayout;
         MicaUITestAttachWindow(settingsOwner);
+        MicaProjectSettingsController *staleProjectSettings = [[MicaProjectSettingsController alloc] initWithOwner:settingsOwner];
         MicaProjectSettingsController *projectSettings = [[MicaProjectSettingsController alloc] initWithOwner:settingsOwner];
         BOOL settingsLoadedRows = projectSettings.rows.count == 2 && [projectSettings.rows[0][0] isEqualToString:@"Claude Code 1"];
         projectSettings.projectNameField.stringValue = @"Renamed Alpha";
@@ -1745,6 +1798,7 @@ static int MicaRunUISelfTest(void) {
         projectSettings.rows[0][2] = @"printf 'UPDATED-SETTINGS'";
         [settingsOwner.window beginSheet:projectSettings.window completionHandler:nil];
         [projectSettings save:nil];
+        BOOL concurrentSettingsDetected = [staleProjectSettings layoutChangedOnDisk];
         NSDictionary *savedSettings = MicaResolveLaunchConfiguration(@[@"mica", @"--layout", projectALayout,
             @"--project-name", @"Old Launcher Name"], @{}, @"/tmp");
         NSArray<NSDictionary *> *savedSettingTabs = savedSettings[@"tabs"];
@@ -1753,9 +1807,10 @@ static int MicaRunUISelfTest(void) {
             [savedSettingTabs.firstObject[@"name"] isEqualToString:@"Claude"] &&
             [savedSettingTabs.firstObject[@"command"] isEqualToString:@"printf 'UPDATED-SETTINGS'"] &&
             [settingsOwner.projectName isEqualToString:@"Renamed Alpha"];
+        projectSettingsPersisted = projectSettingsPersisted && concurrentSettingsDetected;
         MicaUITestRecord(report, &allPassed, projectSettingsPersisted,
-                         [NSString stringWithFormat:@"project settings edit and persist the project name and startup tabs (%lu rows)",
-                          (unsigned long)savedSettingTabs.count]);
+                         [NSString stringWithFormat:@"project settings persist edits and detect stale concurrent settings (%lu rows, conflict=%d)",
+                          (unsigned long)savedSettingTabs.count, concurrentSettingsDetected]);
         [settingsOwner.window orderOut:nil];
 
         MicaAppDelegate *layoutDelegate = [[MicaAppDelegate alloc] init];
@@ -1784,10 +1839,10 @@ static int MicaRunUISelfTest(void) {
         BOOL commandLabelUpdated = NO;
         for (int attempt = 0; configuredCommandStarted && attempt < 300; attempt++) {
             [layoutDelegate pollSessions:nil];
-            NSString *runningLabel = [layoutDelegate displayNameForTab:configuredCommandTab];
+            NSString *runningLabel = [layoutDelegate.terminalView labelForTab:configuredCommandTab active:YES];
             if (configuredCommandTab.currentCommand.length &&
-                ![runningLabel isEqualToString:configuredCommandTab.name] &&
-                [runningLabel containsString:@" · "])
+                [runningLabel isEqualToString:configuredCommandTab.name] &&
+                [layoutDelegate.terminalView activityStateForTab:configuredCommandTab] == MicaTabActivityStateRunning)
                 commandLabelUpdated = YES;
             if (MicaUITestFindText(configuredCommandTab.session, @"MICA-LAYOUT-OUTPUT", NULL, NULL))
                 configuredCommandExecuted = YES;
@@ -1799,7 +1854,7 @@ static int MicaRunUISelfTest(void) {
             usleep(10000);
         }
         BOOL commandLabelCleared = configuredCommandTab.currentCommand.length == 0 &&
-            [[layoutDelegate displayNameForTab:configuredCommandTab] isEqualToString:@"Claude Code"];
+            [[layoutDelegate.terminalView labelForTab:configuredCommandTab active:YES] isEqualToString:@"Claude Code"];
         NSString *layoutScreen = MicaUITestScreenTail(configuredCommandTab.session);
         BOOL layoutSessionCleaned = configuredCommandTab.session != NULL;
         if (configuredCommandTab.session) {
@@ -1810,7 +1865,7 @@ static int MicaRunUISelfTest(void) {
         MicaUITestRecord(report, &allPassed,
             configuredCommandPrefilled && configuredCommandStarted && configuredCommandExecuted &&
                 commandLabelUpdated && commandLabelCleared && layoutSessionCleaned,
-            [NSString stringWithFormat:@"a layout opens a regular zsh tab, shows its running command and then restores the tab name (configured=%d prefilled=%d ran=%d label=%d reset=%d cleaned=%d screen=%@)",
+            [NSString stringWithFormat:@"a layout keeps the configured tab label while its startup command runs and returns to the shell (configured=%d prefilled=%d ran=%d label=%d reset=%d cleaned=%d screen=%@)",
                 configuredCommandPrefilled, configuredCommandStarted, configuredCommandExecuted,
                 commandLabelUpdated, commandLabelCleared, layoutSessionCleaned, layoutScreen]);
         if (projectLayoutRoot) [[NSFileManager defaultManager] removeItemAtPath:projectLayoutRoot error:nil];

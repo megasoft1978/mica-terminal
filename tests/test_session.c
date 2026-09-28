@@ -12,6 +12,18 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+static unsigned cleanupStageStarts;
+static unsigned cleanupStageEnds;
+static bool cleanupObservedPTYClose;
+
+static void record_cleanup_stage(pid_t pid, const char *stage, bool started, double elapsed_ms) {
+    (void)pid;
+    (void)elapsed_ms;
+    if (started) cleanupStageStarts++;
+    else cleanupStageEnds++;
+    if (!started && strcmp(stage, "close_pty") == 0) cleanupObservedPTYClose = true;
+}
+
 static bool screen_contains(MicaSession *session, const char *needle) {
     char row_text[2048];
     int rows = mica_session_rows(session), cols = mica_session_cols(session);
@@ -184,6 +196,10 @@ int main(void) {
     MicaSession *session = mica_session_create("/tmp", "i=1; while [ $i -le 20 ]; do printf 'row-%02d\\n' $i; i=$((i+1)); done; printf '\\033[31mRED-TEXT\\033[0m\\n'; printf '\\033[?1049h\\033[?1000hALT-BUFFER'; printf '\\007'; printf '\\033]9;Codex done\\007'; printf '\\033]9;4;1;42\\007'; printf '\\033]777;notify;Claude;Needs input\\033\\\\'; sleep 1; printf '\\033[?1000l\\033[?1049l'; printf '\\033[0m'; printf 'DEFAULT-CHECK\\n'", 6, 32);
     assert(session != NULL);
     for (int i = 0; i < 500 && (!screen_contains(session, "ALT-BUFFER") || mica_session_attention_count(session) < 3); i++) mica_session_poll(session, 10);
+
+    MicaSessionOutputMetrics outputMetrics = {0};
+    assert(mica_session_take_output_metrics(session, &outputMetrics));
+    assert(outputMetrics.bytes_read > 0 && outputMetrics.read_calls > 0 && outputMetrics.largest_read > 0);
 
     assert(mica_session_rows(session) == 6);
     assert(mica_session_cols(session) == 32);
@@ -407,7 +423,12 @@ color_checked:
     assert(cleanup_session != NULL);
     pid_t cleanup_pid = mica_session_pid(cleanup_session);
     assert(cleanup_pid > 0);
+    cleanupStageStarts = cleanupStageEnds = 0;
+    cleanupObservedPTYClose = false;
+    mica_session_set_cleanup_logger(record_cleanup_stage);
     mica_session_destroy(cleanup_session);
+    mica_session_set_cleanup_logger(NULL);
+    assert(cleanupStageStarts >= 5 && cleanupStageEnds == cleanupStageStarts && cleanupObservedPTYClose);
     errno = 0;
     assert(kill(cleanup_pid, 0) == -1 && errno == ESRCH);
 
@@ -546,6 +567,22 @@ color_checked:
     history_bytes = mica_session_history_lines(history_session) * 160u * sizeof(VTermScreenCell);
     assert(history_bytes <= MICA_HISTORY_LIMIT_BYTES);
     mica_session_destroy(history_session);
+
+    MicaSession *resize_history_session = mica_session_create("/tmp",
+        "printf 'LEFT-012345678901234567890123456789012345678901234567890123456789-RIGHT-END\\n\\n\\n\\n\\n\\n\\n'; sleep 1",
+        6, 80);
+    assert(resize_history_session != NULL);
+    for (int i = 0; i < 300 && mica_session_history_lines(resize_history_session) == 0; i++)
+        mica_session_poll(resize_history_session, 10);
+    assert(mica_session_history_lines(resize_history_session) > 0);
+    mica_session_scroll(resize_history_session, INT_MAX);
+    assert(screen_contains(resize_history_session, "RIGHT-END"));
+    mica_session_resize(resize_history_session, 6, 40);
+    mica_session_resize(resize_history_session, 12, 40);
+    mica_session_resize(resize_history_session, 12, 100);
+    mica_session_scroll(resize_history_session, INT_MAX);
+    assert(screen_contains(resize_history_session, "RIGHT-END"));
+    mica_session_destroy(resize_history_session);
     printf("scrollback allocation stays within %u bytes per session\n", MICA_HISTORY_LIMIT_BYTES);
 
     char profile_template[] = "/tmp/mica-profile-test-XXXXXX";
