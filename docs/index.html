@@ -73,6 +73,7 @@
     .install h2 { max-width: 420px; }.install p { max-width: 390px; color: var(--muted); font-size: 14px; line-height: 1.7; }
     .code { padding: 20px 22px; border-radius: 8px; background: #1d211e; color: #d8dfd5; font: 12px/2 var(--mono); overflow-x: auto; }.code .hash { color: #889184; }.code .sign { color: #aaca9e; }
     .endline { padding: 83px 0 74px; display: flex; align-items: end; justify-content: space-between; gap: 20px; }.endline h2 { max-width: 550px; }.endline p { margin: 13px 0 0; color: var(--muted); font-size: 14px; }
+    .credits { padding: 45px 0 55px; border-top: 1px solid var(--line); }.credits p { max-width: 790px; color: var(--muted); line-height: 1.7; }.credits a { color: var(--ink); text-underline-offset: 3px; }
     footer { min-height: 77px; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--line); color: #777c73; font-size: 12px; }
     footer a { text-decoration: none; } .footer-links { display: flex; gap: 22px; }
     @media (max-width: 860px) { .hero { grid-template-columns: 1fr; gap: 42px; padding-top: 65px; }.hero-copy { max-width: 590px; }.window { max-width: 700px; width: 100%; transform: none; }.section-head { grid-template-columns: 1fr; gap: 20px; }.install { padding: 40px; gap: 35px; } }
@@ -85,6 +86,7 @@
     <a class="brand" href="#top"><img src="../assets/mica-icon.png" alt=""><span>Mica</span></a>
     <nav aria-label="Main navigation">
       <a href="#features">Why Mica</a>
+      <a href="#credits">Credits</a>
       <a href="https://github.com/megasoft1978/mica-terminal">Source</a>
       <a class="nav-cta" href="https://github.com/megasoft1978/mica-terminal/releases">Releases <span aria-hidden="true">↗</span></a>
     </nav>
@@ -124,8 +126,13 @@
         <article class="feature"><div class="feature-index">03 / DICTATION</div><h3>Speak, then review</h3><p>Hold left Option to dictate into the active shell. Speech recognition runs locally after the first model download.</p></article>
         <article class="feature"><div class="feature-index">04 / TERMINAL</div><h3>Your shell stays yours</h3><p>Interactive zsh, aliases, plugins, arbitrary commands, selectable output, and bounded scrollback.</p></article>
         <article class="feature"><div class="feature-index">05 / FOCUS</div><h3>A timer that follows you</h3><p>Keep a shared focus and break timer across project windows, with macOS notifications at phase changes.</p></article>
-        <article class="feature"><div class="feature-index">06 / NATIVE</div><h3>Built for the Mac</h3><p>A lightweight AppKit interface with a C session core and libvterm rendering.</p></article>
+        <article class="feature"><div class="feature-index">06 / NATIVE</div><h3>Built for the Mac</h3><p>A lightweight AppKit interface with a C session core and libvterm rendering. Project marks help distinguish windows in the Dock and app switcher.</p></article>
       </div>
+    </section>
+    <section class="credits wrap" id="credits">
+      <div class="section-kicker">Built with</div>
+      <h2>Good tools, clearly credited.</h2>
+      <p>Mica uses AppKit for its macOS interface, a C session core, and <a href="https://github.com/neovim/libvterm">libvterm (MIT)</a> for terminal parsing. Local dictation uses <a href="https://github.com/FluidInference/FluidAudio">FluidAudio 0.17.4 (Apache-2.0)</a>, Apple Core ML and AVFoundation, and <a href="https://huggingface.co/moondream/parakeet-ultra">Parakeet Ultra by Moondream</a>, based on NVIDIA Parakeet TDT 0.6B v3 and distributed as a Core ML conversion by FluidInference (CC BY 4.0). See the <a href="https://github.com/megasoft1978/mica-terminal/blob/main/voice/THIRD_PARTY_NOTICES.md">full third-party notices</a>. Mica source is available on GitHub; the project does not yet have a root-level license.</p>
     </section>
     <section class="wrap" id="install">
       <div class="install">
@@ -135,6 +142,6 @@
     </section>
     <section class="endline wrap"><div><div class="section-kicker">Open development</div><h2>Make space for your work.</h2><p>Explore the code, follow development, or help make Mica better.</p></div><a class="button" href="https://github.com/megasoft1978/mica-terminal">View on GitHub <span aria-hidden="true">↗</span></a></section>
   </main>
-  <footer class="wrap"><span>© 2026 Mica Terminal · Made for macOS</span><div class="footer-links"><a href="https://github.com/megasoft1978/mica-terminal">GitHub</a><a href="https://github.com/megasoft1978/mica-terminal/issues">Issues</a><a href="https://github.com/megasoft1978/mica-terminal/releases">Releases</a></div></footer>
+  <footer class="wrap"><span>© 2026 Mica Terminal · Made for macOS</span><div class="footer-links"><a href="#credits">Credits</a><a href="https://github.com/megasoft1978/mica-terminal">GitHub</a><a href="https://github.com/megasoft1978/mica-terminal/issues">Issues</a><a href="https://github.com/megasoft1978/mica-terminal/releases">Releases</a></div></footer>
 </body>
 </html>

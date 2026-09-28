@@ -16,6 +16,7 @@
 static const CGFloat kHeaderHeight = 28.0;
 static const CGFloat kStatusHeight = 32.0;
 static NSTimeInterval gLastVoiceAnimationAt = 0;
+static const NSTimeInterval kAgentActivityQuietInterval = 2.5;
 static const CGFloat kFontSizeDefault = 16.0;
 static const CGFloat kTabTitleFontSize = 10.5;
 static const CGFloat kTabMinimumWidth = 140.0;
@@ -25,6 +26,67 @@ static const NSInteger kDefaultFocusMinutes = 60;
 static const NSInteger kDefaultBreakMinutes = 15;
 static const NSInteger kMaximumFocusMinutes = 240;
 static const NSInteger kMaximumBreakMinutes = 120;
+
+static NSString *MicaProjectMark(NSString *name) {
+    NSError *error = nil;
+    NSRegularExpression *expression = [NSRegularExpression
+        regularExpressionWithPattern:@"[A-Z]+(?=[A-Z][a-z]|[^A-Za-z0-9]|$)|[A-Z]?[a-z]+|[0-9]+"
+        options:0 error:&error];
+    if (!expression || error) return @"M";
+    NSArray<NSTextCheckingResult *> *matches = [expression matchesInString:name
+        options:0 range:NSMakeRange(0, name.length)];
+    NSMutableString *mark = [NSMutableString string];
+    if (matches.count > 1) {
+        for (NSUInteger i = 0; i < MIN(matches.count, 3); i++) {
+            NSRange range = [matches[i] range];
+            [mark appendString:[[name substringWithRange:range] substringToIndex:1].uppercaseString];
+        }
+    } else if (matches.count == 1) {
+        NSString *word = [name substringWithRange:matches[0].range];
+        NSUInteger first = [word rangeOfComposedCharacterSequenceAtIndex:0].length;
+        NSUInteger end = first;
+        if (first < word.length) end = NSMaxRange([word rangeOfComposedCharacterSequenceAtIndex:first]);
+        [mark appendString:[word substringToIndex:end].uppercaseString];
+    }
+    return mark.length ? mark : @"M";
+}
+
+static NSImage *MicaProjectApplicationIcon(NSImage *baseIcon, NSString *projectName) {
+    if (!baseIcon || !projectName.length) return baseIcon;
+    const CGFloat pixels = 512.0;
+    NSImage *icon = [[NSImage alloc] initWithSize:NSMakeSize(pixels, pixels)];
+    [icon lockFocus];
+    [baseIcon drawInRect:NSMakeRect(0, 0, pixels, pixels) fromRect:NSZeroRect
+        operation:NSCompositingOperationSourceOver fraction:1.0];
+    CGFloat diameter = pixels * 0.22;
+    NSRect badge = NSMakeRect((pixels - diameter) / 2.0, pixels * 0.75, diameter, diameter);
+    NSBezierPath *backing = [NSBezierPath bezierPathWithOvalInRect:NSInsetRect(badge, -5, -5)];
+    [[NSColor colorWithWhite:0.05 alpha:0.92] setFill];
+    [backing fill];
+    uint32_t hash = 2166136261u;
+    for (NSUInteger i = 0; i < projectName.length; i++) {
+        hash ^= [projectName characterAtIndex:i];
+        hash *= 16777619u;
+    }
+    NSColor *accent = [NSColor colorWithHue:(CGFloat)(hash % 360u) / 360.0
+        saturation:0.78 brightness:0.46 alpha:1.0];
+    NSBezierPath *circle = [NSBezierPath bezierPathWithOvalInRect:badge];
+    circle.lineWidth = 5;
+    [[NSColor colorWithWhite:1.0 alpha:0.96] setStroke];
+    [accent setFill];
+    [circle fill];
+    [circle stroke];
+    NSString *mark = MicaProjectMark(projectName);
+    NSDictionary *attributes = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:mark.length > 2 ? 31 : 36 weight:NSFontWeightHeavy],
+        NSForegroundColorAttributeName: NSColor.whiteColor,
+    };
+    NSSize textSize = [mark sizeWithAttributes:attributes];
+    [mark drawAtPoint:NSMakePoint(NSMidX(badge) - textSize.width / 2.0,
+        NSMidY(badge) - textSize.height / 2.0) withAttributes:attributes];
+    [icon unlockFocus];
+    return icon;
+}
 
 static double MicaContinuousTimeSeconds(void) {
     static mach_timebase_info_data_t timebase;
@@ -134,6 +196,8 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 @property(nonatomic, copy) NSString *agentActivity;
 @property(nonatomic, copy) NSString *agentActivityDetail;
 @property(nonatomic, assign) NSTimeInterval agentActivityStartedAt;
+@property(nonatomic, assign) NSTimeInterval agentLastOutputAt;
+@property(nonatomic, assign) NSInteger displayedActivityState;
 @property(nonatomic, assign) NSTimeInterval commandStartedAt;
 @property(nonatomic, assign) NSInteger commandClockSecond;
 @property(nonatomic, assign) NSTimeInterval cwdLastCheck;
@@ -232,21 +296,20 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
             lineActivity = @"Compacting";
         } else if ([upper containsString:@"PLANNING"]) {
             lineActivity = @"Planning";
-        } else if ([upper containsString:@"SEARCHING"] || [upper containsString:@"SEARCHED FOR"]) {
+        } else if ([upper containsString:@"SEARCHING"]) {
             lineActivity = @"Searching";
-        } else if ([upper containsString:@"READING"] || [upper hasPrefix:@"READ "]) {
+        } else if ([upper containsString:@"READING"]) {
             lineActivity = @"Reading";
         } else if ([upper containsString:@"EDITING"] || [upper containsString:@"WRITING"] ||
-                   [upper containsString:@"IMPLEMENTING"] || [upper hasPrefix:@"EDITED "] ||
-                   [upper hasPrefix:@"WROTE "]) {
+                   [upper containsString:@"IMPLEMENTING"]) {
             lineActivity = @"Editing";
         } else if ([upper containsString:@"WORKING"] || [upper containsString:@"ESC TO INTERRUPT"]) {
             lineActivity = @"Working";
         } else if ([upper containsString:@"THINKING"]) {
             lineActivity = @"Thinking";
-        } else if ([upper containsString:@"RUNNING"] || [upper hasPrefix:@"RAN "]) {
+        } else if ([upper containsString:@"RUNNING"]) {
             lineActivity = @"Running";
-        } else if ([upper containsString:@"EXPLORING"] || [upper containsString:@"EXPLORED"]) {
+        } else if ([upper containsString:@"EXPLORING"]) {
             lineActivity = @"Exploring";
         } else if ([upper containsString:@"TESTING"]) {
             lineActivity = @"Testing";
@@ -273,7 +336,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
         if (!activityLine) activityLine = @"Input prompt";
     }
     if (detailOut) *detailOut = recentAction ?: activityLine;
-    return activity ?: @"Running";
+    return activity ?: @"Idle";
 }
 
 @class MicaAppDelegate;
@@ -334,6 +397,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, strong) NSMutableArray<MicaTab *> *tabs;
 @property(nonatomic, assign) NSInteger activeIndex;
 @property(nonatomic, copy) NSString *projectName;
+@property(nonatomic, strong) NSImage *baseApplicationIcon;
 @property(nonatomic, copy) NSString *projectLayoutPath;
 @property(nonatomic, strong) id projectSettingsController;
 @property(nonatomic, strong) NSTimer *pollTimer;
@@ -822,10 +886,20 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     if (tab.currentCommand.length) {
         if ([tab.agentActivity isEqualToString:@"Needs approval"] ||
             [tab.agentActivity isEqualToString:@"Needs input"] ||
-            [tab.agentActivity isEqualToString:@"Ready"] ||
             [tab.agentActivity isEqualToString:@"Choosing session"])
             return MicaTabActivityStateWaiting;
         if (tab.needsAttention) return MicaTabActivityStateNeedsAttention;
+        if (MicaAgentNameForTab(tab)) {
+            NSString *activity = tab.agentActivity;
+            if (!activity.length || [activity isEqualToString:@"Idle"] ||
+                [activity isEqualToString:@"Ready"])
+                return MicaTabActivityStateIdle;
+            NSTimeInterval lastOutputAt = tab.agentLastOutputAt > 0
+                ? tab.agentLastOutputAt : tab.agentActivityStartedAt;
+            if (lastOutputAt <= 0 ||
+                NSProcessInfo.processInfo.systemUptime - lastOutputAt > kAgentActivityQuietInterval)
+                return MicaTabActivityStateIdle;
+        }
         return MicaTabActivityStateRunning;
     }
     if (tab.needsAttention) return MicaTabActivityStateNeedsAttention;
@@ -1168,8 +1242,10 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     } else if (tab.currentCommand.length) {
         NSString *agent = MicaAgentNameForTab(tab);
         if (agent) {
-            NSString *activity = tab.agentActivityDetail.length
-                ? tab.agentActivityDetail : (tab.agentActivity.length ? tab.agentActivity : @"Starting");
+            MicaTabActivityState agentState = [self activityStateForTab:tab];
+            NSString *activity = agentState == MicaTabActivityStateIdle
+                ? @"Ready" : (tab.agentActivityDetail.length
+                    ? tab.agentActivityDetail : (tab.agentActivity.length ? tab.agentActivity : @"Starting"));
             context = [NSString stringWithFormat:@"%@ · %@", agent, activity];
         } else {
             NSTimeInterval elapsed = MAX(0, NSProcessInfo.processInfo.systemUptime - tab.commandStartedAt);
@@ -2528,6 +2604,11 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
 
 - (void)updateWindowTitle {
     if (self.window) self.window.title = [self windowTitleForTab:self.activeTab];
+    NSImage *icon = MicaProjectApplicationIcon(self.baseApplicationIcon, self.projectName);
+    if (icon) {
+        NSApp.applicationIconImage = icon;
+        [NSApp.dockTile display];
+    }
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
@@ -2537,6 +2618,7 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
         NSBundle.mainBundle.infoDictionary[@"CFBundleDisplayName"] ?: @"Mica",
         NSBundle.mainBundle.bundleIdentifier ?: @"unknown", getpid()]);
     self.tabs = [NSMutableArray array];
+    self.baseApplicationIcon = NSApp.applicationIconImage;
     self.activeIndex = 0;
     self.pomodoroLockFD = -1;
     self.focusDurationMinutes = kDefaultFocusMinutes;
@@ -2685,6 +2767,7 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     NSString *projectName = configuration[@"projectName"];
     self.projectLayoutPath = configuration[@"layoutPath"];
     self.projectName = projectName.length ? projectName : nil;
+    [self updateWindowTitle];
     [self configurePomodoro];
     NSArray<NSDictionary *> *tabSpecs = configuration[@"tabs"];
     MicaDiagnosticsLog(@"launch", [NSString stringWithFormat:@"configuration project=%@ layout=%d tabs=%lu",
@@ -2951,6 +3034,8 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
             tab.outputLargestRead = MAX(tab.outputLargestRead, outputMetrics.largest_read);
             tab.outputParseMilliseconds += outputMetrics.parse_milliseconds;
             tab.lastOutputReadAt = tabPollEndedAt;
+            if (outputMetrics.bytes_read > 0 && MicaAgentNameForTab(tab))
+                tab.agentLastOutputAt = tabPollEndedAt;
         }
         NSTimeInterval outputWindow = now - tab.outputMetricsStartedAt;
         if (outputWindow >= 1.0) {
@@ -2992,6 +3077,7 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
             tab.agentActivity = currentCommand.length && MicaAgentNameForTab(tab) ? @"Starting" : nil;
             tab.agentActivityDetail = nil;
             tab.agentActivityStartedAt = currentCommand.length ? now : 0;
+            tab.agentLastOutputAt = currentCommand.length && MicaAgentNameForTab(tab) ? now : 0;
             redraw = YES;
         }
         if (currentCommand.length) {
@@ -3104,17 +3190,22 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
         redraw = YES;
     }
     BOOL animatesTab = NO;
+    BOOL activityIndicatorChanged = NO;
     for (MicaTab *tab in self.tabs) {
         MicaTabActivityState state = [self.terminalView activityStateForTab:tab];
-        if (state == MicaTabActivityStateRunning || state == MicaTabActivityStateWaiting ||
-            state == MicaTabActivityStateNeedsAttention) {
-            animatesTab = YES;
-            break;
+        if (tab.displayedActivityState != state) {
+            tab.displayedActivityState = state;
+            activityIndicatorChanged = YES;
         }
+        if (state == MicaTabActivityStateRunning || state == MicaTabActivityStateWaiting ||
+            state == MicaTabActivityStateNeedsAttention) animatesTab = YES;
     }
-    if (animatesTab && now - self.lastActivityAnimationAt >= 0.12) {
-        self.lastActivityAnimationAt = now;
-        self.activityAnimationFrame++;
+    BOOL activityAnimationTick = animatesTab && now - self.lastActivityAnimationAt >= 0.12;
+    if (activityAnimationTick || activityIndicatorChanged) {
+        if (activityAnimationTick) {
+            self.lastActivityAnimationAt = now;
+            self.activityAnimationFrame++;
+        }
         NSRect header = NSMakeRect(0, MAX(0, self.terminalView.bounds.size.height - kHeaderHeight),
             self.terminalView.bounds.size.width, kHeaderHeight);
         [self.terminalView setNeedsDisplayInRect:header];

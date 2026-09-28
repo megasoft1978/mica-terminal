@@ -27,6 +27,7 @@ The first dictation use downloads the local speech model (about 630 MB). Mica re
 - **Stay with the project.** Give a project its own named tabs, folders, and ready-to-review startup commands.
 - **Keep your terminal yours.** Mica runs ordinary interactive `zsh` sessions. Use Codex, Claude Code, `lazygit`, or any command; Mica doesn’t take over your shell configuration.
 - **See what agents are doing.** Agent tabs show activity and when they need input. Scrollback, text selection, and normal terminal input stay close at hand.
+- **Find the right project.** Project windows show a short project mark in the Dock and macOS app switcher icon; window titles keep the full project name.
 - **Speak a command.** Hold left Option, dictate, then review or edit the inserted text before pressing Return. Recognition runs locally after the initial model download.
 - **Keep a little focus.** A shared focus timer follows you across Mica windows and can notify you when a focus or break period ends.
 
@@ -41,6 +42,10 @@ The first dictation use downloads the local speech model (about 630 MB). Mica re
 | Resize terminal text | `⌘+` / `⌘−` |
 
 Run `make new-instance` to create a project launcher. Use **Project → Settings…** to edit its name and tabs. A `.mica` layout can also define named tabs, folders, and optional commands.
+
+## Built with and credits
+
+Mica’s terminal session core is C, its macOS interface uses AppKit, and terminal escape sequences are parsed by [libvterm](https://github.com/neovim/libvterm) (MIT). Local speech recognition uses [FluidAudio](https://github.com/FluidInference/FluidAudio) (Apache-2.0), Apple Core ML and AVFoundation, and [Parakeet Ultra by Moondream](https://huggingface.co/moondream/parakeet-ultra), based on NVIDIA Parakeet TDT 0.6B v3 and distributed as a Core ML conversion by FluidInference (CC BY 4.0). See [voice/THIRD_PARTY_NOTICES.md](voice/THIRD_PARTY_NOTICES.md) and [voice/ThirdPartyLicenses](voice/ThirdPartyLicenses/) for model and dependency notices. Mica does not yet include a root-level project license; source availability does not grant permission to redistribute the project.
 
 ## Build and contribute
 

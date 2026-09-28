@@ -274,6 +274,10 @@ static int MicaRunUISelfTest(void) {
             MicaStringChanged(@"sleep", @"claude");
         MicaUITestRecord(report, &allPassed, labelComparisonIsNilSafe,
                          @"idle nil command labels compare equal and do not request redraws");
+        BOOL projectMarksAreDistinct = [MicaProjectMark(@"Mica Demo") isEqualToString:@"MD"] &&
+            [MicaProjectMark(@"Fieldnote") isEqualToString:@"FI"];
+        MicaUITestRecord(report, &allPassed, projectMarksAreDistinct,
+                         @"project names produce compact marks for the Dock and app switcher icon");
 
         char diagnosticDirectoryTemplate[] = "/tmp/mica-diagnostics-XXXXXX";
         char *diagnosticDirectoryPath = mkdtemp(diagnosticDirectoryTemplate);
@@ -851,6 +855,22 @@ static int MicaRunUISelfTest(void) {
             [agentDetail containsString:@"Explored src directory"],
             [NSString stringWithFormat:@"agent progress reads the active phase and keeps a recent action for the tooltip (phase=%@ detail=%@)",
                 agentActivity, agentDetail]);
+        MicaSession *quietAgentProbe = mica_session_create("/tmp",
+            "printf 'Claude Code ready\\n'; sleep 2", 6, 80);
+        BOOL quietAgentPromptFound = NO;
+        for (int attempt = 0; quietAgentProbe && attempt < 100; attempt++) {
+            mica_session_poll(quietAgentProbe, 10);
+            if (MicaUITestFindText(quietAgentProbe, @"Claude Code ready", NULL, NULL)) {
+                quietAgentPromptFound = YES;
+                break;
+            }
+        }
+        NSString *quietAgentActivity = quietAgentProbe
+            ? MicaAgentActivityForSession(quietAgentProbe, NULL) : nil;
+        MicaUITestRecord(report, &allPassed,
+            quietAgentPromptFound && [quietAgentActivity isEqualToString:@"Idle"],
+            @"an open agent session with no recognized work status is idle, not loading");
+        if (quietAgentProbe) mica_session_destroy(quietAgentProbe);
         MicaSession *waitingProbe = mica_session_create("/tmp",
             "printf 'PRESS ENTER TO CONTINUE\\n'; sleep 2", 6, 80);
         BOOL waitingPromptFound = NO;
@@ -890,8 +910,14 @@ static int MicaRunUISelfTest(void) {
         agentLabelTab.currentCommand = @"codex";
         agentLabelTab.name = @"Codex";
         agentLabelTab.agentActivity = @"Working";
+        agentLabelTab.agentLastOutputAt = NSProcessInfo.processInfo.systemUptime;
         NSString *firstAgentLabel = [delegate.terminalView labelForTab:agentLabelTab active:YES];
         BOOL reportsRunning = [delegate.terminalView activityStateForTab:agentLabelTab] == MicaTabActivityStateRunning;
+        agentLabelTab.agentLastOutputAt = NSProcessInfo.processInfo.systemUptime - kAgentActivityQuietInterval - 1.0;
+        BOOL quietAgentStopsAnimating = [delegate.terminalView activityStateForTab:agentLabelTab] == MicaTabActivityStateIdle;
+        agentLabelTab.agentLastOutputAt = NSProcessInfo.processInfo.systemUptime;
+        agentLabelTab.agentActivity = @"Ready";
+        BOOL readyAgentDoesNotAnimate = [delegate.terminalView activityStateForTab:agentLabelTab] == MicaTabActivityStateIdle;
         agentLabelTab.agentActivity = @"Needs approval";
         BOOL reportsWaiting = [delegate.terminalView activityStateForTab:agentLabelTab] == MicaTabActivityStateWaiting;
         agentLabelTab.needsAttention = YES;
@@ -907,7 +933,7 @@ static int MicaRunUISelfTest(void) {
         NSString *updatedAgentLabel = [delegate.terminalView labelForTab:agentLabelTab active:YES];
         BOOL configuredTabNameIsStable = [firstAgentLabel isEqualToString:@"Codex"] &&
             [updatedAgentLabel isEqualToString:firstAgentLabel] && reportsRunning && reportsWaiting &&
-            reportsNeedsAttention && reportsComplete;
+            reportsNeedsAttention && reportsComplete && quietAgentStopsAnimating && readyAgentDoesNotAnimate;
         agentLabelTab.currentCommand = savedCommand;
         agentLabelTab.name = savedName;
         agentLabelTab.agentActivity = nil;
