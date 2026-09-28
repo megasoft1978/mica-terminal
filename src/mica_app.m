@@ -1900,6 +1900,10 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 }
 
 - (void)mouseDown:(NSEvent *)event {
+    if (_selecting) {
+        [self clearSelection];
+        [self setNeedsDisplay:YES];
+    }
     [self.window makeFirstResponder:self];
     if (_leftOptionIsDown && !_leftOptionStartedDictation) {
         _leftOptionUsedWithAnotherKey = YES;

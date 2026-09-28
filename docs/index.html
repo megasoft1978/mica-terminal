@@ -42,6 +42,8 @@
     .text-link { color: var(--muted); font-size: 14px; text-decoration-thickness: 1px; text-underline-offset: 4px; }
     .requirements { margin-top: 18px; color: #85877f; font-size: 12px; }
     .window { position: relative; padding: 0; overflow: hidden; min-height: 385px; border: 1px solid #41443e; border-radius: 12px; background: #171a18; box-shadow: 0 24px 70px #24261f24, 0 3px 10px #24261f18; transform: perspective(1200px) rotateY(-2deg) rotateX(1deg); }
+    .product-video { display: block; width: 100%; height: auto; border: 1px solid #41443e; border-radius: 12px; background: #171a18; box-shadow: 0 24px 70px #24261f24, 0 3px 10px #24261f18; }
+    .video-caption { margin: 12px 0 0; color: var(--muted); font-size: 12px; text-align: right; }
     .window-bar { height: 41px; padding: 0 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #343833; background: #20231f; }
     .traffic { display: flex; gap: 6px; }.traffic i { width: 8px; height: 8px; border-radius: 50%; background: #686c65; }.traffic i:first-child { background: #bd755e; }.traffic i:nth-child(2) { background: #c6a45e; }.traffic i:nth-child(3) { background: #719273; }
     .window-title { color: #b6bab2; font: 11px var(--mono); }
@@ -103,18 +105,12 @@
         </div>
         <p class="requirements">For macOS 14+ · Source available on GitHub</p>
       </div>
-      <div class="window" role="img" aria-label="Illustration of Mica with project tabs, a shell prompt, coding agent activity, dictation, and focus timer">
-        <div class="window-bar"><div class="traffic"><i></i><i></i><i></i></div><div class="window-title">Mica — mica-terminal</div><span></span></div>
-        <div class="window-tabs"><span class="selected">Mica</span><span>API</span><span>Codex</span><span>Git</span></div>
-        <div class="term">
-          <div><span class="prompt">~/mica-terminal</span> <span class="dim">on</span> <span style="color:#d2b27b">main</span></div>
-          <div><span class="cmd">$</span> git status</div>
-          <div class="dim">On branch main · working tree clean</div>
-          <div class="agent-card"><div class="agent-head">● Codex · working</div><div>Reviewed the terminal input path</div><div>2 files changed <span class="cursor"></span></div></div>
-          <div><span class="prompt">~/mica-terminal</span> <span class="cmd">$</span> <span class="dim">_</span></div>
-        </div>
-        <div class="hero-note"><b><span class="wave"><i></i><i></i><i></i></span>Listening</b>Dictate a command.<br>Review it before Return.</div>
-        <div class="status"><strong>◷ Focus · 42:18</strong><span>⌥ Dictate　⌘T New tab　⌘Q Quit</span></div>
+      <div>
+        <video class="product-video" controls playsinline preload="none" poster="assets/mica-demo-poster.png" aria-label="Mica with a local preview command, Codex, Claude Code, and lazygit in separate project tabs">
+          <source src="assets/mica-demo.mp4" type="video/mp4">
+          Your browser does not support embedded video. <a href="assets/mica-demo.mp4">Download the Mica demo video</a>.
+        </video>
+        <p class="video-caption">Real Mica interface · disposable demo project · no agent prompts sent</p>
       </div>
     </section>
     <section class="proof"><div class="proof-row wrap"><span>BUILT FOR macOS</span><span>NATIVE APPKIT</span><span>ORDINARY ZSH SESSIONS</span><span>LOCAL SPEECH RECOGNITION</span></div></section>

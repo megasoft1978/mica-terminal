@@ -10,6 +10,10 @@ Mica keeps each project in its own set of terminal tabs. Run Codex, Claude Code,
 
 **[Project website](https://megasoft1978.github.io/mica-terminal/)** · **[Releases](https://github.com/megasoft1978/mica-terminal/releases)** · **[Source](https://github.com/megasoft1978/mica-terminal)**
 
+![Mica demo: project preview, Codex, Claude Code, and lazygit in separate tabs](docs/assets/mica-demo.gif)
+
+[Watch or download the full-quality demo video](docs/assets/mica-demo.mp4) · The demo uses a disposable sample project; Claude Code is shown idle and no agent prompts are sent.
+
 There isn’t a packaged release yet. To build Mica locally, install Xcode Command Line Tools and Homebrew, then run:
 
 ```sh

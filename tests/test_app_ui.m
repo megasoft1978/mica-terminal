@@ -1196,10 +1196,15 @@ static int MicaRunUISelfTest(void) {
             MicaUITestSendMouse(delegate, NSEventTypeLeftMouseDragged, dragEnd, 0);
             MicaUITestSendMouse(delegate, NSEventTypeLeftMouseUp, dragEnd, 0);
             BOOL dragSelectsText = foundSelectableText && [delegate.terminalView hasTextSelection];
+            NSPoint outsideSelection = NSMakePoint(NSMaxX(terminalArea) - 8,
+                                                   NSMinY(terminalArea) + testLineHeight * 0.5);
+            MicaUITestSendMouse(delegate, NSEventTypeLeftMouseDown, outsideSelection, 0);
+            MicaUITestSendMouse(delegate, NSEventTypeLeftMouseUp, outsideSelection, 0);
+            BOOL outsideClickClearsSelection = ![delegate.terminalView hasTextSelection];
             [delegate.terminalView clearSelection];
-            MicaUITestRecord(report, &allPassed, clickDoesNotSelect && tinyMoveDoesNotSelect && dragSelectsText,
-                [NSString stringWithFormat:@"plain click and tiny pointer movement keep UI interaction clear while a real drag selects text (found=%d click=%d tiny=%d drag=%d)",
-                 foundSelectableText, clickDoesNotSelect, tinyMoveDoesNotSelect, dragSelectsText]);
+            MicaUITestRecord(report, &allPassed, clickDoesNotSelect && tinyMoveDoesNotSelect && dragSelectsText && outsideClickClearsSelection,
+                [NSString stringWithFormat:@"plain click and tiny pointer movement keep UI interaction clear; outside click clears a drag selection (found=%d click=%d tiny=%d drag=%d clear=%d)",
+                 foundSelectableText, clickDoesNotSelect, tinyMoveDoesNotSelect, dragSelectsText, outsideClickClearsSelection]);
         }
 
         if (delegate.tabs.count == 3 && fixtureReady) {
