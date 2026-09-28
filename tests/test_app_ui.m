@@ -277,8 +277,15 @@ static int MicaRunUISelfTest(void) {
         BOOL projectMarksAreDistinct = [MicaProjectMark(@"Mica Demo") isEqualToString:@"MD"] &&
             [MicaProjectMark(@"Fieldnote") isEqualToString:@"FI"];
         MicaUITestRecord(report, &allPassed, projectMarksAreDistinct,
-                         @"project names produce compact marks for the Dock and app switcher icon");
-
+                         @"project names produce compact marks for the Dock icon");
+        BOOL hyperlinkSchemesAreRestricted = MicaSafeHyperlinkURL(@"https://example.test/path") != nil &&
+            MicaSafeHyperlinkURL(@"http://example.test") != nil &&
+            MicaSafeHyperlinkURL(@"javascript:alert(1)") == nil &&
+            MicaSafeHyperlinkURL(@"file:///tmp/private") == nil &&
+            MicaSafeHyperlinkURL(@"https://user@example.test") == nil &&
+            MicaSafeHyperlinkURL(@"https://example.test/a b") == nil;
+        MicaUITestRecord(report, &allPassed, hyperlinkSchemesAreRestricted,
+                         @"terminal links allow validated web URLs and reject local files, credentials and active schemes");
         char diagnosticDirectoryTemplate[] = "/tmp/mica-diagnostics-XXXXXX";
         char *diagnosticDirectoryPath = mkdtemp(diagnosticDirectoryTemplate);
         BOOL diagnosticDirectoryCreated = diagnosticDirectoryPath != NULL;
@@ -444,6 +451,51 @@ static int MicaRunUISelfTest(void) {
                          [sessionMenu itemWithTitle:@"New Claude Code Tab"] == nil &&
                          [sessionMenu itemWithTitle:@"New Codex Tab"] == nil,
                          @"Command-Q quits Mica and the shortcut list is available in Help and the status bar");
+
+        MicaAppDelegate *hyperlinkDelegate = [[MicaAppDelegate alloc] init];
+        hyperlinkDelegate.tabs = [NSMutableArray array];
+        hyperlinkDelegate.activeIndex = 0;
+        hyperlinkDelegate.uiMode = MicaUIModeNormal;
+        MicaUITestAttachWindow(hyperlinkDelegate);
+        [hyperlinkDelegate addTabWithName:@"Links" cwd:@"/tmp"
+            command:@"printf '\\033[?1000h\\033]8;;https://example.test/path\\033\\\\CLICK-ME\\033]8;;\\033\\\\\\n'; "
+                    "printf '\\033]8;;javascript:alert(1)\\033\\\\BAD-LINK\\033]8;;\\033\\\\\\n'; sleep 1"
+            prefilled:NO];
+        MicaTab *hyperlinkTab = hyperlinkDelegate.activeTab;
+        NSInteger hyperlinkRow = -1, hyperlinkCol = -1;
+        for (int attempt = 0; attempt < 200 && hyperlinkRow < 0; attempt++) {
+            mica_session_poll(hyperlinkTab.session, 10);
+            MicaUITestFindText(hyperlinkTab.session, @"CLICK-ME", &hyperlinkRow, &hyperlinkCol);
+        }
+        __block NSURL *openedHyperlink = nil;
+        hyperlinkDelegate.terminalView.testOpenURLHandler = ^(NSURL *url) { openedHyperlink = url; };
+        NSRect linkCell = [hyperlinkDelegate.terminalView cellRectAtRow:hyperlinkRow col:hyperlinkCol];
+        NSPoint linkPoint = NSMakePoint(NSMidX(linkCell), NSMidY(linkCell));
+        MicaUITestSendMouse(hyperlinkDelegate, NSEventTypeLeftMouseDown, linkPoint,
+                            NSEventModifierFlagCommand);
+        MicaUITestSendMouse(hyperlinkDelegate, NSEventTypeLeftMouseUp, linkPoint,
+                            NSEventModifierFlagCommand);
+        BOOL commandClickOpensWebLink = hyperlinkRow >= 0 && mica_session_reports_mouse(hyperlinkTab.session) &&
+            [openedHyperlink.absoluteString isEqualToString:@"https://example.test/path"];
+        MicaUITestRecord(report, &allPassed, commandClickOpensWebLink,
+            [NSString stringWithFormat:@"Command-click opens an OSC 8 link while the TUI has mouse reporting enabled (opened=%@)",
+                openedHyperlink.absoluteString ?: @"none"]);
+        openedHyperlink = nil;
+        MicaUITestSendMouse(hyperlinkDelegate, NSEventTypeLeftMouseDown, linkPoint, 0);
+        MicaUITestSendMouse(hyperlinkDelegate, NSEventTypeLeftMouseUp, linkPoint, 0);
+        MicaUITestRecord(report, &allPassed, openedHyperlink == nil,
+            @"ordinary clicks remain available to mouse-reporting terminal applications");
+        NSInteger unsafeLinkRow = -1, unsafeLinkCol = -1;
+        MicaUITestFindText(hyperlinkTab.session, @"BAD-LINK", &unsafeLinkRow, &unsafeLinkCol);
+        NSRect unsafeLinkCell = [hyperlinkDelegate.terminalView cellRectAtRow:unsafeLinkRow col:unsafeLinkCol];
+        NSPoint unsafeLinkPoint = NSMakePoint(NSMidX(unsafeLinkCell), NSMidY(unsafeLinkCell));
+        MicaUITestSendMouse(hyperlinkDelegate, NSEventTypeLeftMouseDown, unsafeLinkPoint,
+                            NSEventModifierFlagCommand);
+        MicaUITestSendMouse(hyperlinkDelegate, NSEventTypeLeftMouseUp, unsafeLinkPoint,
+                            NSEventModifierFlagCommand);
+        MicaUITestRecord(report, &allPassed, unsafeLinkRow >= 0 && openedHyperlink == nil,
+            @"Command-click ignores OSC 8 links with unsafe schemes");
+        hyperlinkDelegate.tabs = [NSMutableArray array];
 
         MicaAppDelegate *voiceDelegate = [[MicaAppDelegate alloc] init];
         voiceDelegate.tabs = [NSMutableArray array];
@@ -907,15 +959,15 @@ static int MicaRunUISelfTest(void) {
         MicaTab *agentLabelTab = delegate.tabs[0];
         NSString *savedCommand = agentLabelTab.currentCommand;
         NSString *savedName = agentLabelTab.name;
+        NSTimeInterval savedOutputReadAt = agentLabelTab.lastOutputReadAt;
         agentLabelTab.currentCommand = @"codex";
         agentLabelTab.name = @"Codex";
         agentLabelTab.agentActivity = @"Working";
-        agentLabelTab.agentLastOutputAt = NSProcessInfo.processInfo.systemUptime;
+        agentLabelTab.lastOutputReadAt = NSProcessInfo.processInfo.systemUptime;
         NSString *firstAgentLabel = [delegate.terminalView labelForTab:agentLabelTab active:YES];
         BOOL reportsRunning = [delegate.terminalView activityStateForTab:agentLabelTab] == MicaTabActivityStateRunning;
-        agentLabelTab.agentLastOutputAt = NSProcessInfo.processInfo.systemUptime - kAgentActivityQuietInterval - 1.0;
+        agentLabelTab.lastOutputReadAt = NSProcessInfo.processInfo.systemUptime - kAgentActivityQuietInterval - 1.0;
         BOOL quietAgentStopsAnimating = [delegate.terminalView activityStateForTab:agentLabelTab] == MicaTabActivityStateIdle;
-        agentLabelTab.agentLastOutputAt = NSProcessInfo.processInfo.systemUptime;
         agentLabelTab.agentActivity = @"Ready";
         BOOL readyAgentDoesNotAnimate = [delegate.terminalView activityStateForTab:agentLabelTab] == MicaTabActivityStateIdle;
         agentLabelTab.agentActivity = @"Needs approval";
@@ -927,20 +979,32 @@ static int MicaRunUISelfTest(void) {
         agentLabelTab.completedCommand = YES;
         BOOL reportsComplete = [delegate.terminalView activityStateForTab:agentLabelTab] == MicaTabActivityStateComplete;
         agentLabelTab.completedCommand = NO;
+        agentLabelTab.currentCommand = @"lazygit";
+        agentLabelTab.agentActivity = nil;
+        agentLabelTab.lastOutputReadAt = NSProcessInfo.processInfo.systemUptime;
+        BOOL lazygitOutputAnimates = [delegate.terminalView activityStateForTab:agentLabelTab] == MicaTabActivityStateRunning;
+        agentLabelTab.lastOutputReadAt = NSProcessInfo.processInfo.systemUptime - kAgentActivityQuietInterval - 1.0;
+        BOOL idleLazygitStopsAnimating = [delegate.terminalView activityStateForTab:agentLabelTab] == MicaTabActivityStateIdle;
+        agentLabelTab.agentActivity = @"Needs input";
+        BOOL lazygitInputDoesNotShowLoading = [delegate.terminalView activityStateForTab:agentLabelTab] == MicaTabActivityStateWaiting;
         agentLabelTab.currentCommand = @"codex";
         agentLabelTab.agentActivity = @"Working";
+        agentLabelTab.lastOutputReadAt = NSProcessInfo.processInfo.systemUptime;
         agentLabelTab.agentActivityDetail = @"Read src/mica_app.m";
         NSString *updatedAgentLabel = [delegate.terminalView labelForTab:agentLabelTab active:YES];
         BOOL configuredTabNameIsStable = [firstAgentLabel isEqualToString:@"Codex"] &&
             [updatedAgentLabel isEqualToString:firstAgentLabel] && reportsRunning && reportsWaiting &&
-            reportsNeedsAttention && reportsComplete && quietAgentStopsAnimating && readyAgentDoesNotAnimate;
+            reportsNeedsAttention && reportsComplete && quietAgentStopsAnimating && readyAgentDoesNotAnimate &&
+            lazygitOutputAnimates && idleLazygitStopsAnimating && lazygitInputDoesNotShowLoading;
         agentLabelTab.currentCommand = savedCommand;
         agentLabelTab.name = savedName;
         agentLabelTab.agentActivity = nil;
         agentLabelTab.agentActivityDetail = nil;
+        agentLabelTab.lastOutputReadAt = savedOutputReadAt;
         MicaUITestRecord(report, &allPassed, configuredTabNameIsStable,
-            [NSString stringWithFormat:@"tab label stays configured while its indicator distinguishes running, waiting and completion (%@ → %@)",
-                firstAgentLabel, updatedAgentLabel]);
+            [NSString stringWithFormat:@"Codex and lazygit animate only after recent output; idle and waiting states stay distinct (%@ → %@; git active=%d idle=%d input=%d)",
+                firstAgentLabel, updatedAgentLabel, lazygitOutputAnimates, idleLazygitStopsAnimating,
+                lazygitInputDoesNotShowLoading]);
         MicaUITestRecord(report, &allPassed, delegate.terminalView.terminalFont.pointSize >= 16,
                          @"default terminal font remains at least 16 points");
         MicaUITestRecord(report, &allPassed, kTabTitleFontSize <= 11.0 && kHeaderHeight == 28.0,
@@ -1568,35 +1632,37 @@ static int MicaRunUISelfTest(void) {
             delegate.voiceController = previewController;
             [delegate.terminalView setNeedsDisplay:YES];
             [delegate.terminalView displayIfNeeded];
-            NSRect voicePanel = [delegate.terminalView voiceOverlayRect];
-            NSRect voiceAction = [delegate.terminalView voiceOverlayActionRect];
+            NSRect voicePanel = [delegate.terminalView dictationStatusRect];
+            NSRect terminalArea = [delegate.terminalView terminalRect];
             MicaUITestRecord(report, &allPassed,
-                !NSIsEmptyRect(voicePanel) && voicePanel.size.height <= 100 &&
-                    NSMaxX(voicePanel) <= NSMaxX(delegate.terminalView.bounds) - 15 &&
-                    NSIsEmptyRect(voiceAction),
-                @"live dictation uses a compact upper-right overlay with no Stop or Done button");
-            NSMutableParagraphStyle *wrapStyle = [[NSMutableParagraphStyle alloc] init];
-            wrapStyle.lineBreakMode = NSLineBreakByWordWrapping;
-            NSAttributedString *wrapProbe = [[NSAttributedString alloc] initWithString:
-                @"Change the Codex tab widths so all tabs fit in the window and show complete activity"
-                attributes:@{ NSFontAttributeName: MicaTerminalFont(13), NSParagraphStyleAttributeName: wrapStyle }];
-            CGRect wrapBounds = [wrapProbe boundingRectWithSize:NSMakeSize(260, 100)
-                options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading];
-            MicaUITestRecord(report, &allPassed, wrapBounds.size.height >= 30,
-                [NSString stringWithFormat:@"live transcript text wraps to multiple readable lines (height=%.1f)", wrapBounds.size.height]);
+                !NSIsEmptyRect(voicePanel) && NSEqualRects(voicePanel,
+                    NSMakeRect(0, 0, delegate.terminalView.bounds.size.width, kStatusHeight)) &&
+                    !NSIntersectsRect(voicePanel, terminalArea),
+                @"live dictation uses the bottom status strip without covering terminal cells or cursor");
+            NSMutableParagraphStyle *tailStyle = [[NSMutableParagraphStyle alloc] init];
+            tailStyle.lineBreakMode = NSLineBreakByTruncatingHead;
+            NSDictionary *tailAttrs = @{ NSFontAttributeName: [NSFont systemFontOfSize:10.5],
+                NSParagraphStyleAttributeName: tailStyle };
+            NSString *longLiveTranscript = [@"recent words " stringByPaddingToLength:400
+                withString:@" current phrase" startingAtIndex:0];
+            [previewController setValue:longLiveTranscript forKey:@"transcript"];
+            NSRect transcriptRect = NSMakeRect(205, 0,
+                MAX(0, delegate.terminalView.bounds.size.width - 217), kStatusHeight);
+            MicaUITestRecord(report, &allPassed,
+                [previewController.transcript sizeWithAttributes:tailAttrs].width > transcriptRect.size.width &&
+                    transcriptRect.size.height == kStatusHeight,
+                @"a long live transcript stays on one status line and truncates from the start to keep recent words visible");
             [previewController setValue:@(MicaVoiceControllerStateFailed) forKey:@"state"];
             [previewController setValue:@"I didn’t catch any speech. Hold left Option and speak a little longer."
                                   forKey:@"statusText"];
             [delegate.terminalView setNeedsDisplay:YES];
             [delegate.terminalView displayIfNeeded];
-            NSRect voiceStatusText = NSMakeRect(NSMinX(voicePanel) + 14, NSMaxY(voicePanel) - 28,
-                                                voicePanel.size.width - 28, 17);
-            NSRect voiceDetailText = NSMakeRect(NSMinX(voicePanel) + 14, NSMinY(voicePanel) + 17,
-                                                voicePanel.size.width - 28, 46);
+            NSRect voiceStatusText = NSMakeRect(38, 0, 155, kStatusHeight);
+            NSRect voiceDetailText = NSMakeRect(205, 0, MAX(0, voicePanel.size.width - 217), kStatusHeight);
             MicaUITestRecord(report, &allPassed,
                 !NSIntersectsRect(voiceStatusText, voiceDetailText) &&
                     previewController.statusText.length > 0,
-                @"dictation failure shows a short heading and separate recovery detail without overlap");
+                @"dictation failure keeps its short heading and recovery detail in separate status-bar columns");
             NSBitmapImageRep *bitmap = [delegate.terminalView bitmapImageRepForCachingDisplayInRect:delegate.terminalView.bounds];
             if (bitmap) [delegate.terminalView cacheDisplayInRect:delegate.terminalView.bounds toBitmapImageRep:bitmap];
             BOOL bitmapReady = bitmap != nil;
@@ -1823,8 +1889,8 @@ static int MicaRunUISelfTest(void) {
             [projectBFirstTab[@"command"] isEqualToString:@"printf 'PROJECT-B-PREFILLED'"] &&
             [projectA[@"projectName"] isEqualToString:@"Project Alpha"] &&
             [projectB[@"projectName"] isEqualToString:@"Project Beta"] &&
-            [[projectATitle windowTitleForTab:projectATitleTab] isEqualToString:@"Project Alpha"] &&
-            [[projectBTitle windowTitleForTab:projectBTitleTab] isEqualToString:@"Project Beta"] &&
+            [[projectATitle windowTitleForTab:projectATitleTab] isEqualToString:@"Project Alpha — Claude Code 1"] &&
+            [[projectBTitle windowTitleForTab:projectBTitleTab] isEqualToString:@"Project Beta — Codex"] &&
             [projectA[@"activeIndex"] integerValue] == 0 &&
             [projectB[@"activeIndex"] integerValue] == 0 &&
             [projectA[@"activeIndex"] integerValue] == 0;

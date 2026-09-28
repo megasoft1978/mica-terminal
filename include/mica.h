@@ -19,6 +19,7 @@ typedef struct {
     VTermColor bg;
     VTermScreenCellAttrs attrs;
     char width;
+    uint32_t hyperlink_id;
 } MicaCell;
 
 typedef struct {
@@ -62,6 +63,7 @@ bool mica_session_fold_visible_rows(MicaSession *session, int start_row, int end
 bool mica_session_toggle_fold_at_view_row(MicaSession *session, int row);
 bool mica_session_fold_info_at_view_row(const MicaSession *session, int row, size_t *hidden_rows);
 bool mica_session_get_cell(const MicaSession *session, int row, int col, MicaCell *cell);
+const char *mica_session_hyperlink_uri(const MicaSession *session, uint32_t hyperlink_id);
 bool mica_session_is_running(const MicaSession *session);
 int mica_session_exit_status(const MicaSession *session);
 uint64_t mica_session_command_completion_count(const MicaSession *session);

@@ -528,6 +528,53 @@ color_checked:
     assert(!mica_session_take_dirty_rows(damage_session, NULL));
     mica_session_destroy(damage_session);
 
+    MicaSession *link_session = mica_session_create("/tmp",
+        "printf 'PLAIN '; printf '\\033]8;id=example;https://example.test/path\\033\\\\'; "
+        "printf 'CLICKABLE'; printf '\\033]8;;\\033\\\\'; printf ' UNLINKED\\n'; sleep 1",
+        8, 80);
+    assert(link_session != NULL);
+    for (int i = 0; i < 300 && !screen_contains(link_session, "CLICKABLE UNLINKED"); i++)
+        mica_session_poll(link_session, 10);
+    bool clickable_link_found = false;
+    bool plain_text_unlinked = true;
+    for (int row = 0; row < mica_session_rows(link_session); row++) {
+        for (int col = 0; col < mica_session_cols(link_session); col++) {
+            MicaCell cell;
+            if (!mica_session_get_cell(link_session, row, col, &cell)) continue;
+            if (cell.chars[0] == 'C' && cell.hyperlink_id) {
+                const char *uri = mica_session_hyperlink_uri(link_session, cell.hyperlink_id);
+                clickable_link_found = uri && strcmp(uri, "https://example.test/path") == 0;
+            }
+            if (cell.chars[0] == 'P' || cell.chars[0] == 'U')
+                if (cell.hyperlink_id) plain_text_unlinked = false;
+        }
+    }
+    assert(screen_contains(link_session, "CLICKABLE UNLINKED"));
+    assert(clickable_link_found && plain_text_unlinked);
+    mica_session_destroy(link_session);
+
+    MicaSession *scroll_link_session = mica_session_create("/tmp",
+        "printf '\\033]8;;https://example.test/scroll\\033\\\\SCROLLED-LINK\\033]8;;\\033\\\\\\n'; "
+        "i=1; while [ $i -le 12 ]; do printf 'AFTER-LINK-%02d\\n' $i; i=$((i+1)); done; sleep 1",
+        4, 80);
+    assert(scroll_link_session != NULL);
+    for (int i = 0; i < 300 && !screen_contains(scroll_link_session, "AFTER-LINK-12"); i++)
+        mica_session_poll(scroll_link_session, 10);
+    assert(screen_contains(scroll_link_session, "AFTER-LINK-12"));
+    assert(mica_session_history_lines(scroll_link_session) > 0);
+    mica_session_scroll(scroll_link_session, 100);
+    bool scrollback_link_preserved = false;
+    for (int row = 0; row < mica_session_rows(scroll_link_session); row++) {
+        for (int col = 0; col < mica_session_cols(scroll_link_session); col++) {
+            MicaCell cell;
+            if (!mica_session_get_cell(scroll_link_session, row, col, &cell) || cell.chars[0] != 'S') continue;
+            const char *uri = mica_session_hyperlink_uri(scroll_link_session, cell.hyperlink_id);
+            if (uri && strcmp(uri, "https://example.test/scroll") == 0) scrollback_link_preserved = true;
+        }
+    }
+    assert(scrollback_link_preserved);
+    mica_session_destroy(scroll_link_session);
+
     MicaSession *fold_session = mica_session_create("/tmp",
         "i=1; while [ \"$i\" -le 40 ]; do printf 'FOLD-LINE-%04d\\n' \"$i\"; i=$((i+1)); done; sleep 1",
         6, 80);

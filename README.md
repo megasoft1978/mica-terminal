@@ -29,6 +29,8 @@ The first dictation use downloads the local speech model (about 630 MB). Mica re
 - **See what agents are doing.** Agent tabs show activity and when they need input. Scrollback, text selection, and normal terminal input stay close at hand.
 - **Find the right project.** Project windows show a short project mark in the Dock and macOS app switcher icon; window titles keep the full project name.
 - **Speak a command.** Hold left Option, dictate, then review or edit the inserted text before pressing Return. Recognition runs locally after the initial model download.
+- **Keep dictation out of your way.** The live transcript and listening state appear in the bottom status strip, so they never cover terminal output or the cursor.
+- **Open terminal links.** Command-click OSC 8 `http` and `https` links. Ordinary clicks still go to terminal apps that capture the mouse.
 - **Keep a little focus.** A shared focus timer follows you across Mica windows and can notify you when a focus or break period ends.
 
 ## A few shortcuts
@@ -39,6 +41,7 @@ The first dictation use downloads the local speech model (about 630 MB). Mica re
 | New tab / close tab | `⌘T` / `⌘W` |
 | Choose a tab / browse scrollback | `⌘⇧P` / `⌘⇧S` |
 | Dictate | Hold left `⌥` |
+| Open a terminal web link | `⌘`-click an OSC 8 link |
 | Resize terminal text | `⌘+` / `⌘−` |
 
 Run `make new-instance` to create a project launcher. Use **Project → Settings…** to edit its name and tabs. A `.mica` layout can also define named tabs, folders, and optional commands.

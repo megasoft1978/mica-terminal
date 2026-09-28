@@ -25,6 +25,9 @@
 #define MICA_PENDING_INPUT_LIMIT (1024 * 1024)
 #define MICA_TITLE_MAX_BYTES 512
 #define MICA_FOLD_LIMIT 128
+#define MICA_HYPERLINK_MAX_URI_BYTES 2048
+#define MICA_HYPERLINK_MAX_TABLE_BYTES (512u * 1024u)
+#define MICA_HYPERLINK_MAX_COUNT 512
 
 static const uint32_t mica_ansi_palette[16] = {
     0x1e1e1e, 0xf48771, 0x90c978, 0xf5d67a,
@@ -86,9 +89,97 @@ struct MicaSession {
     int osc_fragment_command;
     bool osc_fragment_active;
     bool osc_fragment_overflow;
+    uint32_t *screen_link_ids;
+    uint32_t *history_link_ids;
+    size_t history_link_capacity;
+    char **hyperlink_uris;
+    size_t hyperlink_count;
+    size_t hyperlink_bytes;
+    uint32_t active_hyperlink_id;
+    bool hyperlink_tracking;
+    VTermRect pending_link_move;
+    bool pending_link_move_valid;
+    size_t pending_link_move_cells;
 };
 
 static MicaSessionCleanupLogger cleanup_logger;
+
+static bool ensure_screen_link_map(MicaSession *session) {
+    if (!session || session->rows <= 0 || session->cols <= 0) return false;
+    size_t cells = (size_t)session->rows * (size_t)session->cols;
+    if (session->screen_link_ids) return true;
+    session->screen_link_ids = calloc(cells, sizeof(*session->screen_link_ids));
+    return session->screen_link_ids != NULL;
+}
+
+static bool ensure_history_link_map(MicaSession *session) {
+    if (!session || session->history_capacity == 0 || session->history_cols == 0) return true;
+    if (session->history_link_ids && session->history_link_capacity == session->history_capacity) return true;
+    if (session->history_capacity > SIZE_MAX / session->history_cols / sizeof(uint32_t)) return false;
+    size_t count = session->history_capacity * session->history_cols;
+    uint32_t *grown = calloc(count, sizeof(*grown));
+    if (!grown) return false;
+    if (session->history_link_ids) {
+        size_t keep = session->history_count;
+        if (keep > session->history_link_capacity) keep = session->history_link_capacity;
+        size_t copy_cols = session->history_cols;
+        for (size_t row = 0; row < keep; row++) {
+            size_t old_slot = (session->history_start + row) % session->history_link_capacity;
+            memcpy(grown + row * session->history_cols,
+                session->history_link_ids + old_slot * session->history_cols,
+                copy_cols * sizeof(*grown));
+        }
+    }
+    free(session->history_link_ids);
+    session->history_link_ids = grown;
+    session->history_link_capacity = session->history_capacity;
+    return true;
+}
+
+static uint32_t intern_hyperlink(MicaSession *session, const char *uri, size_t length) {
+    if (!session || !uri || length == 0 || length > MICA_HYPERLINK_MAX_URI_BYTES ||
+        length > MICA_HYPERLINK_MAX_TABLE_BYTES - session->hyperlink_bytes ||
+        session->hyperlink_count >= MICA_HYPERLINK_MAX_COUNT) return 0;
+    for (size_t i = 0; i < length; i++) {
+        unsigned char byte = (unsigned char)uri[i];
+        if (byte < 0x20 || byte == 0x7f) return 0;
+    }
+    for (size_t i = 0; i < session->hyperlink_count; i++) {
+        if (strlen(session->hyperlink_uris[i]) == length &&
+            memcmp(session->hyperlink_uris[i], uri, length) == 0) return (uint32_t)i + 1;
+    }
+    char *copy = malloc(length + 1);
+    if (!copy) return 0;
+    memcpy(copy, uri, length);
+    copy[length] = '\0';
+    char **grown = realloc(session->hyperlink_uris,
+        (session->hyperlink_count + 1) * sizeof(*grown));
+    if (!grown) { free(copy); return 0; }
+    session->hyperlink_uris = grown;
+    session->hyperlink_uris[session->hyperlink_count++] = copy;
+    session->hyperlink_bytes += length;
+    return (uint32_t)session->hyperlink_count;
+}
+
+static int move_link_rect(VTermRect dest, VTermRect src, void *user) {
+    MicaSession *session = user;
+    if (!session || !session->screen_link_ids) return 1;
+    int height = dest.end_row - dest.start_row;
+    int width = dest.end_col - dest.start_col;
+    if (height <= 0 || width <= 0 || height != src.end_row - src.start_row ||
+        width != src.end_col - src.start_col) return 1;
+    int start = dest.start_row > src.start_row ? height - 1 : 0;
+    int end = dest.start_row > src.start_row ? -1 : height;
+    int step = dest.start_row > src.start_row ? -1 : 1;
+    for (int offset = start; offset != end; offset += step) {
+        uint32_t *to = session->screen_link_ids + (size_t)(dest.start_row + offset) * session->cols + dest.start_col;
+        uint32_t *from = session->screen_link_ids + (size_t)(src.start_row + offset) * session->cols + src.start_col;
+        memmove(to, from, (size_t)width * sizeof(*to));
+    }
+    session->pending_link_move = dest;
+    session->pending_link_move_valid = true;
+    return 1;
+}
 
 static double monotonic_milliseconds(void) {
     struct timespec now;
@@ -387,6 +478,24 @@ static void remove_prefill_startup_dir(char *directory) {
 static int damage_callback(VTermRect rect, void *user) {
     MicaSession *session = user;
     if (session) {
+        if (session->screen_link_ids) {
+            for (int row = rect.start_row; row < rect.end_row; row++) {
+                for (int col = rect.start_col; col < rect.end_col; col++) {
+                    if (row < 0 || row >= session->rows || col < 0 || col >= session->cols) continue;
+                    size_t index = (size_t)row * session->cols + (size_t)col;
+                    if (session->pending_link_move_valid &&
+                        vterm_rect_contains(session->pending_link_move, (VTermPos){row, col})) {
+                        if (session->pending_link_move_cells > 0 && --session->pending_link_move_cells == 0)
+                            session->pending_link_move_valid = false;
+                        continue;
+                    }
+                    VTermScreenCell cell;
+                    bool has_glyph = vterm_screen_get_cell(session->screen, (VTermPos){row, col}, &cell) &&
+                        cell.chars[0] != 0;
+                    session->screen_link_ids[index] = has_glyph ? session->active_hyperlink_id : 0;
+                }
+            }
+        }
         if (rect.start_row < rect.end_row) {
             if (!session->has_dirty_rows) {
                 session->dirty_rows.start_row = rect.start_row;
@@ -491,7 +600,39 @@ static int notification_osc(int command, VTermStringFragment fragment, void *use
     fragment.initial = true;
     fragment.final = true;
     session->osc_fragment_active = false;
-    if (overflow) return 1;
+    if (overflow) {
+        if (command == 8) {
+            vterm_screen_flush_damage(session->screen);
+            session->active_hyperlink_id = 0;
+        }
+        return 1;
+    }
+    if (command == 8) {
+        // Flush glyph damage while the previous OSC 8 target is still active.
+        // libvterm owns escape parsing; this callback only records its link state.
+        vterm_screen_flush_damage(session->screen);
+        const char *separator = memchr(fragment.str, ';', (size_t)fragment.len);
+        if (!separator || (size_t)(separator - fragment.str + 1) >= (size_t)fragment.len) {
+            session->active_hyperlink_id = 0;
+            return 1;
+        }
+        const char *uri = separator + 1;
+        size_t uri_length = (size_t)fragment.len - (size_t)(uri - fragment.str);
+        if (!uri_length) {
+            session->active_hyperlink_id = 0;
+            return 1;
+        }
+        session->hyperlink_tracking = true;
+        if (ensure_screen_link_map(session) && ensure_history_link_map(session)) {
+            // Row-merged damage can combine changed glyphs with unchanged link
+            // cells. Switch to exact damage once OSC 8 metadata is in use.
+            vterm_screen_set_damage_merge(session->screen, VTERM_DAMAGE_CELL);
+            session->active_hyperlink_id = intern_hyperlink(session, uri, uri_length);
+        } else {
+            session->active_hyperlink_id = 0;
+        }
+        return 1;
+    }
     static const char started_prefix[] = "mica;command-started;";
     static const char completion_prefix[] = "mica;command-finished;";
     if (session && command == 777 && fragment.final && fragment.str &&
@@ -792,6 +933,8 @@ static int history_push(int cols, const VTermScreenCell *cells, void *user) {
     if (session->history_cols == 0) session->history_cols = (size_t)session->cols;
     size_t limit = history_limit_lines((int)session->history_cols);
     if (session->history_count == session->history_capacity && session->history_capacity < limit) {
+        size_t old_history_start = session->history_start;
+        size_t old_history_capacity = session->history_capacity;
         size_t next_capacity = session->history_capacity ? session->history_capacity * 2 : MICA_HISTORY_INITIAL;
         if (next_capacity > limit) next_capacity = limit;
         VTermScreenCell *grown = allocate_history(next_capacity, (int)session->history_cols);
@@ -806,9 +949,32 @@ static int history_push(int cols, const VTermScreenCell *cells, void *user) {
             session->history = grown;
             session->history_capacity = next_capacity;
             session->history_start = 0;
+            if (session->history_link_ids) {
+                uint32_t *grown_links = calloc(next_capacity * session->history_cols, sizeof(*grown_links));
+                if (grown_links) {
+                    size_t keep = session->history_count;
+                    if (keep > session->history_link_capacity) keep = session->history_link_capacity;
+                    for (size_t i = 0; i < keep; i++) {
+                        size_t old_slot = (old_history_start + i) % session->history_link_capacity;
+                        memcpy(grown_links + i * session->history_cols,
+                            session->history_link_ids + old_slot * session->history_cols,
+                            session->history_cols * sizeof(*grown_links));
+                    }
+                }
+                free(session->history_link_ids);
+                session->history_link_ids = grown_links;
+                session->history_link_capacity = grown_links ? next_capacity : 0;
+            } else if (session->hyperlink_tracking && old_history_capacity == 0) {
+                session->history_link_capacity = 0;
+            }
         }
     }
     if (session->history_capacity == 0) return 1;
+    if (session->screen_link_ids && !ensure_history_link_map(session)) {
+        free(session->history_link_ids);
+        session->history_link_ids = NULL;
+        session->history_link_capacity = 0;
+    }
     size_t slot;
     if (session->history_count < session->history_capacity) {
         slot = (session->history_start + session->history_count) % session->history_capacity;
@@ -821,6 +987,10 @@ static int history_push(int cols, const VTermScreenCell *cells, void *user) {
     VTermScreenCell *destination = session->history + slot * session->history_cols;
     memset(destination, 0, session->history_cols * sizeof(*destination));
     memcpy(destination, cells, (size_t)session->cols * sizeof(*cells));
+    if (session->history_link_ids && session->screen_link_ids) {
+        memcpy(session->history_link_ids + slot * session->history_cols,
+            session->screen_link_ids, session->history_cols * sizeof(*session->history_link_ids));
+    }
     size_t new_display_count = display_history_count(session);
     if (new_display_count > old_display_count && session->view_offset > 0 &&
         session->view_offset < new_display_count)
@@ -849,17 +1019,23 @@ static int history_clear(void *user) {
     if (!session) return 1;
     free(session->history);
     session->history = NULL;
+    free(session->history_link_ids);
+    session->history_link_ids = NULL;
+    session->history_link_capacity = 0;
     session->history_capacity = 0;
     session->history_cols = 0;
     session->history_start = 0;
     session->history_count = 0;
     session->view_offset = 0;
+    if (session->screen_link_ids)
+        memset(session->screen_link_ids, 0, (size_t)session->rows * session->cols * sizeof(*session->screen_link_ids));
     clear_folds(session);
     return 1;
 }
 
 static const VTermScreenCallbacks screen_callbacks = {
     .damage = damage_callback,
+    .moverect = move_link_rect,
     .movecursor = cursor_callback,
     .settermprop = property_callback,
     .bell = bell_callback,
@@ -1106,6 +1282,10 @@ void mica_session_destroy(MicaSession *session) {
     free(terminal_processes);
     if (session->vt) vterm_free(session->vt);
     free(session->history);
+    free(session->screen_link_ids);
+    free(session->history_link_ids);
+    for (size_t i = 0; i < session->hyperlink_count; i++) free(session->hyperlink_uris[i]);
+    free(session->hyperlink_uris);
     clear_folds(session);
     clear_pending_input(session);
     free(session->command);
@@ -1253,6 +1433,14 @@ void mica_session_resize_pixels(MicaSession *session, int rows, int cols, int pi
         clear_folds(session);
         if (session->view_offset > session->history_count)
             session->view_offset = session->history_count;
+        // libvterm may reflow rows and history while resizing. Drop link marks
+        // rather than leave metadata attached to different visible text.
+        free(session->screen_link_ids);
+        session->screen_link_ids = NULL;
+        free(session->history_link_ids);
+        session->history_link_ids = NULL;
+        session->history_link_capacity = 0;
+        session->pending_link_move_valid = false;
     }
     if ((size_t)cols > session->history_cols) {
         size_t capacity = session->history_capacity;
@@ -1283,7 +1471,10 @@ void mica_session_resize_pixels(MicaSession *session, int rows, int cols, int pi
     session->cols = cols;
     session->pixel_width = pixel_width;
     session->pixel_height = pixel_height;
-    if (grid_changed) vterm_set_size(session->vt, rows, cols);
+    if (grid_changed) {
+        vterm_set_size(session->vt, rows, cols);
+        if (session->hyperlink_tracking) ensure_screen_link_map(session);
+    }
     struct winsize window_size = {
         .ws_row = (unsigned short)rows,
         .ws_col = (unsigned short)cols,
@@ -1453,5 +1644,22 @@ bool mica_session_get_cell(const MicaSession *session, int row, int col, MicaCel
     if (default_bg) cell->bg.type |= VTERM_COLOR_DEFAULT_BG;
     cell->attrs = source.attrs;
     cell->width = source.width;
+    cell->hyperlink_id = 0;
+    if (display_row < visible_history_count) {
+        if (session->history_link_ids && session->history_cols == (size_t)session->cols &&
+            session->history_link_capacity == session->history_capacity) {
+            size_t history_row = history_index_for_display_row(session, display_row, NULL);
+            size_t slot = (session->history_start + history_row) % session->history_link_capacity;
+            cell->hyperlink_id = session->history_link_ids[slot * session->history_cols + (size_t)col];
+        }
+    } else if (session->screen_link_ids) {
+        cell->hyperlink_id = session->screen_link_ids[(size_t)(display_row - visible_history_count) *
+            (size_t)session->cols + (size_t)col];
+    }
     return true;
+}
+
+const char *mica_session_hyperlink_uri(const MicaSession *session, uint32_t hyperlink_id) {
+    if (!session || hyperlink_id == 0 || hyperlink_id > session->hyperlink_count) return NULL;
+    return session->hyperlink_uris[hyperlink_id - 1];
 }
