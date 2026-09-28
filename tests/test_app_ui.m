@@ -1545,8 +1545,10 @@ static int MicaRunUISelfTest(void) {
             NSRect voicePanel = [delegate.terminalView voiceOverlayRect];
             NSRect voiceAction = [delegate.terminalView voiceOverlayActionRect];
             MicaUITestRecord(report, &allPassed,
-                !NSIsEmptyRect(voicePanel) && voicePanel.size.height >= 140 && NSIsEmptyRect(voiceAction),
-                @"live dictation overlay reserves wrapped transcript space and has no Stop or Done button");
+                !NSIsEmptyRect(voicePanel) && voicePanel.size.height <= 100 &&
+                    NSMaxX(voicePanel) <= NSMaxX(delegate.terminalView.bounds) - 15 &&
+                    NSIsEmptyRect(voiceAction),
+                @"live dictation uses a compact upper-right overlay with no Stop or Done button");
             NSMutableParagraphStyle *wrapStyle = [[NSMutableParagraphStyle alloc] init];
             wrapStyle.lineBreakMode = NSLineBreakByWordWrapping;
             NSAttributedString *wrapProbe = [[NSAttributedString alloc] initWithString:
@@ -1556,6 +1558,19 @@ static int MicaRunUISelfTest(void) {
                 options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading];
             MicaUITestRecord(report, &allPassed, wrapBounds.size.height >= 30,
                 [NSString stringWithFormat:@"live transcript text wraps to multiple readable lines (height=%.1f)", wrapBounds.size.height]);
+            [previewController setValue:@(MicaVoiceControllerStateFailed) forKey:@"state"];
+            [previewController setValue:@"I didn’t catch any speech. Hold left Option and speak a little longer."
+                                  forKey:@"statusText"];
+            [delegate.terminalView setNeedsDisplay:YES];
+            [delegate.terminalView displayIfNeeded];
+            NSRect voiceStatusText = NSMakeRect(NSMinX(voicePanel) + 14, NSMaxY(voicePanel) - 28,
+                                                voicePanel.size.width - 28, 17);
+            NSRect voiceDetailText = NSMakeRect(NSMinX(voicePanel) + 14, NSMinY(voicePanel) + 17,
+                                                voicePanel.size.width - 28, 46);
+            MicaUITestRecord(report, &allPassed,
+                !NSIntersectsRect(voiceStatusText, voiceDetailText) &&
+                    previewController.statusText.length > 0,
+                @"dictation failure shows a short heading and separate recovery detail without overlap");
             NSBitmapImageRep *bitmap = [delegate.terminalView bitmapImageRepForCachingDisplayInRect:delegate.terminalView.bounds];
             if (bitmap) [delegate.terminalView cacheDisplayInRect:delegate.terminalView.bounds toBitmapImageRep:bitmap];
             BOOL bitmapReady = bitmap != nil;

@@ -15,6 +15,7 @@
 
 static const CGFloat kHeaderHeight = 28.0;
 static const CGFloat kStatusHeight = 32.0;
+static NSTimeInterval gLastVoiceAnimationAt = 0;
 static const CGFloat kFontSizeDefault = 16.0;
 static const CGFloat kTabTitleFontSize = 10.5;
 static const CGFloat kTabMinimumWidth = 140.0;
@@ -693,9 +694,11 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 - (NSRect)voiceOverlayRect {
     if (!self.owner.voiceController || self.owner.voiceController.state == MicaVoiceControllerStateIdle)
         return NSZeroRect;
-    CGFloat width = MIN(680, MAX(0, [self terminalRect].size.width - 32));
-    if (width < 120) return NSZeroRect;
-    return NSMakeRect(16, kStatusHeight + 14, width, 146);
+    NSRect terminal = [self terminalRect];
+    CGFloat width = MIN(380, MAX(0, terminal.size.width - 32));
+    if (width < 180) return NSZeroRect;
+    CGFloat height = 94;
+    return NSMakeRect(NSMaxX(terminal) - width - 16, NSMaxY(terminal) - height - 12, width, height);
 }
 
 - (NSRect)voiceOverlayActionRect {
@@ -1244,7 +1247,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     MicaVoiceControllerState state = voice.state;
     NSColor *accent = state == MicaVoiceControllerStateFailed ? NSColor.systemRedColor : NSColor.controlAccentColor;
     NSBezierPath *panelPath = [NSBezierPath bezierPathWithRoundedRect:panel xRadius:12 yRadius:12];
-    [[NSColor colorWithRed:0.10 green:0.12 blue:0.15 alpha:0.96] setFill];
+    [[NSColor colorWithRed:0.10 green:0.12 blue:0.15 alpha:1.0] setFill];
     [panelPath fill];
     [accent setStroke];
     panelPath.lineWidth = 1.4;
@@ -1255,13 +1258,29 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         NSUInteger seconds = (NSUInteger)MAX(0, voice.elapsedSeconds);
         status = [NSString stringWithFormat:@"Listening · %02lu:%02lu",
                   (unsigned long)(seconds / 60), (unsigned long)(seconds % 60)];
+    } else if (state == MicaVoiceControllerStateFailed) {
+        status = @"Dictation needs attention";
     }
     NSDictionary *statusAttrs = @{
         NSFontAttributeName: [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold],
         NSForegroundColorAttributeName: NSColor.whiteColor
     };
-    [status drawWithRect:NSMakeRect(NSMinX(panel) + 14, NSMaxY(panel) - 28,
-                                    panel.size.width - 28, 17)
+    CGFloat statusX = NSMinX(panel) + 14;
+    if (state == MicaVoiceControllerStateListening && voice.transcript.length == 0) {
+        // A compact animated waveform makes the active microphone state visible
+        // before the recognizer has produced its first partial transcript.
+        CGFloat centerY = NSMaxY(panel) - 20;
+        for (NSInteger bar = 0; bar < 4; bar++) {
+            CGFloat phase = NSProcessInfo.processInfo.systemUptime * 5.0 + bar * 0.8;
+            CGFloat barHeight = 4 + (sin(phase) + 1.0) * 5.0;
+            NSRect wave = NSMakeRect(statusX + bar * 5, centerY - barHeight / 2.0, 2.5, barHeight);
+            [[NSColor.controlAccentColor colorWithAlphaComponent:0.95] setFill];
+            [[NSBezierPath bezierPathWithRoundedRect:wave xRadius:1.2 yRadius:1.2] fill];
+        }
+        statusX += 27;
+    }
+    [status drawWithRect:NSMakeRect(statusX, NSMaxY(panel) - 28,
+                                    NSMaxX(panel) - statusX - 14, 17)
                  options:NSStringDrawingTruncatesLastVisibleLine
               attributes:statusAttrs];
 
@@ -1271,8 +1290,8 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
             NSMakeRange(text.length - 220, 220)];
         text = [@"…" stringByAppendingString:[text substringFromIndex:tail.location]];
     }
-    NSRect transcriptRect = NSMakeRect(NSMinX(panel) + 14, NSMinY(panel) + 24,
-                                       panel.size.width - 28, 82);
+    NSRect transcriptRect = NSMakeRect(NSMinX(panel) + 14, NSMinY(panel) + 17,
+                                       panel.size.width - 28, 46);
     if (text.length == 0) {
         switch (state) {
             case MicaVoiceControllerStateListening:
@@ -1285,7 +1304,8 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
                 text = @"Finishing speech recognition…";
                 break;
             case MicaVoiceControllerStateFailed:
-                text = @"Dictation could not finish. Press Escape to dismiss and try again.";
+                text = voice.statusText.length ? voice.statusText :
+                    @"Dictation could not finish. Press Escape to dismiss and try again.";
                 break;
             default:
                 text = @"Preparing local speech recognition…";
@@ -1310,7 +1330,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     BOOL showsActivity = state == MicaVoiceControllerStatePreparing ||
         state == MicaVoiceControllerStateTranscribing;
     if (voice.hasProgress || showsActivity) {
-        NSRect track = NSMakeRect(NSMinX(panel) + 14, NSMinY(panel) + 10, panel.size.width - 28, 4);
+        NSRect track = NSMakeRect(NSMinX(panel) + 14, NSMinY(panel) + 10, panel.size.width - 28, 3);
         [[NSColor.whiteColor colorWithAlphaComponent:0.18] setFill];
         [[NSBezierPath bezierPathWithRoundedRect:track xRadius:2 yRadius:2] fill];
         NSRect fill = track;
@@ -2900,6 +2920,12 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     (void)timer;
     BOOL redraw = NO;
     NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
+    MicaVoiceController *voice = self.voiceController;
+    if (voice.state == MicaVoiceControllerStateListening && voice.transcript.length == 0 &&
+        now - gLastVoiceAnimationAt >= 0.10) {
+        gLastVoiceAnimationAt = now;
+        [self.terminalView setNeedsDisplayInRect:[self.terminalView voiceOverlayRect]];
+    }
     NSTimeInterval pollStartedAt = now;
     if (self.lastPollTimerTickAt > 0 && now - self.lastPollTimerTickAt >= 0.050 &&
         now - self.lastSlowPollLogAt >= 1.0) {
