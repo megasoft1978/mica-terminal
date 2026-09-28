@@ -20,7 +20,7 @@ This opens a shell in the current directory. To run a command immediately and re
 open build/Mica.app --args --cwd "$PWD" --command "git status"
 ```
 
-Use a project layout when you want commands ready at their prompts for review before you press Return.
+Use a project layout when you want commands ready at their prompts for review before you press Return. Each project window uses the project name as its title.
 
 ## Work across tabs
 
@@ -48,7 +48,7 @@ make new-instance
 
 The prompts ask for a name, project folder, and optional startup command. Mica creates a `.mica` project layout and a small Desktop launcher. The launcher starts a fresh instance of the shared `build/Mica.app`, so every new launch uses the binary produced by the latest `make app`; project launchers no longer contain their own Mica or voice-helper copies. An optional command is placed at the shell prompt; press Return when you are ready to run it. You can open several project launchers at once.
 
-Use **Project → Settings…** (⌘,) in a project window to change its name and edit startup tabs, working folders, and commands in a table. Those changes are saved to its `.mica` file and apply the next time that project launcher opens. The project name is stored in the layout, so it remains changed even if an older launcher passes its original name. The **Mica → New Instance** menu item opens another general Mica window; `make new-instance` creates a project layout and launcher.
+Use **Project → Settings…** (⌘,) in a project window to change its name and startup tabs, working folders, and commands. The status bar has a shared Focus timer control: click the timer to start or pause, click the reset arrow to reset, or right-click it for settings. The **Focus** menu provides the same controls. Focus defaults to 60 minutes and breaks to 15 minutes; choose **Focus → Timer Settings…** to change them. Mica shows the shared countdown in each window, sends macOS notifications at phase changes, and restores the timer after relaunch. Duration preferences and active timer state are stored under `~/Library/Application Support/Mica/Pomodoro/`. The project name is stored in the layout, so it remains changed even if an older launcher passes its original name. The **Mica → New Instance** menu item opens another general Mica window; `make new-instance` creates a project layout and launcher.
 
 You can also define tabs in a `.mica` layout file, with one tab per line and tab-separated fields for name, folder, and optional command:
 

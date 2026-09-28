@@ -431,6 +431,8 @@ static int MicaRunUISelfTest(void) {
                             (NSEventModifierFlagCommand | NSEventModifierFlagShift) &&
                          diagnosticLogsMenuItem.target == delegate &&
                          shortcutsMenuItem.target == delegate &&
+                         [[NSApp.mainMenu itemWithTitle:@"Focus"].submenu itemWithTitle:@"Start / Resume Focus Timer"].target == delegate &&
+                         [[NSApp.mainMenu itemWithTitle:@"Focus"].submenu itemWithTitle:@"Timer Settings…"].target == delegate &&
                          [shortcutsMenuItem.keyEquivalent isEqualToString:@"/"] &&
                          (shortcutsMenuItem.keyEquivalentModifierMask & NSEventModifierFlagCommand) != 0 &&
                          [quitMenuItem.keyEquivalent isEqualToString:@"q"] &&
@@ -923,7 +925,8 @@ static int MicaRunUISelfTest(void) {
         CGFloat tabBaseline = MicaCenteredTextBaseline(tabFont, kHeaderHeight);
         CGFloat footerBaseline = MicaCenteredTextBaseline(footerFont, kStatusHeight);
         MicaUITestRecord(report, &allPassed,
-            tabBaseline + tabFont.descender >= 0 && tabBaseline + tabFont.ascender <= kHeaderHeight &&
+            fabs((tabBaseline + (tabFont.ascender + tabFont.descender) / 2.0) - kHeaderHeight / 2.0) < 0.01 &&
+                fabs((footerBaseline + (footerFont.ascender + footerFont.descender) / 2.0) - kStatusHeight / 2.0) < 0.01 &&
                 footerBaseline + footerFont.descender >= 0 && footerBaseline + footerFont.ascender <= kStatusHeight,
             @"tab labels and footer text stay vertically centered at their separate row heights");
         NSDictionary *pathAttrs = @{ NSFontAttributeName: [NSFont systemFontOfSize:10.5] };
@@ -993,9 +996,12 @@ static int MicaRunUISelfTest(void) {
             fabs(firstTabRect.origin.x) < 0.01 &&
             fabs(NSMaxX(firstTabRect) - NSMinX(secondTabRect)) < 0.01 &&
             fabs(NSMaxX(secondTabRect) - NSMinX(thirdTabRect)) < 0.01 &&
-            fabs(NSMaxX(thirdTabRect) - delegate.terminalView.bounds.size.width) < 0.01;
+            fabs(NSMaxX(thirdTabRect) - delegate.terminalView.bounds.size.width) > 0.01 &&
+            fabs(firstTabRect.size.width - kTabMaximumWidth) < 0.01 &&
+            [delegate.terminalView tabIndexAtPoint:NSMakePoint(delegate.terminalView.bounds.size.width - 8,
+                NSMidY(firstTabRect))] == NSNotFound;
         MicaUITestRecord(report, &allPassed, equalTabWidths,
-                         @"tab hit areas split the complete window width into equal sections");
+                         @"tabs stop growing at the maximum width and unused header space is not clickable");
         NSPoint secondTabCenter = NSMakePoint(NSMidX(secondTabRect), NSMidY(secondTabRect));
         MicaUITestSendMouse(delegate, NSEventTypeLeftMouseDown, secondTabCenter, 0);
         MicaUITestSendMouse(delegate, NSEventTypeLeftMouseUp, secondTabCenter, 0);
@@ -1729,7 +1735,7 @@ static int MicaRunUISelfTest(void) {
         NSString *projectBLayout = [projectLayoutRoot stringByAppendingPathComponent:@"beta.mica"];
         NSString *commandLayout = [projectLayoutRoot stringByAppendingPathComponent:@"commands.mica"];
         NSString *layoutCommandScript = [projectLayoutRoot stringByAppendingPathComponent:@"r.sh"];
-        NSString *projectALayoutContents = @"# Mica layout v1\n# Mica project: Project Alpha\n"
+        NSString *projectALayoutContents = @"# Mica layout v1\n# Mica project: Project Alpha\n# Custom project metadata\n"
             "Claude Code 1\t/tmp\tprintf 'PROJECT-A-PREFILLED'\nShell\t/tmp\t\n";
         NSString *projectBLayoutContents = @"# Mica layout v1\n"
             "Codex\t/tmp\tprintf 'PROJECT-B-PREFILLED'\nShell\t/tmp\t\n";
@@ -1776,10 +1782,11 @@ static int MicaRunUISelfTest(void) {
             [projectBFirstTab[@"command"] isEqualToString:@"printf 'PROJECT-B-PREFILLED'"] &&
             [projectA[@"projectName"] isEqualToString:@"Project Alpha"] &&
             [projectB[@"projectName"] isEqualToString:@"Project Beta"] &&
-            [[projectATitle windowTitleForTab:projectATitleTab] isEqualToString:@"Mica — Project Alpha"] &&
-            [[projectBTitle windowTitleForTab:projectBTitleTab] isEqualToString:@"Mica — Project Beta"] &&
+            [[projectATitle windowTitleForTab:projectATitleTab] isEqualToString:@"Project Alpha"] &&
+            [[projectBTitle windowTitleForTab:projectBTitleTab] isEqualToString:@"Project Beta"] &&
             [projectA[@"activeIndex"] integerValue] == 0 &&
-            [projectB[@"activeIndex"] integerValue] == 0;
+            [projectB[@"activeIndex"] integerValue] == 0 &&
+            [projectA[@"activeIndex"] integerValue] == 0;
         MicaUITestRecord(report, &allPassed, projectAppsIndependent,
                          [NSString stringWithFormat:@"per-project layouts resolve separate named tabs, commands and window titles (A=%lu/%@ B=%lu/%@)%@",
                           (unsigned long)projectATabs.count, projectAFirstTab[@"name"],
@@ -1806,12 +1813,47 @@ static int MicaRunUISelfTest(void) {
             [savedSettings[@"projectName"] isEqualToString:@"Renamed Alpha"] &&
             [savedSettingTabs.firstObject[@"name"] isEqualToString:@"Claude"] &&
             [savedSettingTabs.firstObject[@"command"] isEqualToString:@"printf 'UPDATED-SETTINGS'"] &&
-            [settingsOwner.projectName isEqualToString:@"Renamed Alpha"];
+            [settingsOwner.projectName isEqualToString:@"Renamed Alpha"] &&
+            [[NSString stringWithContentsOfFile:projectALayout encoding:NSUTF8StringEncoding error:nil]
+                containsString:@"# Custom project metadata"];
         projectSettingsPersisted = projectSettingsPersisted && concurrentSettingsDetected;
         MicaUITestRecord(report, &allPassed, projectSettingsPersisted,
                          [NSString stringWithFormat:@"project settings persist edits and detect stale concurrent settings (%lu rows, conflict=%d)",
                           (unsigned long)savedSettingTabs.count, concurrentSettingsDetected]);
         [settingsOwner.window orderOut:nil];
+
+        char sharedTimerDirectory[] = "/tmp/mica-shared-timer-XXXXXX";
+        NSURL *sharedTimerURL = mkdtemp(sharedTimerDirectory)
+            ? [NSURL fileURLWithPath:[NSString stringWithUTF8String:sharedTimerDirectory] isDirectory:YES] : nil;
+        MicaAppDelegate *timerWindowA = [[MicaAppDelegate alloc] init];
+        MicaAppDelegate *timerWindowB = [[MicaAppDelegate alloc] init];
+        timerWindowA.pomodoroStorageDirectoryOverride = sharedTimerURL;
+        timerWindowB.pomodoroStorageDirectoryOverride = sharedTimerURL;
+        [timerWindowA configurePomodoro];
+        [timerWindowB configurePomodoro];
+        MicaUITestAttachWindow(timerWindowA);
+        BOOL timerDefaultsShared = sharedTimerURL && timerWindowA.focusDurationMinutes == 60 &&
+            timerWindowB.breakDurationMinutes == 15 &&
+            [timerWindowA savePomodoroDurationsFocusMinutes:50 breakMinutes:8];
+        [timerWindowB refreshPomodoroState];
+        NSRect timerControl = [timerWindowA.terminalView pomodoroControlRect];
+        MicaUITestSendMouse(timerWindowA, NSEventTypeLeftMouseDown,
+            NSMakePoint(NSMinX(timerControl) + 72, NSMidY(timerControl)), 0);
+        [timerWindowB refreshPomodoroState];
+        BOOL timerStartShared = timerDefaultsShared && timerControl.size.width >= 180 &&
+            timerWindowA.pomodoro.phase == MICA_POMODORO_FOCUS && timerWindowB.focusDurationMinutes == 50 &&
+            timerWindowB.breakDurationMinutes == 8 && timerWindowB.pomodoro.phase == MICA_POMODORO_FOCUS &&
+            timerWindowB.pomodoroCycleFocusMinutes == 50 && timerWindowB.pomodoro.deadline == timerWindowA.pomodoro.deadline;
+        [timerWindowB togglePomodoroPause:nil];
+        [timerWindowA refreshPomodoroState];
+        BOOL timerPauseShared = timerWindowA.pomodoro.phase == MICA_POMODORO_PAUSED_FOCUS;
+        [timerWindowA resetPomodoro:nil];
+        [timerWindowB refreshPomodoroState];
+        BOOL timerResetShared = timerWindowB.pomodoro.phase == MICA_POMODORO_IDLE;
+        MicaUITestRecord(report, &allPassed, timerDefaultsShared && timerStartShared && timerPauseShared && timerResetShared,
+            [NSString stringWithFormat:@"computer-wide timer settings and state synchronize across Mica windows (start=%d pause=%d reset=%d)",
+                timerStartShared, timerPauseShared, timerResetShared]);
+        if (sharedTimerURL) [NSFileManager.defaultManager removeItemAtURL:sharedTimerURL error:nil];
 
         MicaAppDelegate *layoutDelegate = [[MicaAppDelegate alloc] init];
         layoutDelegate.tabs = [NSMutableArray array];
