@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#f3f5f8" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0b0f14" media="(prefers-color-scheme: dark)">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; media-src 'self'; font-src 'self'; style-src 'sha256-izIsvC5nYJfDnF4oZNWVO/xz7pGBu4f/WL0qRPkN2iA='; script-src 'sha256-obQLhE2id96/7pWU+OVxA2Il4k1t4IAuXtnh2TzQdyE='; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; media-src 'self'; font-src 'self'; style-src 'sha256-gyq/8cHuGTa5yMM/ir3azWS3pb1vXvjOAP47JTqhID8='; script-src 'sha256-obQLhE2id96/7pWU+OVxA2Il4k1t4IAuXtnh2TzQdyE='; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
   <title>Mica — terminal, voice typing and focus timer in one light Mac app</title>
   <meta name="description" content="Mica puts a terminal, on-device voice typing and a focus timer in one native Mac app that idles around 55–60 MB, where a terminal plus a dictation app takes about 770 MB.">
@@ -46,7 +46,9 @@
     .skip { position: absolute; left: 16px; top: -60px; z-index: 20; padding: 10px 14px; background: var(--ink); color: var(--bg); border-radius: 8px; text-decoration: none; }
     .skip:focus { top: 12px; }
 
-    header { display: flex; align-items: center; justify-content: space-between; height: 72px; }
+    header { display: flex; align-items: center; justify-content: space-between; height: 72px; position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(12px); }
+    nav a.dl { background: var(--ink); color: var(--bg); padding: 8px 16px; border-radius: 999px; font-weight: 600; text-decoration: none; }
+    nav a.dl:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
     .brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; font: 700 19px var(--display); letter-spacing: -0.02em; }
     .brand img { width: 30px; height: 30px; border-radius: 8px; }
     nav { display: flex; align-items: center; gap: 26px; font-size: 15px; color: var(--muted); }
@@ -152,6 +154,16 @@
     .faq summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
     .faq details p { color: var(--muted); margin: 10px 0 0; max-width: 62ch; }
 .shot video { display: block; width: 100%; height: auto; }
+    #demo .shot { max-width: 940px; margin: 0 auto; }
+    .steps { margin: 16px 0 0; padding-left: 22px; color: var(--muted); max-width: 52ch; } .steps li { margin: 8px 0; } .steps b { color: var(--ink); }
+    .tablewrap { overflow-x: auto; margin-top: 28px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+    .compare table { border-collapse: collapse; width: 100%; min-width: 620px; font-size: 15px; }
+    .compare th, .compare td { padding: 12px 16px; text-align: left; border-bottom: 1px solid var(--line); }
+    .compare tbody tr:last-child th, .compare tbody tr:last-child td { border-bottom: 0; }
+    .compare thead th { font-weight: 600; color: var(--muted); font-size: 14px; }
+    .compare tbody th { font-weight: 500; color: var(--muted); }
+    .compare td.win { font-weight: 600; color: var(--ink); } .compare td.lose { color: var(--muted); font-style: italic; }
+    .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   </style>
 </head>
 <body>
@@ -162,8 +174,10 @@
       <nav aria-label="Main">
         <a class="hide-small" href="#memory">Memory</a>
         <a class="hide-small" href="#features">Features</a>
+        <a class="hide-small" href="#compare">Compare</a>
         <a class="hide-small" href="#install">Install</a>
         <a href="https://github.com/megasoft1978/mica-terminal">GitHub</a>
+        <a class="dl" href="https://github.com/megasoft1978/mica-terminal/releases/latest/download/Mica.dmg">Download</a>
       </nav>
     </header>
   </div>
@@ -194,7 +208,7 @@
     </div>
 
     <div class="wrap" id="demo">
-      <div class="shot"><video controls muted loop playsinline preload="none" poster="assets/mica-demo-poster.png" width="1280" height="814" aria-describedby="demo-caption"><source src="assets/mica-demo.mp4" type="video/mp4">Your browser cannot play this video. It shows a git log, passing tests and an agent working in Mica.</video></div>
+      <div class="shot"><video controls muted loop playsinline preload="metadata" poster="assets/mica-demo-poster.png" width="1280" height="814" aria-describedby="demo-caption"><source src="assets/mica-demo.mp4" type="video/mp4">Your browser cannot play this video. It shows a git log, passing tests and an agent working in Mica.</video></div>
       <p class="caption" id="demo-caption">A real recording of Mica in a sample project: typed commands, test output and an agent session, with the timer and live memory readout in the status bar.</p>
     </div>
 
@@ -213,11 +227,37 @@
       </section>
     </div>
 
+    <div class="wrap" id="compare">
+      <section class="compare">
+        <h2>Where it wins, and where it does not.</h2>
+        <div class="tablewrap">
+          <table>
+            <caption class="sr">Mica compared with iTerm2, Alacritty, kitty and Wispr Flow</caption>
+            <thead><tr><th scope="col"></th><th scope="col">Mica</th><th scope="col">iTerm2</th><th scope="col">Alacritty</th><th scope="col">kitty</th><th scope="col">Wispr Flow</th></tr></thead>
+            <tbody>
+              <tr><th scope="row">Idle memory, measured</th><td class="win">55–60 MB</td><td>126 MB</td><td>69 MB</td><td>80 MB</td><td>645 MB</td></tr>
+              <tr><th scope="row">Terminal</th><td class="win">Yes</td><td>Yes</td><td>Yes</td><td>Yes</td><td>No</td></tr>
+              <tr><th scope="row">Voice typing</th><td class="win">Yes, on your Mac</td><td>No</td><td>No</td><td>No</td><td>Yes</td></tr>
+              <tr><th scope="row">Focus timer</th><td class="win">Yes</td><td>No</td><td>No</td><td>No</td><td>No</td></tr>
+              <tr><th scope="row">Split panes</th><td class="lose">Not yet</td><td>Yes</td><td>No</td><td>Yes</td><td>n/a</td></tr>
+              <tr><th scope="row">Scripting and plugins</th><td class="lose">Layout files only</td><td>Yes</td><td>Config file</td><td>Yes</td><td>n/a</td></tr>
+              <tr><th scope="row">Open source</th><td class="win">MIT</td><td>GPL</td><td>Apache-2.0</td><td>GPL</td><td>No</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="memory-note">Memory figures are idle, one window, on the same Mac; <a href="https://github.com/megasoft1978/mica-terminal/blob/main/docs/MEMORY-BASELINE.md">method and caveats</a>. Feature rows are from each project’s own documentation as of September 2026. Mica is young: iTerm2 and kitty are more mature and more configurable.</p>
+      </section>
+    </div>
+
     <div class="wrap" id="install">
       <section class="install">
         <div>
           <h2>Download, drag, open.</h2>
-          <p>Open <b>Mica.dmg</b>, drag Mica to Applications and launch it. It is signed with a Developer ID and notarized by Apple, so it opens like any other Mac app.</p>
+          <ol class="steps">
+            <li>Download <b>Mica.dmg</b> (12 MB, Apple silicon, macOS 14 or later).</li>
+            <li>Drag Mica to Applications and open it. It is signed with a Developer ID and notarized by Apple, so it opens like any other Mac app.</li>
+            <li>Hold left <kbd>⌥</kbd> to dictate. The 630 MB speech model downloads in the background on first launch.</li>
+          </ol>
           <p>Prefer to build it yourself? You need the Xcode command line tools; the terminal library ships in the repository and the first build also fetches the speech package.</p>
         </div>
         <div class="code" role="group" aria-label="Build instructions"><button class="copy" type="button" data-copy="git clone https://github.com/megasoft1978/mica-terminal.git&#10;cd mica-terminal&#10;make app &amp;&amp; open build/Mica.app">Copy</button>git clone https://github.com/megasoft1978/mica-terminal.git

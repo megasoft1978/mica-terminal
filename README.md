@@ -100,6 +100,7 @@ The microphone starts recording the moment you hold <kbd>⌥</kbd>, so nothing y
 | Find, next, previous | <kbd>⌘F</kbd> · <kbd>⌘G</kbd> · <kbd>⇧⌘G</kbd> |
 | Text size, reset | <kbd>⌘+</kbd> <kbd>⌘−</kbd> · <kbd>⌘0</kbd> |
 | Light or dark theme | <kbd>⌥⌘L</kbd> |
+| Bring Mica forward from any app (opt in under Settings) | <kbd>⌃⌥Space</kbd> |
 | Clear scrollback | <kbd>⌘K</kbd> |
 | All shortcuts | <kbd>⌘/</kbd> |
 
