@@ -1278,6 +1278,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 }
 
 - (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
+    [self.owner wakePollTimer];
     NSPoint point = [self convertPoint:sender.draggingLocation fromView:nil];
     if (!NSPointInRect(point, [self terminalRect])) return NO;
     return [self insertFileURLs:[self fileURLsFromPasteboard:sender.draggingPasteboard]];
@@ -2003,7 +2004,8 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         _selectionPending = NO;
         return;
     }
-    if (!option && !control) {
+    // Option dead keys (Option+E on US layouts) produce no characters yet; let the input system compose them.
+    if ((!option && !control) || (option && !control && event.characters.length == 0)) {
         // Plain typing goes through the text input system so dead keys and IMEs compose.
         _imeTab = tab;
         [self interpretKeyEvents:@[event]];
@@ -2034,6 +2036,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 }
 
 - (void)scrollWheel:(NSEvent *)event {
+    [self.owner wakePollTimer];
     MicaTab *tab = self.owner.activeTab;
     if (!tab.session) return;
     // Notched mouse wheels report line deltas (about 1 per notch), trackpads report pixels.
@@ -2053,6 +2056,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 }
 
 - (void)mouseDown:(NSEvent *)event {
+    [self.owner wakePollTimer];
     if (_selecting) {
         [self clearSelection];
         [self setNeedsDisplay:YES];
@@ -2878,10 +2882,11 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     NSURL *voiceHelperURL = [NSBundle.mainBundle.bundleURL URLByAppendingPathComponent:@"Contents/Helpers/mica-voice"];
     self.voiceController = [[MicaVoiceController alloc] initWithHelperURL:voiceHelperURL];
     self.voiceController.delegate = self;
-    [self.window makeKeyAndOrderFront:nil];
     [self installMenus];
     self.uiMode = MicaUIModeNormal;
     [self loadLaunchConfiguration];
+    // Show the window only after the project name restored its saved frame, so it never jumps.
+    [self.window makeKeyAndOrderFront:nil];
     [self.window makeFirstResponder:self.terminalView];
     [self restartPollTimerWithInterval:0.015];
 }
