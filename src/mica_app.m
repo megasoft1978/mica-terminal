@@ -2216,8 +2216,22 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 - (void)findNext:(BOOL)backward {
     MicaSession *session = self.owner.activeTab.session;
     if (!session || !_findQuery.length) { NSBeep(); return; }
-    if (!mica_session_find(session, _findQuery.UTF8String, backward, &_findRow)) NSBeep();
     [self clearSelection];
+    if (!mica_session_find(session, _findQuery.UTF8String, backward, &_findRow)) NSBeep();
+    else {
+        // Highlight the matching line by selecting it (so it can also be copied).
+        long viewRow = _findRow - (long)mica_session_history_lines(session) + (long)mica_session_view_offset(session);
+        if (viewRow >= 0 && viewRow < _rows) {
+            NSRect rect = [self cellRectAtRow:viewRow col:0];
+            CGFloat midY = NSMidY(rect);
+            _selectionStart = NSMakePoint(0.5, midY);
+            _selectionEnd = NSMakePoint(_cols * _charWidth - 0.5, midY);
+            _selecting = YES;
+            _selectionPending = NO;
+            _selectionSession = session;
+            _selectionHistoryLines = mica_session_scrolled_lines(session);
+        }
+    }
     [self setNeedsDisplay:YES];
 }
 - (void)findNextMatch:(id)sender { (void)sender; [self findNext:NO]; }
