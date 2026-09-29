@@ -3073,6 +3073,7 @@ static NSDictionary *MicaScalarDictionary(id object) {
     AddMenuItem(appMenu, @"About Mica", @selector(orderFrontStandardAboutPanel:), @"", 0);
     AddMenuItem(appMenu, @"New Window", @selector(newInstance:), @"n",
                 NSEventModifierFlagCommand).target = self;
+    AddMenuItem(appMenu, @"New Project Launcher…", @selector(newProjectLauncher:), @"", 0).target = self;
     [appMenu addItem:NSMenuItem.separatorItem];
     // Standard macOS place for Settings (⌘,): project settings when this window has a layout, timer settings otherwise.
     AddMenuItem(appMenu, @"Settings…", @selector(openSettings:), @",", NSEventModifierFlagCommand).target = self;
@@ -3353,6 +3354,89 @@ static NSDictionary *MicaScalarDictionary(id object) {
 - (void)closeTab:(id)sender { (void)sender; [self closeActiveTab]; }
 - (void)nextTab:(id)sender { (void)sender; [self selectRelativeTab:1]; }
 - (void)previousTab:(id)sender { (void)sender; [self selectRelativeTab:-1]; }
+
+// Creates a Desktop project launcher by running the bundled installer script without prompts.
+- (void)newProjectLauncher:(id)sender {
+    (void)sender;
+    NSURL *bundle = NSBundle.mainBundle.bundleURL;
+    NSURL *script = [bundle URLByAppendingPathComponent:@"Contents/Resources/Scripts/install-desktop-apps.py"];
+    NSURL *iconTool = [bundle URLByAppendingPathComponent:@"Contents/Helpers/mica-project-icon"];
+    if (![NSFileManager.defaultManager fileExistsAtPath:script.path] || ![NSFileManager.defaultManager fileExistsAtPath:iconTool.path]) {
+        NSAlert *missing = [NSAlert new];
+        missing.messageText = @"Launcher tools are missing";
+        missing.informativeText = @"This copy of Mica doesn't include the launcher installer. Build it from source with make app, or run make new-instance.";
+        [missing runModal];
+        return;
+    }
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = @"New Project Launcher";
+    alert.informativeText = @"Creates a Mica app on your Desktop that opens this project in its own window.";
+    NSView *form = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 360, 92)];
+    NSString *(^label)(NSString *) = ^NSString *(NSString *text) { return text; };
+    (void)label;
+    NSArray<NSString *> *titles = @[@"Name", @"Folder", @"Startup command (optional)"];
+    NSMutableArray<NSTextField *> *fields = [NSMutableArray array];
+    for (NSUInteger i = 0; i < titles.count; i++) {
+        CGFloat y = 92 - 30 * (i + 1);
+        NSTextField *caption = [NSTextField labelWithString:titles[i]];
+        caption.frame = NSMakeRect(0, y + 4, 130, 18);
+        NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(134, y, 226, 24)];
+        [form addSubview:caption];
+        [form addSubview:field];
+        [fields addObject:field];
+    }
+    NSString *activeFolder = self.activeTab.cwd.length ? self.activeTab.cwd : NSHomeDirectory();
+    fields[0].stringValue = activeFolder.lastPathComponent ?: @"";
+    fields[1].stringValue = activeFolder;
+    alert.accessoryView = form;
+    [alert addButtonWithTitle:@"Create"];
+    [alert addButtonWithTitle:@"Cancel"];
+    alert.window.initialFirstResponder = fields[0];
+    if ([alert runModal] != NSAlertFirstButtonReturn) return;
+    NSString *name = [fields[0].stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSString *folder = [fields[1].stringValue stringByExpandingTildeInPath];
+    BOOL isDirectory = NO;
+    if (!name.length || ![NSFileManager.defaultManager fileExistsAtPath:folder isDirectory:&isDirectory] || !isDirectory) {
+        NSAlert *bad = [NSAlert new];
+        bad.messageText = @"Couldn't create the launcher";
+        bad.informativeText = name.length ? @"That folder doesn't exist." : @"Give the project a name.";
+        [bad runModal];
+        return;
+    }
+    NSTask *task = [NSTask new];
+    task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/python3"];
+    task.arguments = @[script.path, @"--new-instance", @"--name", name, @"--folder", folder,
+                       @"--command", fields[2].stringValue ?: @"", @"--base-app", bundle.path,
+                       @"--project-icon-tool", iconTool.path];
+    NSPipe *output = [NSPipe pipe];
+    task.standardOutput = output;
+    task.standardError = output;
+    __weak typeof(self) weakSelf = self;
+    task.terminationHandler = ^(NSTask *finished) {
+        NSData *data = [output.fileHandleForReading readDataToEndOfFile];
+        NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"";
+        dispatch_async(dispatch_get_main_queue(), ^{
+            MicaAppDelegate *strongSelf = weakSelf;
+            NSAlert *result = [NSAlert new];
+            if (finished.terminationStatus == 0) {
+                result.messageText = @"Launcher created";
+                result.informativeText = @"Look for it on your Desktop.";
+            } else {
+                result.messageText = @"Couldn't create the launcher";
+                result.informativeText = text.length ? text : @"The installer failed. Is Python 3 (Xcode Command Line Tools) installed?";
+            }
+            if (strongSelf.window) [result beginSheetModalForWindow:strongSelf.window completionHandler:nil];
+            else [result runModal];
+        });
+    };
+    NSError *error = nil;
+    if (![task launchAndReturnError:&error]) {
+        NSAlert *failed = [NSAlert new];
+        failed.messageText = @"Couldn't run the launcher installer";
+        failed.informativeText = error.localizedDescription ?: @"Python 3 is required.";
+        [failed runModal];
+    }
+}
 
 - (void)newInstance:(id)sender {
     (void)sender;

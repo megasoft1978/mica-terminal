@@ -12,6 +12,8 @@ VOICE_MODULE_CACHE := $(abspath $(BUILD)/swift-module-cache)
 VOICE_BINARY := $(BUILD)/mica-voice
 APP_VOICE_HELPER := $(APP)/Contents/Helpers/mica-voice
 APP_THIRD_PARTY_NOTICES := $(APP)/Contents/Resources/THIRD_PARTY_NOTICES.md
+APP_LAUNCHER_SCRIPT := $(APP)/Contents/Resources/Scripts/install-desktop-apps.py
+APP_ICON_TOOL := $(APP)/Contents/Helpers/mica-project-icon
 VOICE_SWIFT_SOURCES := $(shell find voice/Sources -type f -not -name '.*')
 VOICE_LICENSES := $(wildcard voice/ThirdPartyLicenses/*)
 VTERM_CFLAGS := $(shell $(PKG_CONFIG) --cflags vterm 2>/dev/null)
@@ -32,7 +34,7 @@ POMODORO := src/pomodoro.c
 
 all: app
 
-app: $(APP_BIN) $(APP_ICON) $(PROJECT_ICON_TOOL) $(VOICE_BINARY) $(APP_VOICE_HELPER) $(APP_THIRD_PARTY_NOTICES)
+app: $(APP_LAUNCHER_SCRIPT) $(APP_ICON_TOOL) $(APP_BIN) $(APP_ICON) $(PROJECT_ICON_TOOL) $(VOICE_BINARY) $(APP_VOICE_HELPER) $(APP_THIRD_PARTY_NOTICES)
 
 $(APP_BIN): Makefile $(VTERM_STATIC) src/mica_app.m src/mica_voice_controller.m src/mica_voice_controller.h src/mica_diagnostics.m src/mica_diagnostics.h $(CORE) $(POMODORO) include/mica.h include/mica_pomodoro.h Info.plist
 	@mkdir -p $(dir $@)
@@ -51,6 +53,15 @@ $(VOICE_BINARY): voice/Package.swift voice/Package.resolved $(VOICE_SWIFT_SOURCE
 		--scratch-path "$(VOICE_SCRATCH)" -c release --show-bin-path); \
 	cp "$$bin_dir/mica-voice" "$@"
 	@chmod 755 "$@"
+
+# Bundled so "New Project Launcher…" works from a downloaded app, not only from a source checkout.
+$(APP_LAUNCHER_SCRIPT): scripts/install-desktop-apps.py scripts/build-macos-icon.sh scripts/png-to-icns.py
+	@mkdir -p $(dir $@)
+	cp scripts/install-desktop-apps.py scripts/build-macos-icon.sh scripts/png-to-icns.py $(dir $@)
+
+$(APP_ICON_TOOL): $(PROJECT_ICON_TOOL)
+	@mkdir -p $(dir $@)
+	cp $(PROJECT_ICON_TOOL) $@
 
 $(APP_VOICE_HELPER): $(VOICE_BINARY) $(APP_BIN)
 	@mkdir -p $(dir $@)
@@ -128,6 +139,7 @@ SIGN_ID ?= -
 
 sign: app
 	codesign --force --options runtime --timestamp=none --entitlements Mica.entitlements --sign "$(SIGN_ID)" $(APP_VOICE_HELPER)
+	codesign --force --options runtime --timestamp=none --sign "$(SIGN_ID)" $(APP_ICON_TOOL)
 	codesign --force --options runtime --timestamp=none --entitlements Mica.entitlements --sign "$(SIGN_ID)" $(APP)
 	codesign --verify --deep --strict $(APP)
 
