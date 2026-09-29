@@ -643,6 +643,17 @@ color_checked:
     mica_session_destroy(resize_history_session);
     printf("scrollback allocation stays within %u bytes per session\n", MICA_HISTORY_LIMIT_BYTES);
 
+    // A forged command marker (no per-session secret) must not change tab state.
+    MicaSession *forge_session = mica_session_create("/tmp",
+        "printf '\\033]777;mica;command-started;forged\\033\\\\FORGE-DONE\\n'; sleep 1", 6, 80);
+    assert(forge_session != NULL);
+    for (int i = 0; i < 300 && !screen_contains(forge_session, "FORGE-DONE"); i++)
+        mica_session_poll(forge_session, 10);
+    assert(screen_contains(forge_session, "FORGE-DONE"));
+    assert(strcmp(mica_session_current_command(forge_session), "forged") != 0);
+    mica_session_destroy(forge_session);
+    printf("forged command markers are ignored\n");
+
     // A missing start folder falls back to the nearest existing parent, decided before fork.
     MicaSession *missing_folder_session = mica_session_create("/tmp/mica-no-such-folder-xyz/sub", "pwd; sleep 1", 6, 100);
     assert(missing_folder_session != NULL);

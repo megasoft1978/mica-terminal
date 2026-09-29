@@ -87,6 +87,7 @@ size_t clipboard_capacity;
 bool clipboard_overflow;
 bool clipboard_ready;
 bool sync_output;
+char mark_token[33];
 char sync_tail[8];
 size_t sync_tail_length;
 double sync_output_started;
@@ -432,13 +433,13 @@ static char *create_prefill_startup_dir(void) {
         "    mica_command=\"${mica_command%%[[:space:]]*}\"\n"
         "    [[ -n $mica_command ]] || return\n"
         "    MICA_COMMAND_ACTIVE=1\n"
-        "    printf '\\033]777;mica;command-started;%s\\033\\\\' \"$mica_command\"\n"
+        "    printf '\\033]777;mica;%s;command-started;%s\\033\\\\' \"$MICA_MARK_TOKEN\" \"$mica_command\"\n"
         "}\n"
         "function _mica_command_finished() {\n"
         "    local mica_status=$?\n"
         "    [[ $MICA_COMMAND_ACTIVE == 1 ]] || return\n"
         "    unset MICA_COMMAND_ACTIVE\n"
-        "    printf '\\033]777;mica;command-finished;%d\\033\\\\' $mica_status\n"
+        "    printf '\\033]777;mica;%s;command-finished;%d\\033\\\\' \"$MICA_MARK_TOKEN\" $mica_status\n"
         "}\n"
         "autoload -Uz add-zsh-hook\n"
         "add-zsh-hook preexec _mica_command_started\n"
@@ -652,12 +653,14 @@ static int notification_osc(int command, VTermStringFragment fragment, void *use
         }
         return 1;
     }
-    static const char started_prefix[] = "mica;command-started;";
-    static const char completion_prefix[] = "mica;command-finished;";
+    // Markers carry a per-session secret so output from cat, curl or a remote host cannot forge them.
+    char started_prefix[64], completion_prefix[64];
+    snprintf(started_prefix, sizeof(started_prefix), "mica;%s;command-started;", session ? session->mark_token : "");
+    snprintf(completion_prefix, sizeof(completion_prefix), "mica;%s;command-finished;", session ? session->mark_token : "");
     if (session && command == 777 && fragment.final && fragment.str &&
-        fragment.len > (int)(sizeof(started_prefix) - 1) &&
-        memcmp(fragment.str, started_prefix, sizeof(started_prefix) - 1) == 0) {
-        size_t start = sizeof(started_prefix) - 1;
+        fragment.len > (int)strlen(started_prefix) &&
+        memcmp(fragment.str, started_prefix, strlen(started_prefix)) == 0) {
+        size_t start = strlen(started_prefix);
         size_t length = (size_t)fragment.len - start;
         if (length > 80) length = 80;
         char safe_command[81];
@@ -680,11 +683,11 @@ static int notification_osc(int command, VTermStringFragment fragment, void *use
         return 1;
     }
     if (session && command == 777 && fragment.final && fragment.str &&
-        fragment.len > (int)(sizeof(completion_prefix) - 1) &&
-        memcmp(fragment.str, completion_prefix, sizeof(completion_prefix) - 1) == 0) {
+        fragment.len > (int)strlen(completion_prefix) &&
+        memcmp(fragment.str, completion_prefix, strlen(completion_prefix)) == 0) {
         int status = 0;
         bool valid = true;
-        for (int i = (int)(sizeof(completion_prefix) - 1); i < fragment.len; i++) {
+        for (int i = (int)strlen(completion_prefix); i < fragment.len; i++) {
             unsigned char byte = (unsigned char)fragment.str[i];
             if (byte < '0' || byte > '9' || status > 25 || (status == 25 && byte > '5')) {
                 valid = false;
@@ -1243,6 +1246,11 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
     session->rows = rows;
     session->cols = cols;
     session->running = true;
+    {
+        unsigned char random_bytes[16];
+        arc4random_buf(random_bytes, sizeof(random_bytes));
+        for (size_t i = 0; i < sizeof(random_bytes); i++) snprintf(session->mark_token + i * 2, 3, "%02x", random_bytes[i]);
+    }
     session->command = command ? strdup(command) : strdup("/bin/zsh -l -i");
     session->startup_dir = create_prefill_startup_dir();
     session->vt = vterm_new(rows, cols);
@@ -1272,7 +1280,7 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
     // GUI launchers can inherit NO_COLOR from an unrelated parent shell.
     // Mica advertises a color-capable xterm-256color terminal.
     EnvOverride overrides[] = {
-        { "LANG", locale_hint }, { "TERM", "xterm-256color" }, { "COLORTERM", "truecolor" },
+        { "LANG", locale_hint }, { "MICA_MARK_TOKEN", session->mark_token }, { "TERM", "xterm-256color" }, { "COLORTERM", "truecolor" },
         { "TERM_PROGRAM", "Mica" }, { "TERM_PROGRAM_VERSION", MICA_VERSION },
         { "TERM_PROGRAM_REVISION", MICA_REVISION }, { "CLICOLOR", "1" }, { "NO_COLOR", NULL },
         { "MICA_ORIGINAL_ZDOTDIR", use_wrapper ? original_zdotdir : NULL },
@@ -1328,11 +1336,11 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
         if (command) {
             if (skip_user_startup && !test_zle_probe) {
                 execl("/bin/zsh", "zsh", "-f", "-i", "-c",
-                      "mica_command=$1; mica_label=${mica_command#unset CLAUDECODE && }; mica_label=${mica_label##[[:space:]]#}; mica_label=${mica_label%%[[:space:]]*}; printf '\\033]777;mica;command-started;%s\\033\\\\' \"$mica_label\"; eval \"$mica_command\"; mica_status=$?; printf '\\n[command exited: %d]\\n' \"$mica_status\"; printf '\\033]777;mica;command-finished;%d\\033\\\\' \"$mica_status\"; exec /bin/zsh -f -i",
+                      "mica_command=$1; mica_label=${mica_command#unset CLAUDECODE && }; mica_label=${mica_label##[[:space:]]#}; mica_label=${mica_label%%[[:space:]]*}; printf '\\033]777;mica;%s;command-started;%s\\033\\\\' \"$MICA_MARK_TOKEN\" \"$mica_label\"; eval \"$mica_command\"; mica_status=$?; printf '\\n[command exited: %d]\\n' \"$mica_status\"; printf '\\033]777;mica;%s;command-finished;%d\\033\\\\' \"$MICA_MARK_TOKEN\" \"$mica_status\"; exec /bin/zsh -f -i",
                       "mica", command, (char *)NULL);
             } else {
                 execl("/bin/zsh", "zsh", "-l", "-i", "-c",
-                      "mica_command=$1; mica_label=${mica_command#unset CLAUDECODE && }; mica_label=${mica_label##[[:space:]]#}; mica_label=${mica_label%%[[:space:]]*}; printf '\\033]777;mica;command-started;%s\\033\\\\' \"$mica_label\"; eval \"$mica_command\"; mica_status=$?; printf '\\n[command exited: %d]\\n' \"$mica_status\"; printf '\\033]777;mica;command-finished;%d\\033\\\\' \"$mica_status\"; exec /bin/zsh -l -i",
+                      "mica_command=$1; mica_label=${mica_command#unset CLAUDECODE && }; mica_label=${mica_label##[[:space:]]#}; mica_label=${mica_label%%[[:space:]]*}; printf '\\033]777;mica;%s;command-started;%s\\033\\\\' \"$MICA_MARK_TOKEN\" \"$mica_label\"; eval \"$mica_command\"; mica_status=$?; printf '\\n[command exited: %d]\\n' \"$mica_status\"; printf '\\033]777;mica;%s;command-finished;%d\\033\\\\' \"$MICA_MARK_TOKEN\" \"$mica_status\"; exec /bin/zsh -l -i",
                       "mica", command, (char *)NULL);
             }
         } else {
