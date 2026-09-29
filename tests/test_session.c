@@ -643,6 +643,16 @@ color_checked:
     mica_session_destroy(resize_history_session);
     printf("scrollback allocation stays within %u bytes per session\n", MICA_HISTORY_LIMIT_BYTES);
 
+    // Synchronized output (mode 2026) is tracked so the app can hold redraws mid-frame.
+    MicaSession *sync_session = mica_session_create("/tmp",
+        "printf '\\033[?2026hFRAME-PART'; sleep 2", 6, 80);
+    assert(sync_session != NULL);
+    for (int i = 0; i < 300 && !screen_contains(sync_session, "FRAME-PART"); i++)
+        mica_session_poll(sync_session, 10);
+    assert(mica_session_sync_output_active(sync_session));
+    mica_session_destroy(sync_session);
+    printf("synchronized output frames are tracked\n");
+
     // OSC 52 writes surface as clipboard text; queries never answer.
     MicaSession *clip_session = mica_session_create("/tmp",
         "printf '\\033]52;c;aGVsbG8gbWljYQ==\\007CLIPDONE\\n'; sleep 1", 6, 80);

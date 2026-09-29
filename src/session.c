@@ -86,6 +86,8 @@ size_t clipboard_length;
 size_t clipboard_capacity;
 bool clipboard_overflow;
 bool clipboard_ready;
+bool sync_output;
+double sync_output_started;
 char selection_buffer[4096];
     char *title;
     char *startup_dir;
@@ -1132,6 +1134,24 @@ static int selection_set(VTermSelectionMask mask, VTermStringFragment frag, void
 static int selection_query(VTermSelectionMask mask, void *user) { (void)mask; (void)user; return 1; }
 static const VTermSelectionCallbacks selection_callbacks = { .set = selection_set, .query = selection_query };
 
+// DEC private mode 2026 (synchronized output): a TUI brackets a frame with
+// CSI ? 2026 h ... CSI ? 2026 l so the terminal can present it without tearing.
+static double monotonic_seconds(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (double)now.tv_sec + (double)now.tv_nsec / 1e9;
+}
+// libvterm consumes unknown DEC modes silently, so watch the raw byte stream for the toggles.
+static void scan_synchronized_output(MicaSession *session, const char *bytes, size_t length) {
+    static const char begin[] = "\x1b[?2026h", end[] = "\x1b[?2026l";
+    const size_t sequence_length = sizeof(begin) - 1;
+    for (size_t i = 0; i + sequence_length <= length; i++) {
+        if (bytes[i] != '\x1b') continue;
+        if (memcmp(bytes + i, begin, sequence_length) == 0) { session->sync_output = true; session->sync_output_started = monotonic_seconds(); }
+        else if (memcmp(bytes + i, end, sequence_length) == 0) { session->sync_output = false; session->revision++; }
+    }
+}
+
 static const VTermStateFallbacks screen_fallbacks = { .osc = notification_osc };
 
 extern char **environ;
@@ -1420,6 +1440,7 @@ int mica_session_poll(MicaSession *session, int timeout_ms) {
                 if (n > 0) {
                     struct timespec parse_started, parse_finished;
                     clock_gettime(CLOCK_MONOTONIC, &parse_started);
+                    scan_synchronized_output(session, buffer, (size_t)n);
                     vterm_input_write(session->vt, buffer, (size_t)n);
                     clock_gettime(CLOCK_MONOTONIC, &parse_finished);
                     double parse_ms = (parse_finished.tv_sec - parse_started.tv_sec) * 1000.0 +
@@ -1768,6 +1789,11 @@ bool mica_session_take_dirty_rows(MicaSession *session, MicaDirtyRows *rows) {
     session->has_dirty_rows = false;
     session->dirty_rows = (MicaDirtyRows){0};
     return true;
+}
+bool mica_session_sync_output_active(const MicaSession *session) {
+    // A stuck frame must never freeze the display: give up after a quarter second.
+    if (!session || !session->sync_output) return false;
+    return monotonic_seconds() - session->sync_output_started < 0.25;
 }
 char *mica_session_take_clipboard_write(MicaSession *session) {
     if (!session || !session->clipboard_ready || !session->clipboard_text) return NULL;

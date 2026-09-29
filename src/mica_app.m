@@ -3464,7 +3464,9 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
             tab.outputToDrawMaximumMilliseconds = 0;
         }
         MicaDirtyRows dirtyRows = {0};
-        BOOL hasDirtyRows = mica_session_take_dirty_rows(tab.session, &dirtyRows);
+        // Hold repaints while a program is mid-frame (mode 2026); the rows stay queued until it finishes.
+        BOOL hasDirtyRows = mica_session_sync_output_active(tab.session)
+            ? NO : mica_session_take_dirty_rows(tab.session, &dirtyRows);
         const char *rawTitle = mica_session_title(tab.session);
         NSString *terminalTitle = rawTitle[0]
             ? [[NSString alloc] initWithBytes:rawTitle length:strlen(rawTitle) encoding:NSUTF8StringEncoding]
