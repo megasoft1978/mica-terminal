@@ -486,7 +486,8 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @end
 
 static NSMenuItem *AddMenuItem(NSMenu *menu, NSString *title, SEL selector, NSString *key, NSEventModifierFlags modifiers) {
-    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title action:selector keyEquivalent:key ?: @""];
+    // Menu titles go through the localization table so translations can be dropped in as .lproj/Localizable.strings.
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(title, nil) action:selector keyEquivalent:key ?: @""];
     item.keyEquivalentModifierMask = modifiers;
     [menu addItem:item];
     return item;
