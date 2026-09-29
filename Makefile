@@ -156,7 +156,9 @@ new-instance: app
 	python3 scripts/install-desktop-apps.py --new-instance --base-app "$(APP)" --project-icon-tool "$(PROJECT_ICON_TOOL)"
 
 # SIGN_ID defaults to ad-hoc ("-"); pass a Developer ID identity for distribution.
-SIGN_ID ?= -
+# Default: the first Developer ID Application identity in the keychain (a stable signature keeps macOS folder and
+# microphone permissions between builds), otherwise ad-hoc.
+SIGN_ID ?= $(or $(shell security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -1),-)
 # Ad-hoc local builds need no timestamp; Developer ID signatures must carry Apple's secure timestamp to be notarized.
 SIGN_TIMESTAMP := $(if $(filter -,$(SIGN_ID)),=none,)
 
