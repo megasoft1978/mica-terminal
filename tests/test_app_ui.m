@@ -1683,6 +1683,17 @@ static int MicaRunUISelfTest(void) {
             MicaUITestRecord(report, &allPassed, bitmapReady && imageSaved,
                              [NSString stringWithFormat:@"offscreen AppKit render saved to %@", imagePath]);
 
+            NSString *lightPath = NSProcessInfo.processInfo.environment[@"MICA_UI_SMOKE_LIGHT_IMAGE"];
+            if (lightPath.length) {
+                // Optional: render the light theme too so it can be inspected by eye.
+                [delegate setLightTheme:YES];
+                NSBitmapImageRep *lightBitmap = [delegate.terminalView bitmapImageRepForCachingDisplayInRect:delegate.terminalView.bounds];
+                if (lightBitmap) [delegate.terminalView cacheDisplayInRect:delegate.terminalView.bounds toBitmapImageRep:lightBitmap];
+                NSData *lightPNG = lightBitmap ? [lightBitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] : nil;
+                [lightPNG writeToFile:lightPath atomically:YES];
+                [delegate setLightTheme:NO];
+            }
+
             if (bitmapReady) {
                 NSColor *reverseBackground = MicaUITestColor(0xd4d4d4, bitmap.colorSpace);
                 NSColor *blockBackground = MicaUITestColor(0x123456, bitmap.colorSpace);
