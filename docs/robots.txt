@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://megasoft1978.github.io/mica-terminal/sitemap.xml
