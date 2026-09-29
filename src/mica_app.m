@@ -3063,6 +3063,9 @@ static NSDictionary *MicaScalarDictionary(id object) {
     AddMenuItem(appMenu, @"New Window", @selector(newInstance:), @"n",
                 NSEventModifierFlagCommand).target = self;
     [appMenu addItem:NSMenuItem.separatorItem];
+    // Standard macOS place for Settings (⌘,): project settings when this window has a layout, timer settings otherwise.
+    AddMenuItem(appMenu, @"Settings…", @selector(openSettings:), @",", NSEventModifierFlagCommand).target = self;
+    [appMenu addItem:NSMenuItem.separatorItem];
     AddMenuItem(appMenu, @"Hide Mica", @selector(hide:), @"h", NSEventModifierFlagCommand);
     AddMenuItem(appMenu, @"Hide Others", @selector(hideOtherApplications:), @"h",
                 NSEventModifierFlagCommand | NSEventModifierFlagOption);
@@ -3082,7 +3085,7 @@ static NSDictionary *MicaScalarDictionary(id object) {
     [main addItem:focusRoot];
     NSMenuItem *projectRoot = [[NSMenuItem alloc] initWithTitle:@"Project" action:nil keyEquivalent:@""];
     NSMenu *projectMenu = [[NSMenu alloc] initWithTitle:@"Project"];
-    AddMenuItem(projectMenu, @"Settings…", @selector(openProjectSettings:), @",", NSEventModifierFlagCommand).target = self;
+    AddMenuItem(projectMenu, @"Project Settings…", @selector(openProjectSettings:), @"", 0).target = self;
     projectRoot.submenu = projectMenu;
     [main addItem:projectRoot];
     NSMenuItem *sessionsRoot = [[NSMenuItem alloc] initWithTitle:@"Session" action:nil keyEquivalent:@""];
@@ -3168,6 +3171,11 @@ static NSDictionary *MicaScalarDictionary(id object) {
     ] componentsJoinedByString:@"\n"];
     [alert addButtonWithTitle:@"Done"];
     [alert beginSheetModalForWindow:self.window completionHandler:nil];
+}
+
+- (void)openSettings:(id)sender {
+    if (self.projectLayoutPath.length) [self openProjectSettings:sender];
+    else [self openPomodoroSettings:sender];
 }
 
 - (void)openReleasesPage:(id)sender {
