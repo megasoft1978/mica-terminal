@@ -6,17 +6,17 @@
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#f3f5f8" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0b0f14" media="(prefers-color-scheme: dark)">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; font-src 'self'; style-src 'sha256-JTPFpgrJ49j1qE/LiOv28q4IHrgt6uSDAafKJLJwRao='; script-src 'sha256-obQLhE2id96/7pWU+OVxA2Il4k1t4IAuXtnh2TzQdyE='; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; font-src 'self'; style-src 'sha256-UuUyyFOQlgbo9Gy+Tm7Nemf6p8azFk4+gXv1ySSVJf0='; script-src 'sha256-obQLhE2id96/7pWU+OVxA2Il4k1t4IAuXtnh2TzQdyE='; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
-  <title>Mica — a native Mac terminal for your projects</title>
-  <meta name="description" content="Mica is a native macOS terminal that keeps each project's shells and coding agents together, and shows you when one needs you.">
+  <title>Mica — terminal, voice typing and focus timer in one light Mac app</title>
+  <meta name="description" content="Mica puts a terminal, on-device voice typing and a focus timer in one native Mac app that idles around 55–60 MB, where a terminal plus a dictation app takes about 770 MB.">
   <link rel="canonical" href="https://megasoft1978.github.io/mica-terminal/">
   <link rel="icon" type="image/png" sizes="64x64" href="icon-64.png">
   <link rel="apple-touch-icon" href="icon-180.png">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Mica">
-  <meta property="og:title" content="Mica — a native Mac terminal for your projects">
-  <meta property="og:description" content="Each project gets its own terminal window. Coding agents, shells and tools side by side, with local voice dictation and a focus timer.">
+  <meta property="og:title" content="Mica — terminal, voice typing and focus timer in one light Mac app">
+  <meta property="og:description" content="One native Mac app for your terminal, on-device dictation and a focus timer. About 55–60 MB idle. Every project gets its own window.">
   <meta property="og:url" content="https://megasoft1978.github.io/mica-terminal/">
   <meta property="og:image" content="https://megasoft1978.github.io/mica-terminal/assets/mica-dark.png">
   <meta name="twitter:card" content="summary_large_image">
@@ -82,6 +82,19 @@
 
     section { padding: 112px 0 0; }
     h2 { margin: 0; font: 700 clamp(30px, 4.4vw, 48px)/1.05 var(--display); letter-spacing: -0.035em; text-wrap: balance; }
+    .memory { padding-top: 112px; }
+    .memory-lede { max-width: 38em; color: var(--muted); margin: 16px 0 0; }
+    .bars { list-style: none; margin: 40px 0 0; padding: 0; display: grid; gap: 14px; }
+    .bars li { display: grid; grid-template-columns: minmax(150px, 220px) 1fr 84px; align-items: center; gap: 18px; }
+    .bars .name { font-weight: 600; } .bars small { display: block; color: var(--muted); font-weight: 400; font-size: 13px; }
+    .bars .track { height: 16px; border-radius: 8px; background: color-mix(in srgb, var(--line) 60%, transparent); overflow: hidden; }
+    .bars .bar { display: block; height: 100%; border-radius: 8px; background: var(--muted); opacity: .55; }
+    .bars .bar.mica { background: linear-gradient(90deg, var(--cyan), var(--violet)); opacity: 1; }
+    .bars .bar.mica { width: 9%; } .bars .bar.b69 { width: 10.7%; } .bars .bar.b80 { width: 12.4%; }
+    .bars .bar.b126 { width: 19.5%; } .bars .bar.b645 { width: 100%; }
+    .bars .value { text-align: right; font: 600 15px var(--mono); }
+    .memory-note { max-width: 46em; color: var(--muted); margin: 28px 0 0; font-size: 15px; }
+    .memory-note strong { color: var(--ink); }
     .install { display: grid; gap: 28px; grid-template-columns: 1fr 1.15fr; align-items: center; }
     .install p { color: var(--muted); max-width: 30em; margin: 16px 0 0; }
     .code { position: relative; border-radius: 14px; background: var(--code-bg); color: var(--code-ink); padding: 22px 24px; font: 14.5px/1.85 var(--mono); overflow-x: auto; white-space: pre; }
@@ -121,6 +134,9 @@
       .lights { display: none; }
       .themes button { min-height: 40px; }
     }
+    @media (max-width: 600px) {
+      .bars li { grid-template-columns: 1fr auto; row-gap: 6px; } .bars .track { grid-column: 1 / -1; grid-row: 2; }
+    }
     @media (max-width: 860px) {
       .install, .row, .row.flip { grid-template-columns: 1fr; gap: 28px; }
       .row.flip .shot { order: 0; }
@@ -136,6 +152,7 @@
     <header>
       <a class="brand" href="#top" aria-label="Mica home"><img src="icon-64.png" alt="" width="30" height="30"><span>Mica</span></a>
       <nav aria-label="Main">
+        <a class="hide-small" href="#memory">Memory</a>
         <a class="hide-small" href="#features">Features</a>
         <a class="hide-small" href="#install">Install</a>
         <a href="https://github.com/megasoft1978/mica-terminal">GitHub</a>
@@ -145,8 +162,8 @@
 
   <main id="main">
     <div id="top" class="wrap hero">
-      <h1>Every project gets its own terminal.</h1>
-      <p class="lede">Mica is a native Mac terminal that keeps a project’s shells and coding agents together, and shows you when one of them needs you.</p>
+      <h1>Three tools in one light Mac app.</h1>
+      <p class="lede">Mica is a terminal, on-device voice typing and a focus timer built into one native app that idles around 55–60 MB. Every project gets its own window, and coding agents run right inside it.</p>
       <div class="actions">
         <a class="button primary" href="#install">Build Mica</a>
         <a class="button secondary" href="https://github.com/megasoft1978/mica-terminal">View source on GitHub</a>
@@ -166,6 +183,21 @@
         <button type="button" id="theme-light" aria-pressed="false">Light</button>
       </div>
       <p class="caption">This is the real Mica view, rendered from a sample project. Switch themes any time with <kbd>⌥⌘L</kbd>.</p>
+    </div>
+
+    <div class="wrap" id="memory">
+      <section class="memory">
+        <h2>It weighs less than the tools it replaces.</h2>
+        <p class="memory-lede">Most people run a terminal, a voice-typing app and a timer separately, and the voice app is often a web browser in disguise. Mica builds all three into one native process, with no web view.</p>
+        <ul class="bars" aria-label="Idle memory use of each app, in megabytes">
+          <li><span class="name">Mica <small>terminal, voice typing, timer</small></span><span class="track"><i class="bar mica"></i></span><span class="value">55–60 MB</span></li>
+          <li><span class="name">Alacritty <small>terminal only</small></span><span class="track"><i class="bar b69"></i></span><span class="value">69 MB</span></li>
+          <li><span class="name">kitty <small>terminal only</small></span><span class="track"><i class="bar b80"></i></span><span class="value">80 MB</span></li>
+          <li><span class="name">iTerm2 <small>terminal only</small></span><span class="track"><i class="bar b126"></i></span><span class="value">126 MB</span></li>
+          <li><span class="name">Wispr Flow <small>voice typing only</small></span><span class="track"><i class="bar b645"></i></span><span class="value">645 MB</span></li>
+        </ul>
+        <p class="memory-note"><strong>iTerm2 plus Wispr Flow is about 770 MB</strong> before you add a timer. Measured idle with one window each, on the same Mac. Voice typing adds a 76 MB helper only while you speak, then it exits. Very large windows cost more in every app, and each project window is its own process; the <a href="https://github.com/megasoft1978/mica-terminal/blob/main/docs/MEMORY-BASELINE.md">measurements page</a> has the method and the cases where Mica does not win.</p>
+      </section>
     </div>
 
     <div class="wrap" id="install">
@@ -200,7 +232,7 @@ make app &amp;&amp; open build/Mica.app</div>
       <div class="row">
         <div>
           <h3>Speak, then read it back.</h3>
-          <p>Hold left <kbd>⌥</kbd>, say what you want to run, and release. Your words appear in the prompt for you to edit before you press Return. Recognition runs on your Mac; the first use downloads a 630 MB speech model.</p>
+          <p>Hold left <kbd>⌥</kbd>, say what you want to run, and release. Your words appear in the prompt for you to edit before you press Return. Recognition runs on your Mac with NVIDIA’s Parakeet model. The first use downloads 630 MB, and the recognizer only occupies memory while you are speaking.</p>
         </div>
         <div class="shot"><img src="assets/crop-hints-dark.png" width="1200" height="100" alt="Status bar shortcut hints: ⌘/ Shortcuts, ⌥ Dictate, ⌘1–8 Switch tab, ⌘T New tab, ⌘Q Quit." loading="lazy"></div>
       </div>
@@ -223,7 +255,7 @@ make app &amp;&amp; open build/Mica.app</div>
 
       <div class="facts">
         <div class="fact"><b>Native</b><span>AppKit and a C session core</span></div>
-        <div class="fact"><b>77 MB</b><span>with three idle tabs, <a href="https://github.com/megasoft1978/mica-terminal/blob/main/docs/MEMORY-BASELINE.md">measured</a></span></div>
+        <div class="fact"><b>55–60 MB</b><span>idle with three tabs, <a href="https://github.com/megasoft1978/mica-terminal/blob/main/docs/MEMORY-BASELINE.md">measured</a></span></div>
         <div class="fact"><b>macOS 14+</b><span>Built and tested on Apple silicon</span></div>
         <div class="fact"><b>MIT</b><span>Read it, build it, change it</span></div>
       </div>

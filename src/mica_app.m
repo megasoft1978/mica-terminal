@@ -55,7 +55,9 @@ static NSString *MicaProjectMark(NSString *name) {
 
 static NSImage *MicaProjectApplicationIcon(NSImage *baseIcon, NSString *projectName) {
     if (!baseIcon || !projectName.length) return baseIcon;
-    const CGFloat size = 512;
+    // 256 points is plenty for the Dock and saves several MB over a 512-point bitmap held for the app's lifetime.
+    const CGFloat size = 256;
+    const CGFloat k = size / 512.0;
     NSImage *icon = [[NSImage alloc] initWithSize:NSMakeSize(size, size)];
     [icon lockFocus];
     [baseIcon drawInRect:NSMakeRect(0, 0, size, size) fromRect:NSZeroRect
@@ -64,20 +66,20 @@ static NSImage *MicaProjectApplicationIcon(NSImage *baseIcon, NSString *projectN
     for (NSUInteger i = 0; i < projectName.length; i++) {
         hash = (hash ^ [projectName characterAtIndex:i]) * 16777619u;
     }
-    CGFloat diameter = 116;
-    NSRect badge = NSMakeRect(size - diameter - 12, size - diameter - 12, diameter, diameter);
+    CGFloat diameter = 116 * k;
+    NSRect badge = NSMakeRect(size - diameter - 12 * k, size - diameter - 12 * k, diameter, diameter);
     NSColor *accent = [NSColor colorWithHue:(CGFloat)(hash % 360u) / 360.0
         saturation:0.78 brightness:0.48 alpha:1];
     [[NSColor colorWithWhite:0.08 alpha:0.96] setFill];
-    [[NSBezierPath bezierPathWithOvalInRect:NSInsetRect(badge, -7, -7)] fill];
+    [[NSBezierPath bezierPathWithOvalInRect:NSInsetRect(badge, -7 * k, -7 * k)] fill];
     NSBezierPath *circle = [NSBezierPath bezierPathWithOvalInRect:badge];
-    circle.lineWidth = 5;
+    circle.lineWidth = 5 * k;
     [accent setFill];
     [NSColor.whiteColor setStroke];
     [circle fill];
     [circle stroke];
     NSString *mark = MicaProjectMark(projectName);
-    NSDictionary *attrs = @{NSFontAttributeName: [NSFont systemFontOfSize:mark.length > 1 ? 42 : 52
+    NSDictionary *attrs = @{NSFontAttributeName: [NSFont systemFontOfSize:(mark.length > 1 ? 42 : 52) * k
         weight:NSFontWeightHeavy], NSForegroundColorAttributeName: NSColor.whiteColor};
     NSSize text = [mark sizeWithAttributes:attrs];
     [mark drawAtPoint:NSMakePoint(NSMidX(badge) - text.width / 2,
@@ -347,8 +349,6 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @end
 
 @interface MicaTerminalView : NSView <NSTextInputClient>
-// When set, the header row is left unpainted so a vibrancy view behind it shows through.
-@property(nonatomic) BOOL translucentHeader;
 @property(nonatomic, weak) MicaAppDelegate *owner;
 @property(nonatomic, strong) NSFont *terminalFont;
 @property(nonatomic, strong) NSTimer *gridResizeTimer;
@@ -1786,9 +1786,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     [self updateTabToolTip];
     [self syncSelectionWithHistory];
     [MicaBackgroundColor() setFill];
-    NSRect paintable = self.bounds;
-    if (self.translucentHeader) paintable.size.height = MAX(0, paintable.size.height - kHeaderHeight);
-    NSRectFill(NSIntersectionRect(dirtyRect, paintable));
+    NSRectFill(NSIntersectionRect(dirtyRect, self.bounds));
     MicaTab *tab = self.owner.activeTab;
     if (!tab.session) {
         [self recordDrawDuration:NSProcessInfo.processInfo.systemUptime - drawStartedAt];
@@ -1797,10 +1795,8 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 
     NSRect header = NSMakeRect(0, NSMaxY(self.bounds) - kHeaderHeight, self.bounds.size.width, kHeaderHeight);
     if (NSIntersectsRect(dirtyRect, header)) {
-        if (!self.translucentHeader) {
-            [NSColor.controlBackgroundColor setFill];
-            NSRectFill(header);
-        }
+        [NSColor.controlBackgroundColor setFill];
+        NSRectFill(header);
         [NSColor.separatorColor setStroke];
         NSBezierPath *headerSeparator = [NSBezierPath bezierPath];
         [headerSeparator moveToPoint:NSMakePoint(0, NSMinY(header) + 0.5)];
@@ -3175,28 +3171,15 @@ static NSDictionary *MicaScalarDictionary(id object) {
     self.window.styleMask |= NSWindowStyleMaskFullSizeContentView;
     self.window.titlebarAppearsTransparent = YES;
     self.window.titleVisibility = NSWindowTitleHidden;
-    // A non-opaque window lets the header vibrancy blur what is behind it; the terminal area paints itself opaquely.
-    self.window.opaque = NO;
-    self.window.backgroundColor = NSColor.clearColor;
+    // Opaque on purpose: a translucent window or a vibrancy title bar costs about 8 MB of extra window memory.
+    self.window.backgroundColor = NSColor.windowBackgroundColor;
     self.window.minSize = NSMakeSize(600, 300);
     self.window.delegate = self;
     self.terminalView = [[MicaTerminalView alloc] initWithFrame:self.window.contentView.bounds];
     self.terminalView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     self.terminalView.owner = self;
     self.terminalView.terminalFont = MicaTerminalFont(kFontSizeDefault);
-    // The title-bar row is a vibrancy view behind the terminal view, which leaves that row unpainted.
-    NSView *container = [[NSView alloc] initWithFrame:self.window.contentView.bounds];
-    NSVisualEffectView *headerBackdrop = [[NSVisualEffectView alloc] initWithFrame:
-        NSMakeRect(0, NSMaxY(container.bounds) - kHeaderHeight, container.bounds.size.width, kHeaderHeight)];
-    headerBackdrop.material = NSVisualEffectMaterialHeaderView;
-    headerBackdrop.blendingMode = NSVisualEffectBlendingModeBehindWindow;
-    headerBackdrop.state = NSVisualEffectStateFollowsWindowActiveState;
-    headerBackdrop.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
-    self.terminalView.frame = container.bounds;
-    self.terminalView.translucentHeader = YES;
-    [container addSubview:headerBackdrop];
-    [container addSubview:self.terminalView];
-    [self.window setContentView:container];
+    [self.window setContentView:self.terminalView];
     NSURL *voiceHelperURL = [NSBundle.mainBundle.bundleURL URLByAppendingPathComponent:@"Contents/Helpers/mica-voice"];
     self.voiceController = [[MicaVoiceController alloc] initWithHelperURL:voiceHelperURL];
     self.voiceController.delegate = self;

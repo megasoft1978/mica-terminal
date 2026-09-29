@@ -12,6 +12,18 @@ Researched 2026-09-29 from the tools' own pages and reviews (sources at the end)
 | Conductor, Superset, Crystal/Nimbalyst, Claude Squad | Agent orchestrators | One git worktree per agent, diff review, merge and PR flow, many agents at once, sessions that survive closing the window |
 | tmux, Zellij | Multiplexers | Panes and layouts, detach and reattach sessions |
 
+## Memory (idle, one window, this Mac)
+
+| App | Covers | Footprint |
+| --- | --- | ---: |
+| Mica | terminal, dictation, focus timer | about 55–60 MB |
+| Alacritty | terminal | 69 MB |
+| kitty | terminal | 80 MB |
+| iTerm2 | terminal | 126 MB |
+| Wispr Flow | dictation | 645 MB |
+
+Method and caveats: [MEMORY-BASELINE.md](MEMORY-BASELINE.md). cmux, Warp, Ghostty, Zed and the Electron-based agent managers were not measured.
+
 ## Mica against that list
 
 | Capability | Status |

@@ -1,30 +1,48 @@
-# Memory measurements
+# Memory
 
-These samples describe Mica process memory on one macOS system. They are snapshots, not a controlled benchmark, and do not establish a memory reduction for a particular workflow.
+Mica exists to be one light app instead of several heavy ones: a terminal, on-device dictation and a focus timer in a single native process. This page has the measurements behind that claim, how to repeat them, and where Mica does not win.
 
-| Workload | Mica RSS | Apple physical footprint |
-| --- | ---: | ---: |
-| One idle shell tab | About 80 MiB | About 37 MiB |
-| Three idle shell tabs in one window | About 98 MiB | About 33 MiB |
+## Idle footprint, one window, same Mac
 
-The samples were taken on 2026-09-26. Test shells skipped user startup files with `MICA_TEST_NO_STARTUP=1`; a normal login shell can use more memory. The windows were not measured under identical conditions, so the footprint values should not be compared with each other as a performance result.
+Measured 2026-09-29 on an Apple silicon Mac (macOS 26.6). Each app was launched fresh with one window and default settings, left idle for ten seconds, then measured with `scripts/measure-footprint.sh`, which sums Apple's `phys_footprint` (the "Memory" column in Activity Monitor) over every process the app starts, including Electron and XPC helpers.
 
-Run `make memory` to sample Mica, Claude Code, and Codex processes. For a useful local comparison, record the same projects, tab count, window size, shell startup configuration, and running commands before and after a change. Process RSS sums may count shared pages more than once. Shell child processes are reported separately by the operating system.
+| App | What it covers | Footprint | Processes |
+| --- | --- | ---: | ---: |
+| **Mica** (3 tabs) | terminal, dictation, focus timer | **about 55–60 MB** | 1 |
+| Alacritty | terminal only | 69 MB | 1 |
+| kitty | terminal only | 80 MB | 2 |
+| iTerm2 | terminal only | 126 MB | 2 |
+| Wispr Flow | dictation only | 645 MB | 11 |
 
-Mica allocates scrollback as output moves off-screen and caps it at 2 MiB per terminal session. The number of retained lines depends on the terminal width.
+The stack this replaces on the same Mac: **iTerm2 + Wispr Flow ≈ 770 MB**, before any timer app. Mica covers all three jobs in less than a tenth of that.
 
-## Mica vs. Terminal.app + Zellij
+Dictation adds a helper process only while you are dictating (about 76 MB) and it exits afterwards, so the idle number above stays the number you live with.
 
-Zellij is a terminal multiplexer, not a terminal emulator: it needs a host terminal to display anything. The fair comparison is therefore Mica against a terminal app running Zellij.
+## What makes the difference
 
-Setup (2026-09-29, macOS 26.6, Apple Silicon, Zellij 0.43.1, one window, three empty tabs, idle, no startup files, shells excluded from both sides):
+- One process, no web view. Mica is AppKit and a C session core; there is no Chromium and no Node.
+- Scrollback is allocated when output scrolls off screen and capped at 2 MiB per tab.
+- The speech model is loaded only during dictation, and the recognizer runs in a short-lived helper.
+- The focus timer is a few hundred bytes of state shared between windows through one small file.
+- The Dock icon bitmap is 256 pt (it was 512 pt until this measurement showed it costing 6 MB), and the window is opaque (a translucent title bar cost about 8 MB, so it was removed).
 
-| Setup | RSS | Apple physical footprint |
-| --- | ---: | ---: |
-| Mica (3 tabs) | About 178 MiB | About 77 MiB |
-| Terminal.app + `zellij attach` (server + client, 3 tabs) | About 171 MiB | About 64 MiB |
-| Zellij server + client alone (no host terminal) | About 37 MiB | About 23 MiB |
+## Where Mica does not win yet
 
-In this single idle sample Mica used about as much memory as Terminal.app plus Zellij, and slightly more by physical footprint. Mica does not reduce memory compared with that combination; its advantage is one integrated app (tabs, agent status, dictation, timer) rather than lower memory. Results vary with the host terminal, window size, and workload, so treat this as a snapshot, not a benchmark.
+- **Window size dominates.** Every app pays roughly 2–3 times the window's pixel area, four bytes per pixel, for its drawing buffers. A maximized window on a 5160 × 2160 display costs about 120 MB in any terminal. Mica processes running maximized on that display measure 140–190 MB each.
+- **One process per project window.** A project launcher starts its own Mica process, so each extra window repeats the roughly 55 MB base that iTerm2 pays once. With several windows open, iTerm2 plus its windows can be smaller than several Mica processes. Sharing one process between project windows is the largest remaining memory saving.
+- **First dictation after an update.** Core ML rebuilds its compiled model cache once per app build; that step peaks near 600 MB for about half a minute. Mica now does it in the background shortly after launch instead of on the first key press.
+- **Terminal-only apps are close.** Alacritty and kitty are within 15–25 MB of Mica and do not include dictation or a timer.
 
-Note: the 2026-09-29 Mica figures above are higher than the 2026-09-26 samples for the same three-tab case. The cause was not investigated (different build and session state), so compare numbers only within one table. `make memory` counts the Mica app process only; the speech helper (`Contents/Helpers/mica-voice`) is not included and holds the recognition model while dictation is active.
+## Repeating the measurement
+
+```sh
+scripts/measure-footprint.sh "Mica.app/Contents/MacOS/Mica"
+scripts/measure-footprint.sh "iTerm.app/Contents"
+scripts/measure-footprint.sh "Wispr Flow"
+```
+
+Start each app fresh with a single window, wait ten seconds, then run the command. `make memory` prints a per-process RSS summary for Mica, Claude Code and Codex. Numbers vary with window size, shell startup files and macOS version; compare like with like.
+
+## Earlier comparison with Zellij
+
+On 2026-09-29, before the changes above, Terminal.app running Zellij (server plus client) measured about 64 MB against Mica's 77 MB for three idle tabs. Zellij is a multiplexer that needs a host terminal, so it is not a like-for-like replacement, and neither covers dictation or a timer. Mica has since dropped to about 55–60 MB.

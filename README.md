@@ -5,9 +5,9 @@
 <h1 align="center">Mica</h1>
 
 <p align="center">
-  <strong>Every project gets its own terminal.</strong><br>
-  A native Mac terminal that keeps a project’s shells and coding agents together,<br>
-  and shows you when one of them needs you.
+  <strong>Your terminal, voice typing and focus timer in one light Mac app.</strong><br>
+  Every project gets its own window, and the whole thing idles around 55–60 MB,<br>
+  where a terminal plus a dictation app on the same Mac takes about 770 MB.
 </p>
 
 <p align="center">
@@ -26,11 +26,25 @@
 
 <p align="center"><sub>The real Mica view, rendered from a sample project. macOS 14 or later.</sub></p>
 
+## Why it is light
+
+Most people run a terminal, a voice-typing app and a timer as separate programs, and the voice app alone is often a web browser in disguise. Mica builds them into one native process with no web view.
+
+| Idle, one window, same Mac | Covers | Memory |
+| --- | --- | ---: |
+| **Mica** | terminal, dictation, focus timer | **about 55–60 MB** |
+| Alacritty | terminal | 69 MB |
+| kitty | terminal | 80 MB |
+| iTerm2 | terminal | 126 MB |
+| Wispr Flow | dictation | 645 MB |
+
+iTerm2 plus Wispr Flow is about 770 MB before you add a timer. Dictation adds a 76 MB helper only while you talk, then exits. Method, caveats and the places Mica does not win (very large windows, one process per project window) are in [docs/MEMORY-BASELINE.md](docs/MEMORY-BASELINE.md).
+
 ## What you get
 
 - **A window per project.** Named tabs, folders and startup commands, reopened from a Desktop launcher. The Dock icon carries a short mark of the project name. The status bar shows the git branch, and **Session → New Worktree Tab…** gives an agent its own checkout.
 - **Agents stay ordinary programs.** Run Codex, Claude Code, `lazygit` or anything else in a normal `zsh` tab. Mica shows when one is working and when it is waiting for you.
-- **Dictation that stays on your Mac.** Hold left <kbd>⌥</kbd>, speak, edit the text, press Return. The first use downloads a 630 MB speech model; nothing is sent anywhere.
+- **Good dictation that stays on your Mac.** Hold left <kbd>⌥</kbd>, speak, edit the text, press Return. It uses NVIDIA’s Parakeet speech model through Core ML; the first use downloads 630 MB, and nothing is sent anywhere.
 - **A focus timer that follows you.** One timer shared by every Mica window, with a notification when a period ends.
 - **Still a real terminal.** Search scrollback, open links, drag tabs, choose a cursor and a light or dark theme. If a program over SSH asks to set your clipboard, Mica asks you first.
 
@@ -72,7 +86,7 @@ Edit a project’s tabs later with **Project → Project Settings…**. A `.mica
 
 ## Under the hood
 
-A C session core owns the shells and scrollback, a vendored, patched [libvterm](third_party/libvterm) parses escape sequences, and a thin AppKit layer draws everything. Three idle tabs use about 77 MB ([measurements](docs/MEMORY-BASELINE.md), [performance](docs/PERFORMANCE.md)); Mica is an integrated app, not a memory saver.
+A C session core owns the shells and scrollback, a vendored, patched [libvterm](third_party/libvterm) parses escape sequences, and a thin AppKit layer draws everything. Memory and speed notes: [measurements](docs/MEMORY-BASELINE.md), [performance](docs/PERFORMANCE.md).
 
 ```sh
 make test       # PTY, UI, launcher and fixture checks; never sends prompts to agent CLIs
