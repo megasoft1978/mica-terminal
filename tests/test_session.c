@@ -735,7 +735,8 @@ color_checked:
     assert(split_session != NULL);
     for (int i = 0; i < 300 && !screen_contains(split_session, "BEFORE"); i++)
         mica_session_poll(split_session, 10);
-    for (int i = 0; i < 80; i++) mica_session_poll(split_session, 10);
+    for (int i = 0; i < 300 && !mica_session_sync_output_active(split_session); i++)
+        mica_session_poll(split_session, 10);
     assert(mica_session_sync_output_active(split_session));
     assert(!screen_contains(split_session, "SPLIT-FRAME"));
     mica_session_destroy(split_session);
