@@ -597,6 +597,8 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     BOOL _selectionPending;
     NSPoint _selectionStart;
     NSPoint _selectionEnd;
+    size_t _selectionHistoryLines;
+    MicaSession *_selectionSession;
     CGFloat _charWidth;
     CGFloat _lineHeight;
     NSInteger _rows;
@@ -1550,6 +1552,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 - (void)drawRect:(NSRect)dirtyRect {
     NSTimeInterval drawStartedAt = NSProcessInfo.processInfo.systemUptime;
     [self updateTabToolTip];
+    [self syncSelectionWithHistory];
     [MicaBackgroundColor() setFill];
     NSRectFill(NSIntersectionRect(dirtyRect, self.bounds));
     MicaTab *tab = self.owner.activeTab;
@@ -2018,6 +2021,26 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     _selectionPending = YES;
     _selectionStart = point;
     _selectionEnd = point;
+    _selectionSession = self.owner.activeTab.session;
+    _selectionHistoryLines = _selectionSession ? mica_session_history_lines(_selectionSession) : 0;
+}
+
+// New output scrolls lines into history; move the selection up with its text.
+- (void)syncSelectionWithHistory {
+    if (!_selecting && !_selectionPending) return;
+    MicaSession *session = self.owner.activeTab.session;
+    if (!session || session != _selectionSession) { [self clearSelection]; return; }
+    size_t current = mica_session_history_lines(session);
+    if (current == _selectionHistoryLines) return;
+    if (mica_session_view_offset(session) == 0 && current > _selectionHistoryLines) {
+        CGFloat shift = (CGFloat)(current - _selectionHistoryLines) * _lineHeight;
+        _selectionStart.y += shift;
+        _selectionEnd.y += shift;
+        if (MAX(_selectionStart.y, _selectionEnd.y) > NSMaxY(self.bounds)) { [self clearSelection]; return; }
+    } else if (current < _selectionHistoryLines) {
+        [self clearSelection];
+    }
+    _selectionHistoryLines = current;
 }
 
 - (void)rightMouseDown:(NSEvent *)event {
@@ -2086,6 +2109,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 
 - (void)copySelection:(id)sender {
     (void)sender;
+    [self syncSelectionWithHistory];
     if (!_selecting || !self.owner.activeTab.session) return;
     NSPoint a = [self cellForPoint:_selectionStart], b = [self cellForPoint:_selectionEnd];
     NSInteger ar = (NSInteger)a.y, ac = (NSInteger)a.x, br = (NSInteger)b.y, bc = (NSInteger)b.x;
