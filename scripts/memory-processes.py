@@ -27,7 +27,7 @@ def parse_process_line(line: str) -> tuple[int, int, str] | None:
     if len(fields) != 3 or not fields[0].isdigit() or not fields[1].isdigit():
         return None
     # ps prints unquoted args, so an install path with spaces can't be split reliably.
-    if re.search(r"\.app/contents/macos/mica(\s|$)", fields[2].lower()):
+    if re.match(r"^[\"']?/[^\"']*?\.app/contents/macos/mica[\"']?(\s|$)", fields[2].lower()):
         return int(fields[0]), int(fields[1]), "Mica"
     try:
         argv = shlex.split(fields[2])
