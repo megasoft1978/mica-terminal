@@ -532,6 +532,55 @@ static int MicaRunUISelfTest(void) {
             @"Command-click ignores OSC 8 links with unsafe schemes");
         hyperlinkDelegate.tabs = [NSMutableArray array];
 
+        // Bare URLs broken by soft wrap open as one address; hard newlines and spaces still end them.
+        MicaAppDelegate *wrapDelegate = [[MicaAppDelegate alloc] init];
+        wrapDelegate.tabs = [NSMutableArray array];
+        wrapDelegate.activeIndex = 0;
+        wrapDelegate.uiMode = MicaUIModeNormal;
+        MicaUITestAttachWindow(wrapDelegate);
+        [wrapDelegate addTabWithName:@"Wrap" cwd:@"/tmp"
+            command:@"perl -e 'print \"WRAPSTART https://wrap.test/\" . (\"abcdefghij\" x 30) . \"/end\\n\"; "
+                    "print \"HARD https://hard.test/one\\ncontinued-text\\n\"; "
+                    "print \"PAIR https://a.test/1 https://b.test/2\\n\"'; sleep 2"
+            prefilled:NO];
+        MicaTab *wrapTab = wrapDelegate.activeTab;
+        NSInteger wrapRow = -1, wrapCol = -1;
+        for (int attempt = 0; attempt < 300 && wrapRow < 0; attempt++) {
+            mica_session_poll(wrapTab.session, 10);
+            MicaUITestFindText(wrapTab.session, @"WRAPSTART", &wrapRow, &wrapCol);
+        }
+        NSString *wrapExpected = [@"https://wrap.test/" stringByAppendingString:
+            [[@"" stringByPaddingToLength:300 withString:@"abcdefghij" startingAtIndex:0] stringByAppendingString:@"/end"]];
+        __block NSURL *wrapOpened = nil;
+        wrapDelegate.terminalView.testOpenURLHandler = ^(NSURL *url) { wrapOpened = url; };
+        void (^clickCell)(NSInteger, NSInteger) = ^(NSInteger row, NSInteger col) {
+            NSRect rect = [wrapDelegate.terminalView cellRectAtRow:row col:col];
+            NSPoint point = NSMakePoint(NSMidX(rect), NSMidY(rect));
+            wrapOpened = nil;
+            MicaUITestSendMouse(wrapDelegate, NSEventTypeLeftMouseDown, point, NSEventModifierFlagCommand);
+            MicaUITestSendMouse(wrapDelegate, NSEventTypeLeftMouseUp, point, NSEventModifierFlagCommand);
+        };
+        NSInteger wrapCols = mica_session_cols(wrapTab.session);
+        clickCell(wrapRow, wrapCol + 12);
+        BOOL wrappedFromFirstRow = [wrapOpened.absoluteString isEqualToString:wrapExpected];
+        clickCell(wrapRow + 1, 3);
+        BOOL wrappedFromSecondRow = [wrapOpened.absoluteString isEqualToString:wrapExpected];
+        NSInteger hardRow = -1, hardCol = -1, pairRow = -1, pairCol = -1;
+        for (int attempt = 0; attempt < 300 && (hardRow < 0 || pairRow < 0); attempt++) {
+            mica_session_poll(wrapTab.session, 10);
+            MicaUITestFindText(wrapTab.session, @"https://hard.test/one", &hardRow, &hardCol);
+            MicaUITestFindText(wrapTab.session, @"https://b.test/2", &pairRow, &pairCol);
+        }
+        clickCell(hardRow, hardCol + 5);
+        BOOL hardNewlineStops = [wrapOpened.absoluteString isEqualToString:@"https://hard.test/one"];
+        clickCell(pairRow, pairCol + 5);
+        BOOL adjacentSeparate = [wrapOpened.absoluteString isEqualToString:@"https://b.test/2"];
+        MicaUITestRecord(report, &allPassed, wrapRow >= 0 && wrapCols < 300 && wrappedFromFirstRow &&
+                         wrappedFromSecondRow && hardNewlineStops && adjacentSeparate,
+            [NSString stringWithFormat:@"Command-click joins a soft-wrapped URL from either row, stops at a hard newline and keeps adjacent URLs apart (cols=%ld first=%d second=%d hard=%d pair=%d)",
+                (long)wrapCols, wrappedFromFirstRow, wrappedFromSecondRow, hardNewlineStops, adjacentSeparate]);
+        wrapDelegate.tabs = [NSMutableArray array];
+
         MicaAppDelegate *voiceDelegate = [[MicaAppDelegate alloc] init];
         voiceDelegate.tabs = [NSMutableArray array];
         voiceDelegate.activeIndex = 0;
