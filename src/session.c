@@ -81,6 +81,12 @@ uint64_t scrolled_total;
     size_t pending_input_capacity;
     char *command;
     char *current_command;
+char *clipboard_text;
+size_t clipboard_length;
+size_t clipboard_capacity;
+bool clipboard_overflow;
+bool clipboard_ready;
+char selection_buffer[4096];
     char *title;
     char *startup_dir;
     char title_fragments[MICA_TITLE_MAX_BYTES + 1];
@@ -1096,6 +1102,36 @@ static bool change_to_requested_directory(const char *requested) {
     return false;
 }
 
+// OSC 52: programs (often over SSH or tmux) ask the terminal to set the clipboard.
+// Only writes are supported; read requests are ignored so nothing leaks out.
+#define MICA_CLIPBOARD_LIMIT (256u * 1024u)
+static int selection_set(VTermSelectionMask mask, VTermStringFragment frag, void *user) {
+    MicaSession *session = user;
+    (void)mask;
+    if (!session) return 1;
+    if (frag.initial) { session->clipboard_length = 0; session->clipboard_overflow = false; session->clipboard_ready = false; }
+    if (session->clipboard_overflow) return 1;
+    if (session->clipboard_length + frag.len > MICA_CLIPBOARD_LIMIT) { session->clipboard_overflow = true; return 1; }
+    if (session->clipboard_length + frag.len + 1 > session->clipboard_capacity) {
+        size_t capacity = session->clipboard_capacity ? session->clipboard_capacity * 2 : 4096;
+        while (capacity < session->clipboard_length + frag.len + 1) capacity *= 2;
+        char *grown = realloc(session->clipboard_text, capacity);
+        if (!grown) { session->clipboard_overflow = true; return 1; }
+        session->clipboard_text = grown;
+        session->clipboard_capacity = capacity;
+    }
+    if (frag.len) memcpy(session->clipboard_text + session->clipboard_length, frag.str, frag.len);
+    session->clipboard_length += frag.len;
+    if (frag.final) {
+        session->clipboard_text[session->clipboard_length] = '\0';
+        session->clipboard_ready = true;
+        session->revision++;
+    }
+    return 1;
+}
+static int selection_query(VTermSelectionMask mask, void *user) { (void)mask; (void)user; return 1; }
+static const VTermSelectionCallbacks selection_callbacks = { .set = selection_set, .query = selection_query };
+
 static const VTermStateFallbacks screen_fallbacks = { .osc = notification_osc };
 
 extern char **environ;
@@ -1157,6 +1193,8 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
 
     vterm_set_utf8(session->vt, 1);
     session->state = vterm_obtain_state(session->vt);
+    vterm_state_set_selection_callbacks(session->state, &selection_callbacks, session,
+                                        session->selection_buffer, sizeof(session->selection_buffer));
     session->screen = vterm_obtain_screen(session->vt);
     vterm_screen_set_callbacks(session->screen, &screen_callbacks, session);
     vterm_screen_set_unrecognised_fallbacks(session->screen, &screen_fallbacks, session);
@@ -1357,6 +1395,7 @@ void mica_session_destroy(MicaSession *session) {
     clear_folds(session);
     clear_pending_input(session);
     free(session->command);
+    free(session->clipboard_text);
     free(session->current_command);
     free(session->title);
     remove_prefill_startup_dir(session->startup_dir);
@@ -1729,6 +1768,11 @@ bool mica_session_take_dirty_rows(MicaSession *session, MicaDirtyRows *rows) {
     session->has_dirty_rows = false;
     session->dirty_rows = (MicaDirtyRows){0};
     return true;
+}
+char *mica_session_take_clipboard_write(MicaSession *session) {
+    if (!session || !session->clipboard_ready || !session->clipboard_text) return NULL;
+    session->clipboard_ready = false;
+    return strdup(session->clipboard_text);
 }
 uint64_t mica_session_scrolled_lines(const MicaSession *session) { return session ? session->scrolled_total : 0; }
 uint64_t mica_session_attention_count(const MicaSession *session) { return session ? session->attention_count : 0; }

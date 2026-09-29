@@ -643,6 +643,19 @@ color_checked:
     mica_session_destroy(resize_history_session);
     printf("scrollback allocation stays within %u bytes per session\n", MICA_HISTORY_LIMIT_BYTES);
 
+    // OSC 52 writes surface as clipboard text; queries never answer.
+    MicaSession *clip_session = mica_session_create("/tmp",
+        "printf '\\033]52;c;aGVsbG8gbWljYQ==\\007CLIPDONE\\n'; sleep 1", 6, 80);
+    assert(clip_session != NULL);
+    for (int i = 0; i < 300 && !screen_contains(clip_session, "CLIPDONE"); i++)
+        mica_session_poll(clip_session, 10);
+    char *clip_text = mica_session_take_clipboard_write(clip_session);
+    assert(clip_text != NULL && strcmp(clip_text, "hello mica") == 0);
+    free(clip_text);
+    assert(mica_session_take_clipboard_write(clip_session) == NULL);
+    mica_session_destroy(clip_session);
+    printf("OSC 52 clipboard writes are captured for the app to approve\n");
+
     // The shell environment is built before fork: NO_COLOR is removed, Mica's variables are set,
     // and a missing locale gets a UTF-8 fallback.
     char *saved_no_startup = copy_env("MICA_TEST_NO_STARTUP");

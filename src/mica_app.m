@@ -198,6 +198,8 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 @property(nonatomic, assign) MicaSession *session;
 @property(nonatomic, assign) uint64_t revision;
 @property(nonatomic, assign) uint64_t attentionCount;
+@property(nonatomic, assign) NSInteger clipboardDecision;  // 0 ask, 1 always allow, 2 deny
+@property(nonatomic, copy) NSString *pendingClipboardText;
 @property(nonatomic, assign) BOOL needsAttention;
 @property(nonatomic, assign) uint64_t commandCompletionCount;
 @property(nonatomic, assign) BOOL tracksCompletion;
@@ -414,6 +416,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, strong) MicaVoiceController *voiceController;
 @property(nonatomic, strong) MicaTab *voiceTargetTab;
 @property(nonatomic) NSInteger lastVoiceState;
+@property(nonatomic) BOOL clipboardPromptShowing;
 @property(nonatomic) NSUInteger idlePollTicks;
 @property(nonatomic) BOOL pollSawOutput;
 @property(nonatomic) BOOL pollIsSlow;
@@ -447,6 +450,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)updateWindowTitle;
 - (void)pollSessions:(NSTimer *)timer;
 - (void)wakePollTimer;
+- (void)handleClipboardWrite:(NSString *)text fromTab:(MicaTab *)tab;
 - (void)loadLaunchConfiguration;
 - (void)loadLaunchConfigurationFromArguments:(NSArray<NSString *> *)arguments bundleInfo:(NSDictionary *)bundleInfo;
 - (void)startPushToTalk;
@@ -3345,6 +3349,40 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     [self.terminalView setNeedsDisplay:YES];
 }
 
+// OSC 52: a program asked to set the clipboard. Ask once per tab; never read the clipboard back.
+- (void)handleClipboardWrite:(NSString *)text fromTab:(MicaTab *)tab {
+    if (!text.length || tab.clipboardDecision == 2) return;
+    if (tab.clipboardDecision == 1) {
+        [NSPasteboard.generalPasteboard clearContents];
+        [NSPasteboard.generalPasteboard setString:text forType:NSPasteboardTypeString];
+        return;
+    }
+    tab.pendingClipboardText = text;
+    if (self.clipboardPromptShowing || tab != self.activeTab) return;
+    self.clipboardPromptShowing = YES;
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = @"Allow this program to copy to your clipboard?";
+    alert.informativeText = [NSString stringWithFormat:@"“%@” asked to place %lu characters on the clipboard.",
+        tab.currentCommand.length ? tab.currentCommand : (tab.name ?: @"A terminal program"), (unsigned long)text.length];
+    [alert addButtonWithTitle:@"Copy Once"];
+    [alert addButtonWithTitle:@"Always Allow in This Tab"];
+    [alert addButtonWithTitle:@"Deny"];
+    __weak typeof(self) weakSelf = self;
+    [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+        MicaAppDelegate *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.clipboardPromptShowing = NO;
+        NSString *pending = tab.pendingClipboardText;
+        tab.pendingClipboardText = nil;
+        if (response == NSAlertThirdButtonReturn) { tab.clipboardDecision = 2; return; }
+        if (response == NSAlertSecondButtonReturn) tab.clipboardDecision = 1;
+        if (pending.length) {
+            [NSPasteboard.generalPasteboard clearContents];
+            [NSPasteboard.generalPasteboard setString:pending forType:NSPasteboardTypeString];
+        }
+    }];
+}
+
 - (void)restartPollTimerWithInterval:(NSTimeInterval)interval {
     [self.pollTimer invalidate];
     self.pollTimer = [NSTimer timerWithTimeInterval:interval target:self selector:@selector(pollSessions:) userInfo:nil repeats:YES];
@@ -3392,6 +3430,13 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
         BOOL receivedOutput = mica_session_take_output_metrics(tab.session, &outputMetrics);
         if (tab.outputMetricsStartedAt == 0) tab.outputMetricsStartedAt = now;
         tab.outputPollMilliseconds += (tabPollEndedAt - tabPollStartedAt) * 1000.0;
+        if (receivedOutput) {
+            char *clipboardText = mica_session_take_clipboard_write(tab.session);
+            if (clipboardText) {
+                [self handleClipboardWrite:[NSString stringWithUTF8String:clipboardText] fromTab:tab];
+                free(clipboardText);
+            }
+        }
         if (receivedOutput) {
             self.pollSawOutput = YES;
             tab.outputBytes += outputMetrics.bytes_read;

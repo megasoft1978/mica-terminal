@@ -36,6 +36,7 @@ The first dictation use downloads the local speech model (about 630 MB). Mica re
 - **Keep dictation out of your way.** The live transcript and listening state appear in the bottom status strip, so they never cover terminal output or the cursor.
 - **Open terminal links.** Command-click OSC 8 `http` and `https` links. Ordinary clicks still go to terminal apps that capture the mouse.
 - **Know what it costs.** Three idle tabs use about 77 MiB of physical footprint, roughly on par with Terminal.app running Zellij (about 64 MiB); Mica is an integrated app, not a memory saver. [Details](docs/MEMORY-BASELINE.md)
+- **Copy from remote sessions.** Programs over SSH or tmux can set your clipboard (OSC 52). Mica asks before the first copy in each tab and never lets a program read your clipboard.
 - **Keep a little focus.** A shared focus timer follows you across Mica windows and can notify you when a focus or break period ends.
 
 ## A few shortcuts
