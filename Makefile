@@ -45,7 +45,7 @@ $(VTERM_SAN_STATIC): $(VTERM_SAN_OBJS)
 CORE := src/session.c
 POMODORO := src/pomodoro.c
 
-.PHONY: all app sign dist notarize screenshots sanitize fuzz stress test test-voice validate preflight clean run memory desktop-apps install-desktop-apps new-instance
+.PHONY: all app sign dist notarize screenshots ui-audit sanitize fuzz stress test test-voice validate preflight clean run memory desktop-apps install-desktop-apps new-instance
 
 all: app
 
@@ -212,6 +212,15 @@ $(BUILD)/render-marketing: $(VTERM_STATIC) tools/render_marketing.m src/mica_app
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(OBJC_WARNINGS) -fobjc-arc $(CPPFLAGS) \
 		-framework Cocoa -framework AVFoundation -framework UserNotifications $(CORE) $(POMODORO) src/mica_diagnostics.m src/mica_voice_controller.m tools/render_marketing.m $(VTERM_STATIC) -o $@
+
+$(BUILD)/render-ui-audit: $(VTERM_STATIC) tools/render_ui_audit.m src/mica_app.m src/mica_voice_controller.m src/mica_diagnostics.m $(CORE) $(POMODORO) include/mica.h
+	@mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(OBJC_WARNINGS) -fobjc-arc $(CPPFLAGS) \
+		-framework Cocoa -framework AVFoundation -framework UserNotifications $(CORE) $(POMODORO) src/mica_diagnostics.m src/mica_voice_controller.m tools/render_ui_audit.m $(VTERM_STATIC) -o $@
+
+# Renders every surface (states, themes, narrow and crowded windows, settings) into build/ui-audit/ for review.
+ui-audit: $(BUILD)/render-ui-audit
+	$(BUILD)/render-ui-audit $(BUILD)/ui-audit
 
 screenshots: $(BUILD)/render-marketing
 	$(BUILD)/render-marketing docs/assets

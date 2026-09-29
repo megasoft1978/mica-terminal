@@ -1969,10 +1969,10 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
             CGFloat badgeWidth = [self projectBadgeWidth];
             NSRect badge = NSMakeRect(self.bounds.size.width - badgeWidth,
                 NSMinY(header), badgeWidth, header.size.height);
-            NSBezierPath *divider = [NSBezierPath bezierPath];
-            [divider moveToPoint:NSMakePoint(NSMinX(badge) + 0.5, NSMinY(header) + 6)];
-            [divider lineToPoint:NSMakePoint(NSMinX(badge) + 0.5, NSMaxY(header) - 6)];
-            [divider stroke];
+            NSRect capsule = NSInsetRect(badge, 4, 5);
+            [[NSColor.secondaryLabelColor colorWithAlphaComponent:0.16] setFill];
+            [[NSBezierPath bezierPathWithRoundedRect:capsule
+                xRadius:capsule.size.height / 2 yRadius:capsule.size.height / 2] fill];
             NSMutableParagraphStyle *projectStyle = [NSMutableParagraphStyle new];
             projectStyle.lineBreakMode = NSLineBreakByTruncatingTail;
             NSDictionary *projectAttrs = @{
@@ -1980,10 +1980,10 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
                 NSForegroundColorAttributeName: NSColor.secondaryLabelColor,
                 NSParagraphStyleAttributeName: projectStyle
             };
-            NSRect projectText = NSInsetRect(badge, 10, 2);
+            NSRect projectText = NSInsetRect(capsule, 10, 0);
             NSString *projectTitle = MicaTruncatedText(self.owner.projectName,
                 projectText.size.width, projectAttrs);
-            MicaDrawCenteredLine(projectTitle, projectText, projectAttrs, NSTextAlignmentLeft);
+            MicaDrawCenteredLine(projectTitle, projectText, projectAttrs, NSTextAlignmentCenter);
         }
     }
     for (NSInteger row = 0; row < _rows; row++) {
