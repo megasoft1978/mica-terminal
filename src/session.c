@@ -17,6 +17,7 @@
 #include <time.h>
 #include <termios.h>
 #include <unistd.h>
+#define MICA_FIND_ROW_BYTES 1024
 #include <util.h>
 
 #define MICA_HISTORY_INITIAL 32
@@ -1567,6 +1568,60 @@ void mica_session_scroll(MicaSession *session, int lines) {
         size_t n = (size_t)(-(int64_t)lines);
         session->view_offset = n > session->view_offset ? 0 : session->view_offset - n;
     }
+}
+
+// Lower-cased UTF-8 text of one absolute row (0 = oldest history line, history_count = first screen row).
+static size_t find_row_text(const MicaSession *session, size_t row, char *out, size_t capacity) {
+    size_t length = 0;
+    for (int col = 0; col < session->cols; col++) {
+        VTermScreenCell cell;
+        if (row < session->history_count) {
+            if (session->history_cols == 0 || (size_t)col >= session->history_cols) break;
+            size_t slot = (session->history_start + row) % session->history_capacity;
+            cell = session->history[slot * session->history_cols + (size_t)col];
+        } else {
+            vterm_screen_get_cell(session->screen, (VTermPos){ (int)(row - session->history_count), col }, &cell);
+        }
+        uint32_t ch = cell.chars[0];
+        if (cell.width == 0 && ch == 0) continue;
+        if (ch == 0) ch = ' ';
+        if (ch < 0x80) { if (length + 1 >= capacity) break; out[length++] = (char)((ch >= 'A' && ch <= 'Z') ? ch + 32 : ch); }
+        else if (ch < 0x800) { if (length + 2 >= capacity) break; out[length++] = (char)(0xC0 | (ch >> 6)); out[length++] = (char)(0x80 | (ch & 0x3F)); }
+        else if (ch < 0x10000) { if (length + 3 >= capacity) break; out[length++] = (char)(0xE0 | (ch >> 12)); out[length++] = (char)(0x80 | ((ch >> 6) & 0x3F)); out[length++] = (char)(0x80 | (ch & 0x3F)); }
+        else { if (length + 4 >= capacity) break; out[length++] = (char)(0xF0 | (ch >> 18)); out[length++] = (char)(0x80 | ((ch >> 12) & 0x3F)); out[length++] = (char)(0x80 | ((ch >> 6) & 0x3F)); out[length++] = (char)(0x80 | (ch & 0x3F)); }
+    }
+    out[length] = '\0';
+    return length;
+}
+
+bool mica_session_find(MicaSession *session, const char *query, bool backward, long *cursor) {
+    if (!session || !query || !query[0] || !cursor) return false;
+    char lowered[256];
+    size_t query_length = 0;
+    for (; query[query_length] && query_length + 1 < sizeof(lowered); query_length++) {
+        char c = query[query_length];
+        lowered[query_length] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+    }
+    lowered[query_length] = '\0';
+    long total = (long)session->history_count + session->rows;
+    long start = *cursor;
+    if (start < 0 || start >= total) start = backward ? total : -1;
+    char text[MICA_FIND_ROW_BYTES];
+    for (long step = 1; step <= total; step++) {
+        long row = backward ? start - step : start + step;
+        row = ((row % total) + total) % total;
+        find_row_text(session, (size_t)row, text, sizeof(text));
+        if (!strstr(text, lowered)) continue;
+        *cursor = row;
+        // Scroll so the match sits mid-view; rows on the live screen need no scrolling.
+        long from_bottom = total - 1 - row;
+        long target = from_bottom < session->rows ? 0 : from_bottom - session->rows / 2;
+        if (target > (long)display_history_count(session)) target = (long)display_history_count(session);
+        session->view_offset = (size_t)target;
+        session->revision++;
+        return true;
+    }
+    return false;
 }
 
 void mica_session_clear_scrollback(MicaSession *session) {

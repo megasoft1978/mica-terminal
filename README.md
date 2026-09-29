@@ -47,7 +47,9 @@ The first dictation use downloads the local speech model (about 630 MB). Mica re
 | Choose a tab / browse scrollback | `⌘⇧P` / `⌘⇧S` |
 | Dictate | Hold left `⌥` |
 | Open a terminal web link | `⌘`-click an OSC 8 link |
-| Resize terminal text | `⌘+` / `⌘−` |
+| Resize / reset terminal text | `⌘+` / `⌘−` / `⌘0` |
+| Find in scrollback / next / previous | `⌘F` / `⌘G` / `⇧⌘G` |
+| Clear scrollback | `⌘K` |
 
 Run `make new-instance` to create a project launcher. Use **Project → Settings…** to edit its name and tabs. A `.mica` layout can also define named tabs, folders, and optional commands.
 

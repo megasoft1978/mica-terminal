@@ -604,6 +604,8 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     NSPoint _selectionEnd;
     uint64_t _selectionHistoryLines;
     MicaTab *_imeTab;
+    NSString *_findQuery;
+    long _findRow;
     NSFont *_styledFontBase;
     NSFont *__strong _styledFonts[4];
     NSString *_markedText;
@@ -2192,6 +2194,35 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     [self setNeedsDisplayInRect:NSMakeRect(0, low, self.bounds.size.width, high - low)];
 }
 
+- (void)findInScrollback:(id)sender {
+    (void)sender;
+    MicaSession *session = self.owner.activeTab.session;
+    if (!session) return;
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = @"Find in Scrollback";
+    alert.informativeText = @"Search is case-insensitive. Use ⌘G and ⇧⌘G to step through matches.";
+    NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 280, 24)];
+    field.stringValue = _findQuery ?: @"";
+    alert.accessoryView = field;
+    [alert addButtonWithTitle:@"Find"];
+    [alert addButtonWithTitle:@"Cancel"];
+    alert.window.initialFirstResponder = field;
+    if ([alert runModal] != NSAlertFirstButtonReturn || !field.stringValue.length) return;
+    _findQuery = [field.stringValue copy];
+    _findRow = -1;
+    [self findNext:YES];
+}
+
+- (void)findNext:(BOOL)backward {
+    MicaSession *session = self.owner.activeTab.session;
+    if (!session || !_findQuery.length) { NSBeep(); return; }
+    if (!mica_session_find(session, _findQuery.UTF8String, backward, &_findRow)) NSBeep();
+    [self clearSelection];
+    [self setNeedsDisplay:YES];
+}
+- (void)findNextMatch:(id)sender { (void)sender; [self findNext:NO]; }
+- (void)findPreviousMatch:(id)sender { (void)sender; [self findNext:YES]; }
+
 - (void)clearScrollbackMenu:(id)sender {
     (void)sender;
     MicaSession *session = self.owner.activeTab.session;
@@ -2967,6 +2998,10 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
     AddMenuItem(editMenu, @"Copy", @selector(copy:), @"c", NSEventModifierFlagCommand);
     AddMenuItem(editMenu, @"Paste", @selector(paste:), @"v", NSEventModifierFlagCommand);
+    AddMenuItem(editMenu, @"Find in Scrollback…", @selector(findInScrollback:), @"f", NSEventModifierFlagCommand).target = self.terminalView;
+    AddMenuItem(editMenu, @"Find Next", @selector(findNextMatch:), @"g", NSEventModifierFlagCommand).target = self.terminalView;
+    AddMenuItem(editMenu, @"Find Previous", @selector(findPreviousMatch:), @"g",
+                NSEventModifierFlagCommand | NSEventModifierFlagShift).target = self.terminalView;
     AddMenuItem(editMenu, @"Clear Scrollback", @selector(clearScrollbackMenu:), @"k", NSEventModifierFlagCommand).target = self.terminalView;
     AddMenuItem(editMenu, @"Fold Selected Lines", @selector(foldSelectedLines:), @"f",
                 NSEventModifierFlagCommand | NSEventModifierFlagOption).target = self.terminalView;
@@ -3008,7 +3043,9 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
         @"⌘⇧P  Choose tab",
         @"⌘⇧S  Browse scrollback",
         @"⌘⇧[ / ⌘⇧]  Previous / next tab",
-        @"⌘+ / ⌘−  Increase / decrease font size",
+        @"⌘+ / ⌘− / ⌘0  Increase / decrease / reset font size",
+        @"⌘F / ⌘G / ⇧⌘G  Find in scrollback, next, previous",
+        @"⌘K  Clear scrollback",
         @"⌘-click  Open an OSC 8 web link",
         @"Hold left ⌥  Dictate; release to finish",
         @"Esc  Cancel dictation or return to live terminal"

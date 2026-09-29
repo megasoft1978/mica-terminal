@@ -612,6 +612,13 @@ color_checked:
     assert(mica_session_history_lines(history_session) > 0);
     // Once scrollback is full the monotonic counter keeps growing while the stored count stays capped.
     assert(mica_session_scrolled_lines(history_session) > mica_session_history_lines(history_session));
+    long find_cursor = -1;
+    assert(mica_session_find(history_session, "stress-05000", true, &find_cursor));
+    find_cursor = -1;
+    assert(mica_session_find(history_session, "STRESS-04950", true, &find_cursor));
+    assert(mica_session_view_offset(history_session) > 0);
+    find_cursor = -1;
+    assert(!mica_session_find(history_session, "no-such-text-anywhere", true, &find_cursor));
     mica_session_clear_scrollback(history_session);
     assert(mica_session_history_lines(history_session) == 0);
     mica_session_resize(history_session, 8, 160);
