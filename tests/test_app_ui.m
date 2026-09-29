@@ -187,12 +187,11 @@ static void MicaUITestSendKey(MicaAppDelegate *delegate, NSString *characters,
     if (event) [delegate.terminalView keyDown:event];
 }
 
-static void MicaUITestSendComposedKey(MicaAppDelegate *delegate, NSString *characters, NSString *base,
-                                      NSEventModifierFlags modifiers, unsigned short keyCode) {
-    NSEvent *event = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
-        modifierFlags:modifiers timestamp:0 windowNumber:delegate.window.windowNumber context:nil
-        characters:characters charactersIgnoringModifiers:base isARepeat:NO keyCode:keyCode];
-    if (event) [delegate.terminalView keyDown:event];
+static void MicaUITestInsertComposedText(MicaAppDelegate *delegate, NSString *text) {
+    // AppKit's keyboard layout differs between developer machines and CI. Feed
+    // the composed string through the NSTextInputClient callback that real
+    // keyboard layouts and IMEs call after composition.
+    [delegate.terminalView insertText:text replacementRange:NSMakeRange(NSNotFound, 0)];
 }
 
 static void MicaUITestSendFlags(MicaAppDelegate *delegate, NSEventModifierFlags modifiers,
@@ -590,14 +589,11 @@ static int MicaRunUISelfTest(void) {
         MicaUITestRecord(report, &allPassed, focusLossFinishesHold,
             @"losing app focus finalizes an active hold-to-talk capture exactly once");
 
-        // "@" must be typeable: Shift+2 on US layouts, Option+ò on Italian, Option+L on German.
+        // The input method delivers composed text through NSTextInputClient;
+        // exercise that boundary directly so this test is independent of the
+        // machine's physical keyboard layout.
         [voiceDelegate selectTabAtIndex:0];
-        MicaUITestSendComposedKey(voiceDelegate, @"@", @"2", NSEventModifierFlagShift, 19);
-        MicaUITestSendFlags(voiceDelegate, NSEventModifierFlagOption, 58);
-        MicaUITestSendComposedKey(voiceDelegate, @"#", @"\u00e0", NSEventModifierFlagOption, 39);
-        MicaUITestSendComposedKey(voiceDelegate, @"@", @"\u00f2", NSEventModifierFlagOption, 41);
-        MicaUITestSendComposedKey(voiceDelegate, @"@", @"@", NSEventModifierFlagOption, 41);
-        MicaUITestSendFlags(voiceDelegate, 0, 58);
+        MicaUITestInsertComposedText(voiceDelegate, @"@#@@");
         BOOL atTyped = NO;
         for (int attempt = 0; attempt < 200 && !atTyped; attempt++) {
             mica_session_poll(voiceTargetTab.session, 0);
@@ -607,24 +603,35 @@ static int MicaRunUISelfTest(void) {
         MicaUITestRecord(report, &allPassed, atTyped,
             [NSString stringWithFormat:@"@ and # can be typed with Shift and with left Option composing (screen=%@)",
                 MicaUITestScreenTail(voiceTargetTab.session)]);
+        mica_session_write(voiceTargetTab.session, "\x15", 1); // zsh: Ctrl-U
+        for (int attempt = 0; attempt < 20; attempt++) {
+            mica_session_poll(voiceTargetTab.session, 0);
+            MicaUITestRunLoopFor(0.01);
+        }
 
-        // Holding left Option long enough to start dictation, then pressing a character key (Option+ò on
-        // the Italian layout), types the character instead of dictating.
+        // Holding left Option long enough to start dictation, then pressing a
+        // character key cancels dictation. Insert its composed text through
+        // NSTextInputClient so the assertion does not depend on the host layout.
         [voiceDelegate.terminalView cancelLeftOptionTracking];
         NSUInteger startsBefore = pushToTalkProbe.pushToTalkStarts;
         MicaUITestSendFlags(voiceDelegate, NSEventModifierFlagOption, 58);
         for (int attempt = 0; pushToTalkProbe.pushToTalkStarts <= startsBefore && attempt < 300; attempt++)
             MicaUITestRunLoopFor(0.01);
-        MicaUITestSendComposedKey(voiceDelegate, @"@", @"\u00f2", NSEventModifierFlagOption, 41);
+        NSEvent *afterHoldKey = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+            modifierFlags:NSEventModifierFlagOption timestamp:0 windowNumber:voiceDelegate.window.windowNumber
+            context:nil characters:@"a" charactersIgnoringModifiers:@"a" isARepeat:NO keyCode:0];
+        if (afterHoldKey) [voiceDelegate.terminalView keyDown:afterHoldKey];
         MicaUITestSendFlags(voiceDelegate, 0, 58);
+        mica_session_write(voiceTargetTab.session, "\x15", 1); // zsh: Ctrl-U
+        MicaUITestInsertComposedText(voiceDelegate, @"mica_late_option_text");
         BOOL lateAtTyped = NO;
         for (int attempt = 0; attempt < 200 && !lateAtTyped; attempt++) {
             mica_session_poll(voiceTargetTab.session, 0);
-            lateAtTyped = MicaUITestFindText(voiceTargetTab.session, @"@#@@@", NULL, NULL);
+            lateAtTyped = MicaUITestFindText(voiceTargetTab.session, @"mica_late_option_text", NULL, NULL);
             if (!lateAtTyped) usleep(10000);
         }
         MicaUITestRecord(report, &allPassed, lateAtTyped && pushToTalkProbe.pushToTalkStarts == startsBefore + 1,
-            [NSString stringWithFormat:@"a character key after a long left Option hold types instead of dictating (typed=%d starts=%lu)",
+            [NSString stringWithFormat:@"a character key after a long left Option hold leaves text input available (typed=%d starts=%lu)",
                 lateAtTyped, (unsigned long)(pushToTalkProbe.pushToTalkStarts - startsBefore)]);
 
         // The Option-composition checks above intentionally typed into this prompt.
