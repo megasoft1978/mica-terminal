@@ -3775,7 +3775,14 @@ static NSDictionary *MicaScalarDictionary(id object) {
 
 - (void)openPreferences:(id)sender {
     (void)sender;
-    if (self.preferencesWindow) { [self.preferencesWindow makeKeyAndOrderFront:nil]; return; }
+    if (self.preferencesWindow) {
+        // Values may have changed through shortcuts (⌘+ ⌘− ⌘0, ⌥⌘L) or the View menu since it was last shown.
+        [(NSPopUpButton *)[self.preferencesWindow.contentView viewWithTag:102] selectItemAtIndex:gMicaLightTheme ? 1 : 0];
+        [(NSPopUpButton *)[self.preferencesWindow.contentView viewWithTag:103] selectItemAtIndex:gMicaCursorStyle];
+        ((NSStepper *)[self.preferencesWindow.contentView viewWithTag:101]).doubleValue = self.terminalView.terminalFont.pointSize;
+        [self.preferencesWindow makeKeyAndOrderFront:nil];
+        return;
+    }
     NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 420, 232)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
     window.title = @"Mica Settings";
@@ -3791,16 +3798,19 @@ static NSDictionary *MicaScalarDictionary(id object) {
     NSPopUpButton *theme = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 182 - 0, 200, 26) pullsDown:NO];
     [theme addItemsWithTitles:@[@"Dark", @"Light"]];
     [theme selectItemAtIndex:gMicaLightTheme ? 1 : 0];
+    theme.tag = 102;
     theme.target = self; theme.action = @selector(prefThemeChanged:);
     [content addSubview:theme];
     NSPopUpButton *cursor = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 142, 200, 26) pullsDown:NO];
     [cursor addItemsWithTitles:@[@"Block", @"Bar", @"Underline"]];
     [cursor selectItemAtIndex:gMicaCursorStyle];
+    cursor.tag = 103;
     cursor.target = self; cursor.action = @selector(prefCursorChanged:);
     [content addSubview:cursor];
     NSStepper *stepper = [[NSStepper alloc] initWithFrame:NSMakeRect(122, 102, 19, 27)];
     stepper.minValue = 8; stepper.maxValue = 28; stepper.increment = 1;
     stepper.doubleValue = self.terminalView.terminalFont.pointSize;
+    stepper.tag = 101;
     stepper.target = self; stepper.action = @selector(prefFontSizeChanged:);
     [content addSubview:stepper];
     NSTextField *sizeLabel = [NSTextField labelWithString:@"Use the stepper, or ⌘+ ⌘− ⌘0 in a terminal."];
