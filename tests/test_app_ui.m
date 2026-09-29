@@ -1620,6 +1620,13 @@ static int MicaRunUISelfTest(void) {
                 [MicaGitBranchForDirectory([gitRoot stringByAppendingPathComponent:@"linked"]) isEqualToString:@"agent-2"] &&
                 [MicaGitBranchForDirectory([gitRoot stringByAppendingPathComponent:@"detached"]) isEqualToString:@"3f9c1a2"] &&
                 MicaGitBranchForDirectory(@"/") == nil;
+            BOOL branchNamesValidated = MicaValidBranchName(@"agent/fix-login") && MicaValidBranchName(@"v1.2_x") &&
+                !MicaValidBranchName(@"-rf") && !MicaValidBranchName(@"a..b") && !MicaValidBranchName(@"a b") &&
+                !MicaValidBranchName(@"x;rm") && !MicaValidBranchName(@"/abs") && !MicaValidBranchName(@"") &&
+                [MicaGitRootForDirectory([gitRoot stringByAppendingPathComponent:@"repo/src/deep"]) isEqualToString:
+                    [[gitRoot stringByAppendingPathComponent:@"repo"] stringByStandardizingPath]];
+            MicaUITestRecord(report, &allPassed, branchNamesValidated,
+                @"worktree branch names reject options and shell-looking text, and the repository root is found");
             [fileManager removeItemAtPath:gitRoot error:nil];
             MicaUITestRecord(report, &allPassed, gitBranchesDetected,
                 @"the git branch is read for a repo, a linked worktree and a detached HEAD, and is absent outside a repo");

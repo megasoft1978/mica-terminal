@@ -28,7 +28,7 @@
 
 ## What you get
 
-- **A window per project.** Named tabs, folders and startup commands, reopened from a Desktop launcher. The Dock icon carries a short mark of the project name.
+- **A window per project.** Named tabs, folders and startup commands, reopened from a Desktop launcher. The Dock icon carries a short mark of the project name. The status bar shows the git branch, and **Session → New Worktree Tab…** gives an agent its own checkout.
 - **Agents stay ordinary programs.** Run Codex, Claude Code, `lazygit` or anything else in a normal `zsh` tab. Mica shows when one is working and when it is waiting for you.
 - **Dictation that stays on your Mac.** Hold left <kbd>⌥</kbd>, speak, edit the text, press Return. The first use downloads a 630 MB speech model; nothing is sent anywhere.
 - **A focus timer that follows you.** One timer shared by every Mica window, with a notification when a period ends.
@@ -82,7 +82,7 @@ make validate   # tests, build, helper build and bundle checks
 make dist       # ad-hoc sign and zip (SIGN_ID="Developer ID Application: …" to override)
 ```
 
-More: [stability testing](docs/STABILITY.md) · [UI plan](docs/UI-REVIEW.md) · [releasing](docs/RELEASING.md) · [agent notifications](docs/AGENT-NOTIFICATIONS.md) · [contributing](CONTRIBUTING.md) · [security](SECURITY.md)
+More: [how it compares](docs/COMPETITORS.md) · [stability testing](docs/STABILITY.md) · [UI plan](docs/UI-REVIEW.md) · [releasing](docs/RELEASING.md) · [agent notifications](docs/AGENT-NOTIFICATIONS.md) · [contributing](CONTRIBUTING.md) · [security](SECURITY.md)
 
 ## Credits
 

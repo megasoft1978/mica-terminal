@@ -462,6 +462,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)setLightTheme:(BOOL)light;
 - (void)setCursorStyle:(id)sender;
 - (void)openPreferences:(id)sender;
+- (void)newWorktreeTab:(id)sender;
 - (void)prefThemeChanged:(NSPopUpButton *)sender;
 @property(nonatomic, strong) NSWindow *preferencesWindow;
 - (void)toggleLightTheme:(id)sender;
@@ -3259,6 +3260,7 @@ static NSDictionary *MicaScalarDictionary(id object) {
     NSMenuItem *sessionsRoot = [[NSMenuItem alloc] initWithTitle:@"Session" action:nil keyEquivalent:@""];
     NSMenu *sessionMenu = [[NSMenu alloc] initWithTitle:@"Session"];
     AddMenuItem(sessionMenu, @"New Shell Tab", @selector(newShell:), @"t", NSEventModifierFlagCommand).target = self;
+    AddMenuItem(sessionMenu, @"New Worktree Tab…", @selector(newWorktreeTab:), @"", 0).target = self;
     AddMenuItem(sessionMenu, @"Choose Tab…", @selector(toggleTabPicker), @"p",
                 NSEventModifierFlagCommand | NSEventModifierFlagShift).target = self;
     AddMenuItem(sessionMenu, @"Browse Scrollback", @selector(toggleScrollback), @"s",
@@ -3517,6 +3519,95 @@ static NSDictionary *MicaScalarDictionary(id object) {
 - (void)closeTab:(id)sender { (void)sender; [self closeActiveTab]; }
 - (void)nextTab:(id)sender { (void)sender; [self selectRelativeTab:1]; }
 - (void)previousTab:(id)sender { (void)sender; [self selectRelativeTab:-1]; }
+
+// The folder that holds .git for `directory`, or nil outside a repository.
+static NSString *MicaGitRootForDirectory(NSString *directory) {
+    NSString *current = directory.stringByStandardizingPath;
+    for (int depth = 0; depth < 40 && current.length > 1; depth++, current = current.stringByDeletingLastPathComponent)
+        if ([NSFileManager.defaultManager fileExistsAtPath:[current stringByAppendingPathComponent:@".git"]]) return current;
+    return nil;
+}
+
+// Only branch names git itself would accept without surprises; nothing that could be read as an option.
+static BOOL MicaValidBranchName(NSString *name) {
+    if (!name.length || name.length > 100 || [name hasPrefix:@"-"] || [name hasPrefix:@"/"] || [name hasSuffix:@"/"] ||
+        [name hasSuffix:@".lock"] || [name containsString:@".."] || [name containsString:@"//"]) return NO;
+    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:
+        @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._/-"];
+    return [name rangeOfCharacterFromSet:allowed.invertedSet].location == NSNotFound;
+}
+
+// Gives an agent its own checkout: `git worktree add -b <branch>` next to the repository, then opens a tab there.
+- (void)newWorktreeTab:(id)sender {
+    (void)sender;
+    NSString *root = MicaGitRootForDirectory(self.activeTab.cwd ?: NSHomeDirectory());
+    NSAlert *alert = [NSAlert new];
+    if (!root) {
+        alert.messageText = @"This tab isn't in a git repository";
+        alert.informativeText = @"Open a tab inside a repository first, then choose New Worktree Tab again.";
+        [alert runModal];
+        return;
+    }
+    alert.messageText = @"New Worktree Tab";
+    alert.informativeText = [NSString stringWithFormat:@"Creates a new branch and a separate checkout next to “%@”, so an agent can work without touching your current files.", root.lastPathComponent];
+    NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 300, 24)];
+    field.placeholderString = @"Branch name, for example agent/fix-login";
+    alert.accessoryView = field;
+    [alert addButtonWithTitle:@"Create"];
+    [alert addButtonWithTitle:@"Cancel"];
+    alert.window.initialFirstResponder = field;
+    if ([alert runModal] != NSAlertFirstButtonReturn) return;
+    NSString *branch = [field.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSAlert *problem = [NSAlert new];
+    problem.messageText = @"Couldn't create the worktree";
+    if (!MicaValidBranchName(branch)) {
+        problem.informativeText = @"Use letters, numbers and . _ - / only, without leading dashes or “..”.";
+        [problem runModal];
+        return;
+    }
+    NSString *slug = [branch stringByReplacingOccurrencesOfString:@"/" withString:@"-"];
+    NSString *destination = [[root stringByDeletingLastPathComponent] stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"%@-%@", root.lastPathComponent, slug]];
+    if ([NSFileManager.defaultManager fileExistsAtPath:destination]) {
+        problem.informativeText = [NSString stringWithFormat:@"%@ already exists.", destination];
+        [problem runModal];
+        return;
+    }
+    NSString *git = nil;
+    for (NSString *candidate in @[@"/usr/bin/git", @"/opt/homebrew/bin/git", @"/usr/local/bin/git"])
+        if ([NSFileManager.defaultManager isExecutableFileAtPath:candidate]) { git = candidate; break; }
+    if (!git) {
+        problem.informativeText = @"git wasn't found. Install the Xcode command line tools.";
+        [problem runModal];
+        return;
+    }
+    NSTask *task = [NSTask new];
+    task.executableURL = [NSURL fileURLWithPath:git];
+    task.arguments = @[@"-C", root, @"worktree", @"add", @"-b", branch, destination];
+    NSPipe *pipe = [NSPipe pipe];
+    task.standardOutput = pipe;
+    task.standardError = pipe;
+    __weak typeof(self) weakSelf = self;
+    task.terminationHandler = ^(NSTask *finished) {
+        NSData *data = [pipe.fileHandleForReading readDataToEndOfFile];
+        NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"";
+        dispatch_async(dispatch_get_main_queue(), ^{
+            MicaAppDelegate *strongSelf = weakSelf;
+            if (!strongSelf) return;
+            if (finished.terminationStatus == 0) {
+                [strongSelf addTabWithName:branch cwd:destination command:nil prefilled:NO];
+            } else {
+                problem.informativeText = text.length ? text : @"git reported an error.";
+                [problem runModal];
+            }
+        });
+    };
+    NSError *error = nil;
+    if (![task launchAndReturnError:&error]) {
+        problem.informativeText = error.localizedDescription ?: @"git could not be started.";
+        [problem runModal];
+    }
+}
 
 // Creates a Desktop project launcher by running the bundled installer script without prompts.
 - (void)newProjectLauncher:(id)sender {

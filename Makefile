@@ -123,6 +123,7 @@ test: $(BUILD)/test-session $(BUILD)/test-pomodoro $(BUILD)/test-ui $(APP_ICON) 
 	python3 tests/test_memory_processes.py
 	MICA_UI_SMOKE_IMAGE=$(BUILD)/ui-smoke.png MICA_UI_SMOKE_REPORT=$(BUILD)/ui-smoke-report.txt $(BUILD)/test-ui
 	python3 tests/test_agent_loop.py
+	python3 tests/test_worktree.py
 
 test-voice:
 	@mkdir -p $(BUILD) $(VOICE_MODULE_CACHE)
