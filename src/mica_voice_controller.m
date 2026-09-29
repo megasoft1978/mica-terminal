@@ -162,6 +162,13 @@
         [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio completionHandler:^(BOOL granted) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 MicaVoiceController *strongSelf = weakSelf;
+                if (strongSelf && granted && strongSelf.recordingGeneration != generation &&
+                    strongSelf.state == MicaVoiceControllerStateIdle) {
+                    // The key was released while the macOS prompt was up; say what to do next.
+                    [strongSelf setState:MicaVoiceControllerStateFailed
+                        status:@"Microphone enabled. Hold ⌥ again to dictate." progress:-1];
+                    return;
+                }
                 if (!strongSelf || strongSelf.recordingGeneration != generation ||
                     strongSelf.state != MicaVoiceControllerStatePreparing) return;
                 if (granted) [strongSelf launchASRHelper];
