@@ -2844,6 +2844,11 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     AddMenuItem(appMenu, @"New Instance", @selector(newInstance:), @"",
                 NSEventModifierFlagCommand | NSEventModifierFlagOption).target = self;
     [appMenu addItem:NSMenuItem.separatorItem];
+    AddMenuItem(appMenu, @"Hide Mica", @selector(hide:), @"h", NSEventModifierFlagCommand);
+    AddMenuItem(appMenu, @"Hide Others", @selector(hideOtherApplications:), @"h",
+                NSEventModifierFlagCommand | NSEventModifierFlagOption);
+    AddMenuItem(appMenu, @"Show All", @selector(unhideAllApplications:), @"", 0);
+    [appMenu addItem:NSMenuItem.separatorItem];
     AddMenuItem(appMenu, @"Quit Mica", @selector(terminate:), @"q", NSEventModifierFlagCommand);
     appRoot.submenu = appMenu;
     [main addItem:appRoot];
@@ -2882,6 +2887,17 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
                 NSEventModifierFlagCommand | NSEventModifierFlagOption).target = self.terminalView;
     editRoot.submenu = editMenu;
     [main addItem:editRoot];
+    NSMenuItem *windowRoot = [[NSMenuItem alloc] initWithTitle:@"Window" action:nil keyEquivalent:@""];
+    NSMenu *windowMenu = [[NSMenu alloc] initWithTitle:@"Window"];
+    AddMenuItem(windowMenu, @"Minimize", @selector(performMiniaturize:), @"m", NSEventModifierFlagCommand);
+    AddMenuItem(windowMenu, @"Zoom", @selector(performZoom:), @"", 0);
+    AddMenuItem(windowMenu, @"Enter Full Screen", @selector(toggleFullScreen:), @"f",
+                NSEventModifierFlagCommand | NSEventModifierFlagControl);
+    [windowMenu addItem:NSMenuItem.separatorItem];
+    AddMenuItem(windowMenu, @"Bring All to Front", @selector(arrangeInFront:), @"", 0);
+    windowRoot.submenu = windowMenu;
+    [main addItem:windowRoot];
+    NSApp.windowsMenu = windowMenu;
     NSMenuItem *helpRoot = [[NSMenuItem alloc] initWithTitle:@"Help" action:nil keyEquivalent:@""];
     NSMenu *helpMenu = [[NSMenu alloc] initWithTitle:@"Help"];
     AddMenuItem(helpMenu, @"Keyboard Shortcuts…", @selector(showKeyboardShortcuts:), @"/",
