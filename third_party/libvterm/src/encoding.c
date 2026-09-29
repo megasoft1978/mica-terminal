@@ -46,8 +46,12 @@ static void decode_utf8(VTermEncoding *enc, void *data_,
       return;
 
     else if(c >= 0x20 && c < 0x7f) {
-      if(data->bytes_remaining)
+      if(data->bytes_remaining) {
         cp[(*cpi)++] = UNICODE_INVALID;
+        data->bytes_remaining = 0;
+        if(*cpi >= cplen)
+          return;
+      }
 
       cp[(*cpi)++] = c;
 #ifdef DEBUG_PRINT_UTF8

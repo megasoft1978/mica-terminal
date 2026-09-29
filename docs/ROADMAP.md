@@ -7,6 +7,10 @@ A verified list of what would make Mica better at its job (one light app for the
 - Agent notifications now carry the agent's words (OSC 9, 99, 777) as a macOS notification when Mica is in the background, and clicking it returns to that window and tab.
 - Bare `http(s)` addresses in terminal output open with Command-click, not just OSC 8 links.
 - Background agent output no longer holds the poll timer at full speed, and idle windows skip the shared-timer file when nothing changed.
+- Seven busy sessions have a repeatable poll benchmark; shell cwd lookups now run after PTY output instead of during idle maintenance.
+- The status bar keeps the timer and a readable folder suffix visible at 600 px and 800 px, dropping shortcut hints first.
+- A denied microphone offers a button to open System Settings → Privacy & Security → Microphone.
+- Settings can follow macOS appearance live, while Dark remains the first-run default; Increase Contrast strengthens separators and secondary text.
 - The activity indicator stops spinning when macOS Reduce Motion is on.
 - Developer ID signing now uses Apple's secure timestamp, which notarization requires.
 - Stale claims in the README, site and docs were corrected against the code.
@@ -19,12 +23,10 @@ A verified list of what would make Mica better at its job (one light app for the
 | 2 | Tabs and folders do not survive quitting | Quit destroys all sessions; only the window frame is restored | Medium |
 | 3 | Status sidebar with per-tab branch, agent state and last notification | Data exists (branch, activity, notification text); no UI | Medium |
 | 4 | Scrollback is short for agent output | 2 MiB cap over 40-byte cells is about 650 lines at 80 columns and 260 at 200 columns | Medium (compact cell storage) |
-| 5 | Dictation first run and failures | The 630 MB download starts on the first hold with no consent step; a denied microphone shows text only, without a button for System Settings | Small to medium |
-| 6 | zsh only | The shell is `/bin/zsh -l -i` and `$SHELL` is ignored; the shell hooks are zsh | Medium |
-| 7 | Split panes | Layout, focus and resize code assume one grid per tab | Large |
-| 8 | Quick terminal on a global hotkey | Not present | Medium |
-| 9 | Follow system appearance and Increase Contrast | Settings offers Dark or Light only | Small |
-| 10 | Vertical status sidebar, glass on the tab strip | See UI-REVIEW.md | Large |
+| 5 | zsh only | The shell is `/bin/zsh -l -i` and `$SHELL` is ignored; the shell hooks are zsh | Medium |
+| 6 | Split panes | Layout, focus and resize code assume one grid per tab | Large |
+| 7 | Quick terminal on a global hotkey | Not present | Medium |
+| 8 | Vertical status sidebar, glass on the tab strip | See UI-REVIEW.md | Large |
 
 ## Known limits worth stating
 

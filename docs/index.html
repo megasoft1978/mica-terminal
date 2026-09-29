@@ -273,7 +273,7 @@ make app &amp;&amp; open build/Mica.app</div>
       <section class="faq">
         <h2>Privacy and common questions.</h2>
         <details><summary>What leaves my Mac?</summary><p>Nothing you say or type. Speech recognition runs locally through Core ML. The only network traffic is the one-time 630 MB speech model download from Hugging Face, and Mica has no accounts, analytics or telemetry.</p></details>
-        <details><summary>Why does it ask for the microphone?</summary><p>Only when you first hold left <kbd>⌥</kbd> to dictate. Audio is processed in memory and is not saved.</p></details>
+        <details><summary>Why does it ask for the microphone?</summary><p>Only when you first hold left <kbd>⌥</kbd> to dictate. Audio is processed in memory and is not saved. If access is denied, choose <strong>Open Microphone Settings</strong> in the status strip to open macOS Privacy &amp; Security settings.</p></details>
         <details><summary>Is it safe to open?</summary><p>Yes. The download is signed with a Developer ID and notarized by Apple, so it opens like any other Mac app. The MIT-licensed source and a SHA-256 checksum are on the release page.</p></details>
         <details><summary>What does it cost in memory?</summary><p>About 55–60 MB idle with three tabs, shown live in the status bar. A dictation helper adds about 35 MB only while you talk. Method and the cases where Mica does not win are in the <a href="https://github.com/megasoft1978/mica-terminal/blob/main/docs/MEMORY-BASELINE.md">measurements</a>.</p></details>
         <details><summary>Can I run Codex, Claude Code or lazygit?</summary><p>Yes, they are ordinary programs in a zsh tab. Mica shows on the tab when an agent is working or waiting for you.</p></details>

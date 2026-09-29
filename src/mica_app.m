@@ -153,6 +153,10 @@ static NSColor *MicaColor(uint32_t rgb) {
 
 // The terminal draws on a fixed surface (dark by default, white in the light theme), independent of the system appearance.
 static BOOL gMicaLightTheme = NO;
+static BOOL gMicaFollowSystemTheme = NO;
+static NSURL *MicaMicrophoneSettingsURL(void) {
+    return [NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"];
+}
 static NSInteger gMicaCursorStyle = 0;   // 0 block, 1 bar, 2 underline
 
 static NSColor *MicaBackgroundColor(void) {
@@ -161,6 +165,16 @@ static NSColor *MicaBackgroundColor(void) {
 
 static NSColor *MicaForegroundColor(void) {
     return MicaColor(gMicaLightTheme ? 0x24292f : 0xd4d4d4);
+}
+
+static NSColor *MicaSeparatorColor(void) {
+    return NSWorkspace.sharedWorkspace.accessibilityDisplayShouldIncreaseContrast
+        ? [NSColor.labelColor colorWithAlphaComponent:0.55] : NSColor.separatorColor;
+}
+
+static NSColor *MicaSecondaryLabelColor(CGFloat alpha) {
+    return NSWorkspace.sharedWorkspace.accessibilityDisplayShouldIncreaseContrast
+        ? NSColor.labelColor : [NSColor.secondaryLabelColor colorWithAlphaComponent:alpha];
 }
 
 static NSFont *MicaTerminalFont(CGFloat size) {
@@ -199,6 +213,7 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 @property(nonatomic, assign) NSTimeInterval commandStartedAt;
 @property(nonatomic, assign) NSInteger commandClockSecond;
 @property(nonatomic, assign) NSTimeInterval cwdLastCheck;
+@property(nonatomic, assign) BOOL cwdLookupPending;
 @property(nonatomic, assign) MicaSession *session;
 @property(nonatomic, assign) uint64_t revision;
 @property(nonatomic, assign) uint64_t attentionCount;
@@ -413,6 +428,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (NSRect)cellRectAtRow:(NSInteger)row col:(NSInteger)col;
 - (NSColor *)colorForVTermColor:(VTermColor)color isForeground:(BOOL)isForeground;
 - (NSRect)dictationStatusRect;
+- (NSRect)microphoneSettingsButtonRect;
 - (NSRect)terminalHitRect;
 - (CGFloat)tabsLeadingInset;
 - (BOOL)windowIsActive;
@@ -481,6 +497,8 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)pollSessions:(NSTimer *)timer;
 - (void)wakePollTimer;
 - (void)setLightTheme:(BOOL)light;
+- (BOOL)systemAppearanceIsLight;
+- (void)applySystemAppearanceIfNeeded;
 - (void)setCursorStyle:(id)sender;
 - (void)openPreferences:(id)sender;
 - (void)refreshPreferencesSizeLabel;
@@ -494,6 +512,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (NSArray<NSValue *> *)detachSessionsForTermination;
 - (void)prefThemeChanged:(NSPopUpButton *)sender;
 @property(nonatomic, strong) NSWindow *preferencesWindow;
+@property(nonatomic, assign) BOOL observesSystemAppearance;
 - (void)toggleLightTheme:(id)sender;
 - (void)handleClipboardWrite:(NSString *)text fromTab:(MicaTab *)tab;
 - (void)loadLaunchConfiguration;
@@ -584,6 +603,16 @@ static uint64_t MicaFootprintBytes(pid_t pid) {
     struct rusage_info_v4 info;
     if (proc_pid_rusage(pid, RUSAGE_INFO_V4, (rusage_info_t *)&info) != 0) return 0;
     return info.ri_phys_footprint;
+}
+
+static NSString *MicaWorkingDirectoryForPID(pid_t pid) {
+    if (pid <= 0) return nil;
+    struct proc_vnodepathinfo paths;
+    int bytes = proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &paths, sizeof(paths));
+    if (bytes < (int)sizeof(paths) || paths.pvi_cdir.vip_path[0] == '\0') return nil;
+    size_t length = strnlen(paths.pvi_cdir.vip_path, sizeof(paths.pvi_cdir.vip_path));
+    if (!length || length >= sizeof(paths.pvi_cdir.vip_path)) return nil;
+    return [NSFileManager.defaultManager stringWithFileSystemRepresentation:paths.pvi_cdir.vip_path length:length];
 }
 
 // "58 MB", or "58 + 36 MB" while the speech helper is running. Nothing else is hidden: this is everything
@@ -790,6 +819,33 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         if ([candidate sizeWithAttributes:attributes].width <= width) return candidate;
     }
     return @"…";
+}
+
+typedef struct {
+    NSRect contextRect;
+    NSRect hintsRect;
+    NSRect memoryRect;
+    NSArray<NSString *> *hints;
+} MicaStatusBarLayout;
+
+static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat contextX,
+        CGFloat minimumContextWidth, CGFloat memoryWidth, NSArray<NSString *> *hints,
+        NSDictionary<NSAttributedStringKey, id> *hintAttrs) {
+    MicaStatusBarLayout layout = {0};
+    layout.memoryRect = NSMakeRect(width - 12 - memoryWidth, 0, memoryWidth, kStatusHeight);
+    CGFloat hintRight = NSMinX(layout.memoryRect) - 18;
+    CGFloat hintWidth = 0;
+    while (hints.count) {
+        hintWidth = MAX(0, (hints.count - 1) * 16);
+        for (NSString *part in hints) hintWidth += [part sizeWithAttributes:hintAttrs].width;
+        if (hintRight - hintWidth >= contextX + minimumContextWidth) break;
+        hints = [hints subarrayWithRange:NSMakeRange(0, hints.count - 1)];
+    }
+    CGFloat hintX = hints.count ? hintRight - hintWidth : hintRight;
+    layout.contextRect = NSMakeRect(contextX, 0, MAX(0, hintX - contextX - 18), kStatusHeight);
+    layout.hintsRect = NSMakeRect(hintX, 0, hintWidth, kStatusHeight);
+    layout.hints = hints;
+    return layout;
 }
 
 @implementation MicaTerminalView {
@@ -1164,6 +1220,14 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     if (!self.owner.voiceController || self.owner.voiceController.state == MicaVoiceControllerStateIdle)
         return NSZeroRect;
     return NSMakeRect(0, 0, self.bounds.size.width, kStatusHeight);
+}
+
+- (NSRect)microphoneSettingsButtonRect {
+    MicaVoiceController *voice = self.owner.voiceController;
+    BOOL denied = voice.state == MicaVoiceControllerStateFailed &&
+        ([voice.statusText containsString:@"Microphone access was denied"] ||
+         [voice.statusText containsString:@"Microphone access is off"]);
+    return denied ? NSMakeRect(MAX(0, self.bounds.size.width - 190), 0, 178, kStatusHeight) : NSZeroRect;
 }
 
 - (void)updateGridSize {
@@ -1546,7 +1610,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     NSRect status = NSMakeRect(0, 0, self.bounds.size.width, kStatusHeight);
     [NSColor.controlBackgroundColor setFill];
     NSRectFill(status);
-    [NSColor.separatorColor setStroke];
+    [MicaSeparatorColor() setStroke];
     NSBezierPath *separator = [NSBezierPath bezierPath];
     [separator moveToPoint:NSMakePoint(0, NSMaxY(status) - 0.5)];
     [separator lineToPoint:NSMakePoint(NSMaxX(status), NSMaxY(status) - 0.5)];
@@ -1594,7 +1658,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     NSString *timerText = [NSString stringWithFormat:@"%@ · %02lu:%02lu",
         timerPhase == MICA_POMODORO_IDLE ? @"Ready" : (paused ? @"Paused" : (focus ? @"Focus" : @"Break")),
         (unsigned long)(secondsLeft / 60), (unsigned long)(secondsLeft % 60)];
-    NSColor *timerColor = timerPhase == MICA_POMODORO_IDLE || paused ? NSColor.secondaryLabelColor :
+    NSColor *timerColor = timerPhase == MICA_POMODORO_IDLE || paused ? MicaSecondaryLabelColor(1.0) :
         (focus ? NSColor.systemGreenColor : NSColor.systemOrangeColor);
     NSRect timerControl = [self pomodoroControlRect];
     [[timerColor colorWithAlphaComponent:0.14] setFill];
@@ -1622,14 +1686,14 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         MicaCenteredTextBaseline(timerAttrs[NSFontAttributeName], timerControl.size.height) + NSMinY(timerControl))
         withAttributes:timerAttrs];
     CGFloat actionX = NSMaxX(timerControl) - 55;
-    [NSColor.separatorColor setStroke];
+    [MicaSeparatorColor() setStroke];
     NSBezierPath *actionDivider = [NSBezierPath bezierPath];
     [actionDivider moveToPoint:NSMakePoint(actionX - 7, NSMinY(timerControl) + 5)];
     [actionDivider lineToPoint:NSMakePoint(actionX - 7, NSMaxY(timerControl) - 5)];
     [actionDivider stroke];
     NSDictionary *actionAttrs = @{
         NSFontAttributeName: [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold],
-        NSForegroundColorAttributeName: NSColor.secondaryLabelColor
+        NSForegroundColorAttributeName: MicaSecondaryLabelColor(1.0)
     };
     NSString *toggleGlyph = mica_pomodoro_is_running(&timer) ? @"Ⅱ" : @"▶";
     [toggleGlyph drawAtPoint:NSMakePoint(actionX,
@@ -1642,7 +1706,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 
     NSString *folderName = tab.cwd.length ? tab.cwd : @"/";
     NSString *context = [NSString stringWithFormat:@"Ready · Folder: %@", folderName];
-    NSColor *contextColor = [NSColor.labelColor colorWithAlphaComponent:0.76];
+    NSColor *contextColor = MicaSecondaryLabelColor(0.76);
     if (mode == MicaUIModeTab) {
         context = @"Choose a tab";
     } else if (mode == MicaUIModeScroll) {
@@ -1662,12 +1726,12 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
             context = [NSString stringWithFormat:@"%@ · %@", agent, activity];
             contextColor = agentState == MicaTabActivityStateRunning
                 ? [NSColor.systemGreenColor blendedColorWithFraction:0.40 ofColor:NSColor.labelColor]
-                : [NSColor.secondaryLabelColor colorWithAlphaComponent:0.85];
+                : MicaSecondaryLabelColor(0.85);
         } else if ([self activityStateForTab:tab] == MicaTabActivityStateIdle) {
             NSString *commandName = tab.currentCommand.lastPathComponent.length
                 ? tab.currentCommand.lastPathComponent : tab.currentCommand;
             context = [NSString stringWithFormat:@"%@ · idle", commandName];
-            contextColor = [NSColor.secondaryLabelColor colorWithAlphaComponent:0.85];
+            contextColor = MicaSecondaryLabelColor(0.85);
         } else {
             NSTimeInterval elapsed = MAX(0, NSProcessInfo.processInfo.systemUptime - tab.commandStartedAt);
             NSUInteger seconds = (NSUInteger)elapsed;
@@ -1693,30 +1757,28 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         @"⌘T New tab", @"⌘Q Quit"];
     NSDictionary *hintAttrs = @{
         NSFontAttributeName: [NSFont systemFontOfSize:11.5],
-        NSForegroundColorAttributeName: [NSColor.labelColor colorWithAlphaComponent:0.70]
+        NSForegroundColorAttributeName: MicaSecondaryLabelColor(0.70)
     };
+    CGFloat minimumContextWidth = 18;
+    if (!modeName && !tab.currentCommand.length && !tab.completedCommand && viewOffset == 0) {
+        NSString *folderTail = [NSString stringWithFormat:@"…/%@", folderName.lastPathComponent];
+        minimumContextWidth += [@"Ready · " sizeWithAttributes:contextAttrs].width +
+            [folderTail sizeWithAttributes:contextAttrs].width;
+    }
     NSFont *hintFont = hintAttrs[NSFontAttributeName];
-    CGFloat hintWidth = 0;
     // Live memory readout on the far right; hints use the space that is left.
     NSString *memoryText = self.owner.memoryLabel ?: MicaMemoryLabel(MicaFootprintBytes(getpid()), 0);
     NSDictionary *memoryAttrs = @{
         NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:11.5 weight:NSFontWeightMedium],
-        NSForegroundColorAttributeName: [NSColor.labelColor colorWithAlphaComponent:0.70]
+        NSForegroundColorAttributeName: MicaSecondaryLabelColor(0.70)
     };
     CGFloat memoryWidth = [memoryText sizeWithAttributes:memoryAttrs].width;
-    MicaDrawCenteredLine(memoryText, NSMakeRect(self.bounds.size.width - 12 - memoryWidth, 0, memoryWidth, kStatusHeight),
-                         memoryAttrs, NSTextAlignmentRight);
-    CGFloat hintRight = self.bounds.size.width - 12 - memoryWidth - 18;
-    // Drop trailing hints that would run over the context text at narrow widths.
-    while (hintParts.count > 1) {
-        hintWidth = (hintParts.count - 1) * 16;
-        for (NSString *part in hintParts) hintWidth += [part sizeWithAttributes:hintAttrs].width;
-        if (hintRight - hintWidth >= contextX + 18) break;
-        hintParts = [hintParts subarrayWithRange:NSMakeRange(0, hintParts.count - 1)];
-    }
-    if (hintParts.count == 1) hintWidth = [hintParts[0] sizeWithAttributes:hintAttrs].width;
-    CGFloat hintX = MAX(contextX + 18, hintRight - hintWidth);
-    CGFloat availableWidth = MAX(0, hintX - contextX - 18);
+    MicaStatusBarLayout layout = MicaComputeStatusBarLayout(self.bounds.size.width, contextX,
+        minimumContextWidth, memoryWidth, hintParts, hintAttrs);
+    hintParts = layout.hints;
+    CGFloat hintX = NSMinX(layout.hintsRect);
+    CGFloat availableWidth = layout.contextRect.size.width;
+    MicaDrawCenteredLine(memoryText, layout.memoryRect, memoryAttrs, NSTextAlignmentRight);
     if (!modeName && !tab.currentCommand.length && !tab.completedCommand && viewOffset == 0) {
         // Branch is re-read at most every two seconds; it is a couple of tiny file reads.
         NSTimeInterval nowForBranch = NSProcessInfo.processInfo.systemUptime;
@@ -1747,7 +1809,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     NSString *shortContext = MicaTruncatedText(context, contextWidth, contextAttrs);
     [shortContext drawAtPoint:NSMakePoint(contextX,
         MicaCenteredTextBaseline(contextAttrs[NSFontAttributeName], kStatusHeight)) withAttributes:contextAttrs];
-    [NSColor.separatorColor setStroke];
+    [MicaSeparatorColor() setStroke];
     NSBezierPath *contextDivider = [NSBezierPath bezierPath];
     [contextDivider moveToPoint:NSMakePoint(floor(hintX - 8) + 0.5, 6)];
     [contextDivider lineToPoint:NSMakePoint(floor(hintX - 8) + 0.5, kStatusHeight - 6)];
@@ -1761,7 +1823,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         x += [part sizeWithAttributes:hintAttrs].width;
         if (index + 1 < hintParts.count) {
             x += 8;
-            [NSColor.separatorColor setStroke];
+            [MicaSeparatorColor() setStroke];
             NSBezierPath *hintDivider = [NSBezierPath bezierPath];
             [hintDivider moveToPoint:NSMakePoint(floor(x) + 0.5, 6)];
             [hintDivider lineToPoint:NSMakePoint(floor(x) + 0.5, kStatusHeight - 6)];
@@ -1862,7 +1924,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     NSDictionary *transcriptAttrs = @{
         NSFontAttributeName: hasWords ? [NSFont systemFontOfSize:kDictationWordsFontSize weight:NSFontWeightMedium]
                                       : [NSFont systemFontOfSize:kDictationLabelFontSize],
-        NSForegroundColorAttributeName: hasWords ? NSColor.labelColor : NSColor.secondaryLabelColor,
+        NSForegroundColorAttributeName: hasWords ? NSColor.labelColor : MicaSecondaryLabelColor(1.0),
         NSParagraphStyleAttributeName: tailStyle
     };
     // Keep a column free on the right for key hints (room for more controls later).
@@ -1875,7 +1937,12 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     CGFloat statusWidth = [statusText sizeWithAttributes:statusAttrs].width;
     CGFloat transcriptX = 38 + statusWidth + 20;
     CGFloat rightReserve = hintWidth ? hintWidth + 24 : 12;
-    if (status.size.width - transcriptX - rightReserve < 160) { rightReserve = 12; hintWidth = 0; }
+    NSRect settingsButton = [self microphoneSettingsButtonRect];
+    if (!NSIsEmptyRect(settingsButton)) rightReserve = status.size.width - NSMinX(settingsButton) + 8;
+    if (NSIsEmptyRect(settingsButton) && status.size.width - transcriptX - rightReserve < 160) {
+        rightReserve = 12;
+        hintWidth = 0;
+    }
     if (hintWidth) {
         NSRect hintRect = NSMakeRect(status.size.width - hintWidth - 14, NSMinY(status), hintWidth, status.size.height);
         MicaDrawCenteredLine(keyHint, hintRect, hintAttrs, NSTextAlignmentRight);
@@ -1884,6 +1951,16 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         MAX(0, status.size.width - transcriptX - rightReserve), status.size.height);
     MicaDrawCenteredLine(MicaHeadTruncatedText(text, transcriptRect.size.width, transcriptAttrs),
                          transcriptRect, transcriptAttrs, NSTextAlignmentLeft);
+    if (!NSIsEmptyRect(settingsButton)) {
+        NSRect button = NSInsetRect(settingsButton, 4, 5);
+        [[NSColor.controlAccentColor colorWithAlphaComponent:0.14] setFill];
+        [[NSBezierPath bezierPathWithRoundedRect:button xRadius:6 yRadius:6] fill];
+        NSDictionary *buttonAttrs = @{
+            NSFontAttributeName: [NSFont systemFontOfSize:10.5 weight:NSFontWeightSemibold],
+            NSForegroundColorAttributeName: NSColor.controlAccentColor
+        };
+        MicaDrawCenteredLine(@"Open Microphone Settings", button, buttonAttrs, NSTextAlignmentCenter);
+    }
 
     BOOL showsActivity = state == MicaVoiceControllerStatePreparing ||
         state == MicaVoiceControllerStateTranscribing;
@@ -1988,7 +2065,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     if (NSIntersectsRect(dirtyRect, header)) {
         [NSColor.controlBackgroundColor setFill];
         NSRectFill(header);
-        [NSColor.separatorColor setStroke];
+        [MicaSeparatorColor() setStroke];
         NSBezierPath *headerSeparator = [NSBezierPath bezierPath];
         [headerSeparator moveToPoint:NSMakePoint(0, NSMinY(header) + 0.5)];
         [headerSeparator lineToPoint:NSMakePoint(NSMaxX(header), NSMinY(header) + 0.5)];
@@ -2025,7 +2102,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
                     withAttributes:tabAttrs];
             }
         }
-        [NSColor.separatorColor setStroke];
+        [MicaSeparatorColor() setStroke];
         for (NSUInteger i = visibleTabs.location; i + 1 < NSMaxRange(visibleTabs); i++) {
             NSRect tabRect = [self tabRectAtIndex:i];
             if (NSIsEmptyRect(tabRect)) continue;
@@ -2062,7 +2139,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
             projectStyle.lineBreakMode = NSLineBreakByTruncatingTail;
             NSDictionary *projectAttrs = @{
                 NSFontAttributeName: [NSFont systemFontOfSize:kTabTitleFontSize weight:NSFontWeightSemibold],
-                NSForegroundColorAttributeName: NSColor.secondaryLabelColor,
+                NSForegroundColorAttributeName: MicaSecondaryLabelColor(1.0),
                 NSParagraphStyleAttributeName: projectStyle
             };
             NSRect projectText = NSInsetRect(capsule, 10, 0);
@@ -2459,6 +2536,11 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         return;
     }
     NSRect dictationStatus = [self dictationStatusRect];
+    NSRect microphoneSettings = [self microphoneSettingsButtonRect];
+    if (!NSIsEmptyRect(microphoneSettings) && NSPointInRect(point, microphoneSettings)) {
+        [NSWorkspace.sharedWorkspace openURL:MicaMicrophoneSettingsURL()];
+        return;
+    }
     if (!NSIsEmptyRect(dictationStatus) && NSPointInRect(point, dictationStatus)) return;
     NSRect header = NSMakeRect(0, NSMaxY(self.bounds) - kHeaderHeight,
                                self.bounds.size.width, kHeaderHeight);
@@ -3498,9 +3580,17 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         for (NSMenuItem *entry in viewMenu.itemArray)
             if (entry.action == @selector(setCursorStyle:)) entry.state = entry.tag == gMicaCursorStyle ? NSControlStateValueOn : NSControlStateValueOff;
     }
-    if (!getenv("MICA_TEST_NO_STARTUP") && [NSUserDefaults.standardUserDefaults boolForKey:@"MicaLightTheme"])
-        [self setLightTheme:YES];
-    else self.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+    if (!getenv("MICA_TEST_NO_STARTUP")) {
+        NSString *themeMode = [NSUserDefaults.standardUserDefaults stringForKey:@"MicaThemeMode"];
+        gMicaFollowSystemTheme = [themeMode isEqualToString:@"system"];
+        BOOL light = gMicaFollowSystemTheme ? [self systemAppearanceIsLight] :
+            ([themeMode isEqualToString:@"light"] || (!themeMode && [NSUserDefaults.standardUserDefaults boolForKey:@"MicaLightTheme"]));
+        [self setLightTheme:light];
+        [NSApp addObserver:self forKeyPath:@"effectiveAppearance" options:NSKeyValueObservingOptionNew context:NULL];
+        self.observesSystemAppearance = YES;
+    } else {
+        self.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+    }
     // A second window opened on top of another gets the classic cascade offset instead of hiding it.
     for (MicaAppDelegate *other in MicaControllers()) {
         if (other == self || !other.window) continue;
@@ -4242,12 +4332,34 @@ static BOOL MicaValidBranchName(NSString *name) {
     for (MicaAppDelegate *controller in windows) {
         for (MicaTab *tab in controller.tabs)
             if (tab.session) mica_session_set_light_theme(tab.session, light);
-        // Chrome text uses system colors, so pin the window to the appearance that matches the terminal surface.
-        controller.window.appearance = [NSAppearance appearanceNamed:light ? NSAppearanceNameAqua : NSAppearanceNameDarkAqua];
+        // System mode lets AppKit's semantic chrome colors follow the OS appearance.
+        controller.window.appearance = gMicaFollowSystemTheme ? nil :
+            [NSAppearance appearanceNamed:light ? NSAppearanceNameAqua : NSAppearanceNameDarkAqua];
         [controller.terminalView setNeedsDisplay:YES];
     }
     NSMenuItem *item = [[NSApp.mainMenu itemWithTitle:@"View"].submenu itemWithTitle:@"Light Terminal Theme"];
     item.state = light ? NSControlStateValueOn : NSControlStateValueOff;
+}
+
+- (BOOL)systemAppearanceIsLight {
+    NSAppearance *appearance = NSApp.effectiveAppearance ?: NSAppearance.currentAppearance;
+    NSAppearanceName best = [appearance bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]];
+    return [best isEqualToString:NSAppearanceNameAqua];
+}
+
+- (void)applySystemAppearanceIfNeeded {
+    if (gMicaFollowSystemTheme) [self setLightTheme:[self systemAppearanceIsLight]];
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object
+                        change:(NSDictionary<NSKeyValueChangeKey, id> *)change context:(void *)context {
+    (void)change;
+    (void)context;
+    if (object == NSApp && [keyPath isEqualToString:@"effectiveAppearance"]) {
+        [self applySystemAppearanceIfNeeded];
+        return;
+    }
+    [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
 }
 
 - (void)applyCursorStyle:(NSInteger)style {
@@ -4265,10 +4377,14 @@ static BOOL MicaValidBranchName(NSString *name) {
 
 // One place for the look of the terminal: theme, cursor and text size, plus the project and timer settings.
 - (void)prefThemeChanged:(NSPopUpButton *)sender {
-    BOOL light = sender.indexOfSelectedItem == 1;
-    if (light == gMicaLightTheme) return;
-    [self setLightTheme:light];
-    if (!getenv("MICA_TEST_NO_STARTUP")) [NSUserDefaults.standardUserDefaults setBool:light forKey:@"MicaLightTheme"];
+    NSInteger selection = sender.indexOfSelectedItem;
+    gMicaFollowSystemTheme = selection == 2;
+    if (!getenv("MICA_TEST_NO_STARTUP")) {
+        NSString *mode = gMicaFollowSystemTheme ? @"system" : (selection == 1 ? @"light" : @"dark");
+        [NSUserDefaults.standardUserDefaults setObject:mode forKey:@"MicaThemeMode"];
+        [NSUserDefaults.standardUserDefaults setBool:selection == 1 forKey:@"MicaLightTheme"];
+    }
+    [self setLightTheme:gMicaFollowSystemTheme ? [self systemAppearanceIsLight] : selection == 1];
 }
 - (void)prefCursorChanged:(NSPopUpButton *)sender { [self applyCursorStyle:sender.indexOfSelectedItem]; }
 - (void)prefFontSizeChanged:(NSStepper *)sender {
@@ -4286,7 +4402,8 @@ static BOOL MicaValidBranchName(NSString *name) {
     (void)sender;
     if (self.preferencesWindow) {
         // Values may have changed through shortcuts (⌘+ ⌘− ⌘0, ⌥⌘L) or the View menu since it was last shown.
-        [(NSPopUpButton *)[self.preferencesWindow.contentView viewWithTag:102] selectItemAtIndex:gMicaLightTheme ? 1 : 0];
+        [(NSPopUpButton *)[self.preferencesWindow.contentView viewWithTag:102]
+            selectItemAtIndex:gMicaFollowSystemTheme ? 2 : (gMicaLightTheme ? 1 : 0)];
         [(NSPopUpButton *)[self.preferencesWindow.contentView viewWithTag:103] selectItemAtIndex:gMicaCursorStyle];
         ((NSStepper *)[self.preferencesWindow.contentView viewWithTag:101]).doubleValue = self.terminalView.terminalFont.pointSize;
         [self refreshPreferencesSizeLabel];
@@ -4306,8 +4423,8 @@ static BOOL MicaValidBranchName(NSString *name) {
         [content addSubview:caption];
     }
     NSPopUpButton *theme = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 197, 200, 26) pullsDown:NO];
-    [theme addItemsWithTitles:@[@"Dark", @"Light"]];
-    [theme selectItemAtIndex:gMicaLightTheme ? 1 : 0];
+    [theme addItemsWithTitles:@[@"Dark", @"Light", @"System"]];
+    [theme selectItemAtIndex:gMicaFollowSystemTheme ? 2 : (gMicaLightTheme ? 1 : 0)];
     theme.tag = 102;
     theme.target = self; theme.action = @selector(prefThemeChanged:);
     [content addSubview:theme];
@@ -4329,7 +4446,7 @@ static BOOL MicaValidBranchName(NSString *name) {
     stepper.target = self; stepper.action = @selector(prefFontSizeChanged:);
     [content addSubview:stepper];
     NSTextField *sizeHint = [NSTextField labelWithString:@"Also ⌘+  ⌘−  ⌘0 in a terminal."];
-    sizeHint.textColor = NSColor.secondaryLabelColor;
+    sizeHint.textColor = MicaSecondaryLabelColor(1.0);
     sizeHint.font = [NSFont systemFontOfSize:11];
     sizeHint.frame = NSMakeRect(122, 98, 320, 14);
     [content addSubview:sizeHint];
@@ -4412,6 +4529,7 @@ static BOOL MicaValidBranchName(NSString *name) {
     }
     self.lastPollTimerTickAt = now;
     [self updatePomodoroTimer];
+    BOOL activityScanPerformed = NO;
     for (MicaTab *tab in self.tabs) {
         if (!tab.session) continue;
         NSTimeInterval tabPollStartedAt = NSProcessInfo.processInfo.systemUptime;
@@ -4542,8 +4660,9 @@ static BOOL MicaValidBranchName(NSString *name) {
         uint64_t revision = mica_session_revision(tab.session);
         if (revision != tab.revision) {
             tab.revision = revision;
-            if (currentCommand.length && now - tab.lastActivityScanAt >= 0.20) {
+            if (currentCommand.length && !activityScanPerformed && now - tab.lastActivityScanAt >= 0.50) {
                 tab.lastActivityScanAt = now;
+                activityScanPerformed = YES;
                 NSString *detail = nil;
                 NSString *activity = MicaAgentActivityForSession(tab.session, &detail);
                 if (MicaStringChanged(activity, tab.agentActivity)) {
@@ -4563,19 +4682,27 @@ static BOOL MicaValidBranchName(NSString *name) {
         }
     }
     MicaTab *active = self.activeTab;
-    if (active.session && now - active.cwdLastCheck >= 1.0) {
+    // The shell prints its next prompt after `cd`; resolve cwd only after new output and off the UI poll.
+    if (active.session && !active.cwdLookupPending && active.lastOutputReadAt > active.cwdLastCheck) {
         active.cwdLastCheck = now;
-        char path[4096] = {0};
-        if (mica_session_working_directory(active.session, path, sizeof(path))) {
-            NSString *cwd = [NSFileManager.defaultManager stringWithFileSystemRepresentation:path
-                                                                                       length:strlen(path)];
-            if (cwd.length && ![cwd isEqualToString:active.cwd]) {
+        active.cwdLookupPending = YES;
+        pid_t pid = mica_session_pid(active.session);
+        __weak typeof(self) weakSelf = self;
+        MicaTab *lookupTab = active;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            NSString *cwd = MicaWorkingDirectoryForPID(pid);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                MicaAppDelegate *strongSelf = weakSelf;
+                lookupTab.cwdLookupPending = NO;
+                if (!strongSelf || !cwd.length || !lookupTab.session ||
+                    mica_session_pid(lookupTab.session) != pid || [cwd isEqualToString:lookupTab.cwd]) return;
                 MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"folder changed tab=%@ folder=%@",
-                    active.name ?: @"Terminal", cwd]);
-                active.cwd = cwd;
-                redraw = YES;
-            }
-        }
+                    lookupTab.name ?: @"Terminal", cwd]);
+                lookupTab.cwd = cwd;
+                [strongSelf.terminalView setNeedsDisplayInRect:NSMakeRect(0, 0,
+                    strongSelf.terminalView.bounds.size.width, kStatusHeight)];
+            });
+        });
     }
     NSMutableArray<MicaTab *> *exitedTabs = [NSMutableArray array];
     for (MicaTab *tab in self.tabs)
@@ -4731,6 +4858,10 @@ static BOOL MicaValidBranchName(NSString *name) {
 
 - (void)windowWillClose:(NSNotification *)notification {
     (void)notification;
+    if (self.observesSystemAppearance) {
+        [NSApp removeObserver:self forKeyPath:@"effectiveAppearance"];
+        self.observesSystemAppearance = NO;
+    }
     NSMutableArray<MicaAppDelegate *> *controllers = MicaControllers();
     if (![controllers containsObject:self] || controllers.count <= 1) return;   // last window: quitting cleans up
     [self teardownWindow];

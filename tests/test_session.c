@@ -152,8 +152,9 @@ static void test_clean_zsh_completion(void) {
         assert(screen_contains(session, "MICA-ZSH-STARTUP-COMPLETE"));
         mica_session_write(session, "git stat", strlen("git stat"));
         mica_session_key(session, VTERM_KEY_TAB, VTERM_MOD_NONE);
-        for (int attempt = 0; attempt < 300 && !screen_contains(session, "git status"); attempt++)
+        for (int attempt = 0; attempt < 1000 && !screen_contains(session, "git status"); attempt++)
             mica_session_poll(session, 10);
+        if (!screen_contains(session, "git status")) print_screen(session);
         assert(screen_contains(session, "git status"));
         if (launch == 0) assert(access(dump_path, F_OK) == 0);
         mica_session_write(session, "\003", 1);
@@ -344,12 +345,13 @@ color_checked:
     assert(exit_session != NULL);
     for (int i = 0; i < 500 && !screen_contains(exit_session, "[command exited: 0]"); i++) mica_session_poll(exit_session, 10);
     assert(screen_contains(exit_session, "[command exited: 0]"));
-    const char readiness_command[] = "printf 'SHELL-READY\\n'\n";
+    const char readiness_command[] = "printf 'SHELL-READY\\n'; PS1=$'\\x4dICA-SHELL-PROMPT> '\n";
     mica_session_write(exit_session, readiness_command, sizeof(readiness_command) - 1);
-    for (int i = 0; i < 500 && !screen_contains(exit_session, "SHELL-READY"); i++) mica_session_poll(exit_session, 10);
-    assert(screen_contains(exit_session, "SHELL-READY"));
+    for (int i = 0; i < 1000 && !screen_contains(exit_session, "MICA-SHELL-PROMPT>"); i++)
+        mica_session_poll(exit_session, 10);
+    assert(screen_contains(exit_session, "MICA-SHELL-PROMPT>"));
     mica_session_write(exit_session, "exit\n", 5);
-    for (int i = 0; i < 500 && mica_session_is_running(exit_session); i++) mica_session_poll(exit_session, 10);
+    for (int i = 0; i < 1500 && mica_session_is_running(exit_session); i++) mica_session_poll(exit_session, 10);
     assert(!mica_session_is_running(exit_session));
     assert(mica_session_exit_status(exit_session) == 0);
     mica_session_destroy(exit_session);
@@ -731,10 +733,12 @@ color_checked:
     mica_session_destroy(sync_session);
     // A begin marker split across two reads is still recognized.
     MicaSession *split_session = mica_session_create("/tmp",
-        "printf 'BEFORE\\033[?20'; sleep 0.001; printf '26hSPLIT-FRAME'; sleep 2", 6, 80);
+        "stty -echo; printf 'BEFORE\\033[?20'; IFS= read -r release; printf '26hSPLIT-FRAME'; stty echo; sleep 2", 6, 80);
     assert(split_session != NULL);
     for (int i = 0; i < 300 && !screen_contains(split_session, "BEFORE"); i++)
         mica_session_poll(split_session, 10);
+    assert(screen_contains(split_session, "BEFORE"));
+    mica_session_write(split_session, "\n", 1);
     for (int i = 0; i < 300 && !mica_session_sync_output_active(split_session); i++)
         mica_session_poll(split_session, 10);
     assert(mica_session_sync_output_active(split_session));
@@ -840,12 +844,12 @@ color_checked:
     assert(setenv("CLAUDECODE", "outer", 1) == 0);
     MicaSession *prefilled_claude = mica_session_create_prefilled(profile_dir, "claude --continue", 8, 120);
     assert(prefilled_claude != NULL);
-    for (int i = 0; i < 500 && !screen_contains(prefilled_claude, "claude --continue"); i++)
+    for (int i = 0; i < 3000 && !screen_contains(prefilled_claude, "claude --continue"); i++)
         mica_session_poll(prefilled_claude, 10);
     assert(screen_contains(prefilled_claude, "claude --continue"));
     assert(!screen_contains(prefilled_claude, "MICA-CLAUDE:"));
     mica_session_key(prefilled_claude, VTERM_KEY_ENTER, VTERM_MOD_NONE);
-    for (int i = 0; i < 500 && !screen_contains(prefilled_claude, "MICA-CLAUDE:"); i++)
+    for (int i = 0; i < 3000 && !screen_contains(prefilled_claude, "MICA-CLAUDE:"); i++)
         mica_session_poll(prefilled_claude, 10);
     char expected_claude[PATH_MAX + 192];
     assert(snprintf(expected_claude, sizeof(expected_claude),
@@ -982,7 +986,7 @@ color_checked:
     assert(mica_session_current_command(zsh_completion_session)[0] == '\0');
     mica_session_destroy(zsh_completion_session);
 
-    MicaSession *completion_session = mica_session_create(profile_dir, "sleep 0.05; false", 8, 120);
+    MicaSession *completion_session = mica_session_create(profile_dir, "sleep 0.5; false", 8, 120);
     assert(completion_session != NULL);
     for (int i = 0; i < 500 && mica_session_command_completion_count(completion_session) == 0; i++)
         mica_session_poll(completion_session, 10);

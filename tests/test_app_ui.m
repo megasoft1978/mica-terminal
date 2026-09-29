@@ -1037,6 +1037,61 @@ static int MicaRunUISelfTest(void) {
             [NSString stringWithFormat:@"a Claude-style input prompt glyph is classified as waiting for input (found=%d activity=%@ screen=%@)",
                 glyphPromptFound, glyphPromptActivity, MicaUITestScreenTail(glyphPromptProbe)]);
         if (glyphPromptProbe) mica_session_destroy(glyphPromptProbe);
+        MicaAppDelegate *pollProbe = [[MicaAppDelegate alloc] init];
+        pollProbe.tabs = [NSMutableArray array];
+        pollProbe.activeIndex = 0;
+        MicaUITestAttachWindow(pollProbe);
+        for (int index = 0; index < 7; index++)
+            [pollProbe addTabWithName:[NSString stringWithFormat:@"Busy %d", index + 1] cwd:@"/tmp"
+                command:@"while :; do printf 'busy-output\\n'; sleep 0.01; done" prefilled:NO];
+        BOOL pollProbeReady = pollProbe.tabs.count == 7;
+        for (int attempt = 0; pollProbeReady && attempt < 20; attempt++) {
+            [pollProbe pollSessions:nil];
+            MicaUITestRunLoopFor(0.015);
+        }
+        NSTimeInterval pollTotal = 0, pollMaximum = 0;
+        for (int attempt = 0; pollProbeReady && attempt < 100; attempt++) {
+            NSTimeInterval started = NSProcessInfo.processInfo.systemUptime;
+            [pollProbe pollSessions:nil];
+            NSTimeInterval durationMS = (NSProcessInfo.processInfo.systemUptime - started) * 1000.0;
+            pollTotal += durationMS;
+            pollMaximum = MAX(pollMaximum, durationMS);
+            MicaUITestRunLoopFor(0.015);
+        }
+        BOOL allBusy = pollProbeReady;
+        for (MicaTab *tab in pollProbe.tabs)
+            allBusy = allBusy && tab.session && mica_session_is_running(tab.session) && tab.lastOutputReadAt > 0;
+        MicaUITestRecord(report, &allPassed, allBusy && pollTotal / 100.0 < 16.0 && pollMaximum < 50.0,
+            [NSString stringWithFormat:@"seven busy PTY tabs poll below 16 ms average and 50 ms worst (avg=%.2f max=%.2f)",
+                pollTotal / 100.0, pollMaximum]);
+        for (MicaTab *tab in pollProbe.tabs) {
+            MicaSession *session = tab.session;
+            tab.session = NULL;
+            if (session) mica_session_destroy(session);
+        }
+        pollProbe.tabs = [NSMutableArray array];
+        pollProbe.terminalView.owner = nil;
+        [pollProbe.window orderOut:nil];
+        MicaAppDelegate *cwdProbe = [[MicaAppDelegate alloc] init];
+        cwdProbe.tabs = [NSMutableArray array];
+        cwdProbe.activeIndex = 0;
+        MicaUITestAttachWindow(cwdProbe);
+        [cwdProbe addTabWithName:@"Folder change" cwd:@"/tmp"
+            command:@"cd /; printf 'MICA-CWD-CHANGED\\n'; sleep 0.5" prefilled:NO];
+        MicaTab *cwdTab = cwdProbe.activeTab;
+        for (int attempt = 0; cwdTab && attempt < 300 && ![cwdTab.cwd isEqualToString:@"/"]; attempt++) {
+            [cwdProbe pollSessions:nil];
+            MicaUITestRunLoopFor(0.01);
+        }
+        MicaUITestRecord(report, &allPassed, [cwdTab.cwd isEqualToString:@"/"],
+            @"the folder indicator follows a shell cd after its next PTY output");
+        if (cwdTab.session) {
+            MicaSession *session = cwdTab.session;
+            cwdTab.session = NULL;
+            mica_session_destroy(session);
+        }
+        cwdProbe.terminalView.owner = nil;
+        [cwdProbe.window orderOut:nil];
         MicaTab *agentLabelTab = delegate.tabs[0];
         NSString *savedCommand = agentLabelTab.currentCommand;
         NSString *savedName = agentLabelTab.name;
@@ -1667,15 +1722,25 @@ static int MicaRunUISelfTest(void) {
             NSPopUpButton *themePopUp = nil;
             for (NSView *view in preferences.contentView.subviews)
                 if ([view isKindOfClass:NSPopUpButton.class] && !themePopUp) themePopUp = (NSPopUpButton *)view;
-            BOOL preferencesOffer = preferences != nil && themePopUp.numberOfItems == 2;
+            BOOL preferencesOffer = preferences != nil && themePopUp.numberOfItems == 3 &&
+                [[themePopUp itemTitleAtIndex:2] isEqualToString:@"System"];
             [themePopUp selectItemAtIndex:1];
             [delegate prefThemeChanged:themePopUp];
             BOOL lightApplied = [delegate.window.appearance.name isEqualToString:NSAppearanceNameAqua];
+            NSAppearance *savedAppAppearance = NSApp.appearance;
+            NSApp.appearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
+            [themePopUp selectItemAtIndex:2];
+            [delegate prefThemeChanged:themePopUp];
+            BOOL systemLightApplied = gMicaFollowSystemTheme && gMicaLightTheme;
+            NSApp.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+            [delegate applySystemAppearanceIfNeeded];
+            BOOL systemDarkApplied = gMicaFollowSystemTheme && !gMicaLightTheme;
+            NSApp.appearance = savedAppAppearance;
             [themePopUp selectItemAtIndex:0];
             [delegate prefThemeChanged:themePopUp];
-            MicaUITestRecord(report, &allPassed, preferencesOffer && lightApplied &&
+            MicaUITestRecord(report, &allPassed, preferencesOffer && lightApplied && systemLightApplied && systemDarkApplied &&
                 [delegate.window.appearance.name isEqualToString:NSAppearanceNameDarkAqua],
-                @"the settings window switches the terminal between dark and light themes");
+                @"Theme offers Dark, Light and System; System follows both appearance changes live");
             [preferences close];
 
             // Git branch detection reads .git/HEAD directly: plain repo, linked worktree, detached HEAD, no repo.
@@ -1842,8 +1907,33 @@ static int MicaRunUISelfTest(void) {
             MicaUITestRecord(report, &allPassed,
                 !NSIsEmptyRect(voicePanel) && NSEqualRects(voicePanel,
                     NSMakeRect(0, 0, delegate.terminalView.bounds.size.width, kStatusHeight)) &&
-                    !NSIntersectsRect(voicePanel, terminalArea),
+                !NSIntersectsRect(voicePanel, terminalArea),
                 @"live dictation uses the bottom status strip without covering terminal cells or cursor");
+            NSDictionary *layoutHintAttrs = @{NSFontAttributeName:[NSFont systemFontOfSize:11.5]};
+            NSDictionary *layoutContextAttrs = @{NSFontAttributeName:[NSFont systemFontOfSize:11.5]};
+            CGFloat minFolderContext = 18 + [@"Ready · " sizeWithAttributes:layoutContextAttrs].width +
+                [@"…/Fieldnote" sizeWithAttributes:layoutContextAttrs].width;
+            CGFloat layoutMemoryWidth = [@"58 MB" sizeWithAttributes:
+                @{NSFontAttributeName:[NSFont monospacedDigitSystemFontOfSize:11.5 weight:NSFontWeightMedium]}].width;
+            NSArray<NSString *> *layoutHints = @[@"⌘/ Shortcuts", @"⌥ Dictate", @"⌘1–8 Switch tab",
+                @"⌘T New tab", @"⌘Q Quit"];
+            NSRect layoutTimer = NSMakeRect(12, 0, 190, kStatusHeight);
+            BOOL narrowRectsDoNotOverlap = YES;
+            for (NSNumber *widthValue in @[@600, @800]) {
+                CGFloat width = widthValue.doubleValue;
+                MicaStatusBarLayout layout = MicaComputeStatusBarLayout(width, NSMaxX(layoutTimer) + 12,
+                    minFolderContext, layoutMemoryWidth, layoutHints, layoutHintAttrs);
+                narrowRectsDoNotOverlap = narrowRectsDoNotOverlap &&
+                    !NSIntersectsRect(layoutTimer, layout.contextRect) &&
+                    !NSIntersectsRect(layoutTimer, layout.hintsRect) &&
+                    !NSIntersectsRect(layoutTimer, layout.memoryRect) &&
+                    !NSIntersectsRect(layout.contextRect, layout.hintsRect) &&
+                    !NSIntersectsRect(layout.contextRect, layout.memoryRect) &&
+                    !NSIntersectsRect(layout.hintsRect, layout.memoryRect) &&
+                    layout.contextRect.size.width >= minFolderContext - 18;
+            }
+            MicaUITestRecord(report, &allPassed, narrowRectsDoNotOverlap,
+                @"status timer, folder context, hints and memory rectangles never overlap at 600 px or 800 px");
             NSMutableParagraphStyle *tailStyle = [[NSMutableParagraphStyle alloc] init];
             tailStyle.lineBreakMode = NSLineBreakByTruncatingHead;
             NSDictionary *tailAttrs = @{ NSFontAttributeName: [NSFont systemFontOfSize:10.5],
@@ -1868,6 +1958,14 @@ static int MicaRunUISelfTest(void) {
                 !NSIntersectsRect(voiceStatusText, voiceDetailText) &&
                     previewController.statusText.length > 0,
                 @"dictation failure keeps its short heading and recovery detail in separate status-bar columns");
+            [previewController setValue:@"Microphone access was denied. Enable Mica in System Settings → Privacy & Security → Microphone."
+                                  forKey:@"statusText"];
+            NSRect micSettingsButton = [delegate.terminalView microphoneSettingsButtonRect];
+            MicaUITestRecord(report, &allPassed,
+                !NSIsEmptyRect(micSettingsButton) && micSettingsButton.size.width >= 160 &&
+                    NSMaxX(micSettingsButton) <= delegate.terminalView.bounds.size.width &&
+                    [MicaMicrophoneSettingsURL().absoluteString containsString:@"Privacy_Microphone"],
+                @"a denied microphone shows a visible System Settings action with the documented privacy URL");
             NSBitmapImageRep *bitmap = [delegate.terminalView bitmapImageRepForCachingDisplayInRect:delegate.terminalView.bounds];
             if (bitmap) [delegate.terminalView cacheDisplayInRect:delegate.terminalView.bounds toBitmapImageRep:bitmap];
             BOOL bitmapReady = bitmap != nil;
@@ -2000,10 +2098,12 @@ static int MicaRunUISelfTest(void) {
             "    if not byte: break\n"
             "    arrow.extend(byte)\n"
             "    if arrow[0] != 27 or (len(arrow) > 2 and arrow[-1] in b'ABCD'): break\n"
+            "valid_arrow = arrow.startswith((b'\\x1b[B', b'\\x1bOB')) and arrow[-1:] == b'B'\n"
+            "print('\\r\\nOPTION-ARROW-RECEIVED' if valid_arrow else '\\r\\nOPTION-ARROW-FAILED-' + bytes(arrow).hex())\n"
+            "sys.stdout.flush()\n"
             "ready, _, _ = select.select([fd], [], [], 1)\n"
             "enter = os.read(fd, 1) if ready else b''\n"
             "termios.tcsetattr(fd, termios.TCSADRAIN, saved)\n"
-            "valid_arrow = arrow.startswith((b'\\x1b[B', b'\\x1bOB')) and arrow[-1:] == b'B'\n"
             "print('\\r\\nOPTION-SELECTED-CODEX' if valid_arrow and enter in (b'\\r', b'\\n') else '\\r\\nOPTION-SELECT-FAILED-' + bytes(arrow).hex() + '-' + enter.hex())\n";
         BOOL optionScriptReady = optionRoot &&
             [optionScriptBody writeToFile:optionScript atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -2026,9 +2126,18 @@ static int MicaRunUISelfTest(void) {
         }
         if (optionPromptReady) {
             MicaUITestSendKey(optionDelegate, @"\uF701", 0, 125);
-            usleep(50000);
-            MicaUITestSendKey(optionDelegate, @"\r", 0, 36);
         }
+        BOOL optionArrowReceived = NO;
+        for (int attempt = 0; optionPromptReady && attempt < 300; attempt++) {
+            mica_session_poll(optionTab.session, 0);
+            if (MicaUITestFindText(optionTab.session, @"OPTION-ARROW-RECEIVED", NULL, NULL)) {
+                optionArrowReceived = YES;
+                break;
+            }
+            if (MicaUITestFindText(optionTab.session, @"OPTION-ARROW-FAILED-", NULL, NULL)) break;
+            usleep(10000);
+        }
+        if (optionArrowReceived) MicaUITestSendKey(optionDelegate, @"\r", 0, 36);
         BOOL optionSelectionWorked = NO;
         for (int attempt = 0; optionPromptReady && attempt < 300; attempt++) {
             mica_session_poll(optionTab.session, 0);
@@ -2046,9 +2155,9 @@ static int MicaRunUISelfTest(void) {
         }
         optionDelegate.tabs = [NSMutableArray array];
         MicaUITestRecord(report, &allPassed,
-            optionPromptReady && optionSelectionWorked && optionSessionStopped,
-            [NSString stringWithFormat:@"Claude-like previous-session picker accepts Down and Return through Mica's PTY (ready=%d selected=%d cleaned=%d screen=%@)",
-                optionPromptReady, optionSelectionWorked, optionSessionStopped, optionScreen]);
+            optionPromptReady && optionArrowReceived && optionSelectionWorked && optionSessionStopped,
+            [NSString stringWithFormat:@"Claude-like previous-session picker accepts Down and Return through Mica's PTY (ready=%d arrow=%d selected=%d cleaned=%d screen=%@)",
+                optionPromptReady, optionArrowReceived, optionSelectionWorked, optionSessionStopped, optionScreen]);
         if (optionRoot) [[NSFileManager defaultManager] removeItemAtPath:optionRoot error:nil];
 
         char projectLayoutDirectory[] = "/tmp/mica-project-layouts-XXXXXX";

@@ -12,5 +12,6 @@ Each change was found by `make fuzz` under AddressSanitizer and is marked `Mica 
 | `src/screen.c` `putglyph` | A wide glyph ending past the last column dereferenced a NULL cell. | Skip cells that do not exist. |
 | `src/state.c` `savecursor` (DECRC) | A cursor saved before the window was resized could be restored outside the new grid, and the next write read past the line-info array. | Clamp the restored cursor to the current grid. |
 | `src/state.c` `set_col_tabstop`, `clear_col_tabstop` | HTS/TBC with a cursor column outside the current width (reachable after resizes) indexed past the tab stop array (heap overflow found by the fuzzer). | Ignore out-of-range columns. |
+| `src/encoding.c` `decode_utf8` | An incomplete multibyte sequence followed by ASCII could emit a replacement character and the ASCII character when only one codepoint slot remained (heap overflow found by the fuzzer). | Emit the replacement and leave the ASCII byte for the next decoder call when the buffer fills. Covered by the fixed UTF-8 boundary fuzz case. |
 
 Known open problem: a fuzz run that feeds random bytes and resizes very often can still find further out-of-range cursor states in upstream code. `make fuzz` is the way to look for them.

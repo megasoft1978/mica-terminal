@@ -76,6 +76,10 @@ int main(int argc, char **argv) {
     printf("fuzz seed %u\n", seed);
     setenv("MICA_TEST_NO_STARTUP", "1", 1);
 
+    // Exactly one codepoint slot remains when an incomplete UTF-8 lead is followed by ASCII.
+    // The decoder must emit U+FFFD and leave the ASCII byte for the next call without overrunning tmpbuffer.
+    run_case("UTF-8 replacement at the final codepoint slot",
+        "perl -e '$|=1; print \"A\" x 1023, \"\\xC2\".\"B\"'; sleep 1", 100);
     // Pure random bytes: exercises UTF-8 decoding, control characters and unknown sequences.
     // perl with a fixed srand keeps the byte stream identical for a given seed, so failures replay.
     char random_command[256];

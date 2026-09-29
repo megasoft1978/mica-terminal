@@ -98,6 +98,12 @@ int main(int argc, const char *argv[]) {
         MicaAppDelegate *narrow = MakeWindow(620, 380, tabs, @"Fieldnote");
         Scene(narrow);
         SaveViewImage(narrow.terminalView, out, @"07-dark-narrow");
+        MicaAppDelegate *narrow800 = MakeWindow(800, 380, tabs, @"Fieldnote");
+        Scene(narrow800);
+        SaveViewImage(narrow800.terminalView, out, @"12-dark-800-wide");
+        MicaAppDelegate *narrow600 = MakeWindow(600, 380, tabs, @"Fieldnote");
+        Scene(narrow600);
+        SaveViewImage(narrow600.terminalView, out, @"13-dark-600-wide");
 
         NSMutableArray *many = [NSMutableArray array];
         for (int i = 1; i <= 12; i++) [many addObject:[NSString stringWithFormat:@"Agent %d", i]];
@@ -111,6 +117,36 @@ int main(int argc, const char *argv[]) {
         [light setLightTheme:YES];
         Scene(light);
         SaveViewImage(light.terminalView, out, @"09-light-default");
+        light.uiMode = MicaUIModeTab;
+        SaveViewImage(light.terminalView, out, @"14-light-tab-picker");
+        light.uiMode = MicaUIModeScroll;
+        SaveViewImage(light.terminalView, out, @"15-light-scrollback");
+        light.uiMode = MicaUIModeNormal;
+        MicaVoiceController *lightVoice = [[MicaVoiceController alloc]
+            initWithHelperURL:[NSURL fileURLWithPath:@"/nonexistent"]];
+        light.voiceController = lightVoice;
+        [lightVoice setValue:@(MicaVoiceControllerStateFailed) forKey:@"state"];
+        [lightVoice setValue:@"Microphone access was denied. Enable Mica in System Settings → Privacy & Security → Microphone."
+            forKey:@"statusText"];
+        SaveViewImage(light.terminalView, out, @"16-light-microphone-denied");
+        [lightVoice setValue:@(MicaVoiceControllerStatePreparing) forKey:@"state"];
+        [lightVoice setValue:@"Downloading speech model files…" forKey:@"statusText"];
+        [lightVoice setValue:@YES forKey:@"hasProgress"];
+        [lightVoice setValue:@(0.42) forKey:@"progress"];
+        SaveViewImage(light.terminalView, out, @"19-light-dictation-preparing");
+        [lightVoice setValue:@(MicaVoiceControllerStateListening) forKey:@"state"];
+        [lightVoice setValue:@"Adjust the light theme contrast" forKey:@"transcript"];
+        [lightVoice setValue:@NO forKey:@"hasProgress"];
+        SaveViewImage(light.terminalView, out, @"20-light-dictation-listening");
+        light.voiceController = nil;
+        MicaAppDelegate *light600 = MakeWindow(600, 380, tabs, @"Fieldnote");
+        [light600 setLightTheme:YES];
+        Scene(light600);
+        SaveViewImage(light600.terminalView, out, @"17-light-600-wide");
+        MicaAppDelegate *light800 = MakeWindow(800, 380, tabs, @"Fieldnote");
+        [light800 setLightTheme:YES];
+        Scene(light800);
+        SaveViewImage(light800.terminalView, out, @"18-light-800-wide");
         [light openPreferences:nil];
         SaveViewImage(light.preferencesWindow.contentView, out, @"10-settings-light");
         gMicaLightTheme = NO;
