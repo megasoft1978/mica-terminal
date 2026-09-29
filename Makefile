@@ -31,7 +31,7 @@ VTERM_STATIC := $(shell $(PKG_CONFIG) --variable=libdir vterm 2>/dev/null)/libvt
 CORE := src/session.c
 POMODORO := src/pomodoro.c
 
-.PHONY: all app sign dist notarize test test-voice validate preflight clean run memory desktop-apps install-desktop-apps new-instance
+.PHONY: all app sign dist notarize screenshots test test-voice validate preflight clean run memory desktop-apps install-desktop-apps new-instance
 
 all: app
 
@@ -160,6 +160,15 @@ notarize: dist
 	xcrun stapler staple $(APP)
 	ditto -c -k --keepParent $(APP) $(BUILD)/Mica.zip
 	spctl --assess --type execute --verbose $(APP)
+
+# Renders the website/README product images from the real terminal view (fictional project, sample output only).
+$(BUILD)/render-marketing: tools/render_marketing.m src/mica_app.m src/mica_voice_controller.m src/mica_diagnostics.m $(CORE) $(POMODORO) include/mica.h
+	@mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(OBJC_WARNINGS) -fobjc-arc $(CPPFLAGS) \
+		-framework Cocoa -framework AVFoundation -framework UserNotifications $(CORE) $(POMODORO) src/mica_diagnostics.m src/mica_voice_controller.m tools/render_marketing.m $(VTERM_STATIC) -o $@
+
+screenshots: $(BUILD)/render-marketing
+	$(BUILD)/render-marketing docs/assets
 
 clean:
 	rm -rf $(BUILD)

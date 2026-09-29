@@ -1,80 +1,88 @@
-# Mica Terminal
+<p align="center">
+  <img src="docs/icon-180.png" width="96" height="96" alt="Mica app icon">
+</p>
 
-**One native macOS workspace for project shells, coding agents, and the tools around them.**
+<h1 align="center">Mica</h1>
 
-Mica keeps each project in its own set of terminal tabs. Run Codex, Claude Code, Git tools, or a regular shell side by side, with live agent activity, project launchers, local voice dictation, and a shared focus timer.
+<p align="center">
+  <strong>Every project gets its own terminal.</strong><br>
+  A native Mac terminal that keeps a project’s shells and coding agents together,<br>
+  and shows you when one of them needs you.
+</p>
 
-> macOS 14 or later · Native AppKit · C PTY core · `libvterm`
+<p align="center">
+  <a href="https://megasoft1978.github.io/mica-terminal/">Website</a> ·
+  <a href="#build-it">Build it</a> ·
+  <a href="https://github.com/megasoft1978/mica-terminal/releases">Releases</a> ·
+  <a href="LICENSE">MIT license</a>
+</p>
 
-## Get Mica
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/mica-light.png">
+    <img src="docs/assets/mica-dark.png" alt="Mica window with project tabs, a git log and passing tests, a focus timer and shortcut hints" width="900">
+  </picture>
+</p>
 
-**[Project website](https://megasoft1978.github.io/mica-terminal/)** · **[Releases](https://github.com/megasoft1978/mica-terminal/releases)** · **[Source](https://github.com/megasoft1978/mica-terminal)**
+<p align="center"><sub>The real Mica view, rendered from a sample project. macOS 14 or later.</sub></p>
 
-![Mica demo: project preview, Codex, Claude Code, and lazygit in separate tabs](docs/assets/mica-demo.gif)
+## What you get
 
-[Watch or download the full-quality demo video](docs/assets/mica-demo.mp4) · The demo uses a disposable sample project; Claude Code is shown idle and no agent prompts are sent.
+- **A window per project.** Named tabs, folders and startup commands, reopened from a Desktop launcher. The Dock icon carries a short mark of the project name.
+- **Agents stay ordinary programs.** Run Codex, Claude Code, `lazygit` or anything else in a normal `zsh` tab. Mica shows when one is working and when it is waiting for you.
+- **Dictation that stays on your Mac.** Hold left <kbd>⌥</kbd>, speak, edit the text, press Return. The first use downloads a 630 MB speech model; nothing is sent anywhere.
+- **A focus timer that follows you.** One timer shared by every Mica window, with a notification when a period ends.
+- **Still a real terminal.** Search scrollback, open links, drag tabs, choose a cursor and a light or dark theme. If a program over SSH asks to set your clipboard, Mica asks you first.
 
-There isn’t a packaged release yet. To build Mica locally, install Xcode Command Line Tools and Homebrew, then run:
+## Build it
+
+You need Xcode’s command line tools and [Homebrew](https://brew.sh).
 
 ```sh
 brew install libvterm pkg-config
 git clone https://github.com/megasoft1978/mica-terminal.git
 cd mica-terminal
-make app
-open build/Mica.app
+make app && open build/Mica.app
 ```
 
-A locally signed build (`make dist`) is ad-hoc signed, so on another Mac macOS may say it can’t be opened. Control-click the app and choose Open once.
+There is no packaged download yet. A build from `make dist` is ad-hoc signed, so on another Mac Control-click the app and choose Open once. Mica asks for the microphone only when you start dictation.
 
-The first dictation use downloads the local speech model (about 630 MB). Mica requests microphone access only when you start dictation.
+## Keys worth knowing
 
-## Why Mica
-
-- **Stay with the project.** Give a project its own named tabs, folders, and ready-to-review startup commands.
-- **Keep your terminal yours.** Mica runs ordinary interactive `zsh` sessions. Use Codex, Claude Code, `lazygit`, or any command; Mica doesn’t take over your shell configuration.
-- **See what agents are doing.** Agent tabs show activity and when they need input. Scrollback, text selection, and normal terminal input stay close at hand.
-- **Find the right project.** Project windows show a short project mark in the Dock and macOS app switcher icon; window titles keep the full project name.
-- **Speak a command.** Hold left Option, dictate, then review or edit the inserted text before pressing Return. Recognition runs locally after the initial model download.
-- **Keep dictation out of your way.** The live transcript and listening state appear in the bottom status strip, so they never cover terminal output or the cursor.
-- **Find what scrolled by.** Search scrollback with `⌘F`, step through matches with `⌘G`, and reorder tabs by dragging them.
-- **Open terminal links.** Command-click OSC 8 `http` and `https` links. Ordinary clicks still go to terminal apps that capture the mouse.
-- **Know what it costs.** Three idle tabs use about 77 MiB of physical footprint, roughly on par with Terminal.app running Zellij (about 64 MiB); Mica is an integrated app, not a memory saver. [Details](docs/MEMORY-BASELINE.md)
-- **Copy from remote sessions.** Programs over SSH or tmux can set your clipboard (OSC 52). Mica asks before the first copy in each tab and never lets a program read your clipboard.
-- **Keep a little focus.** A shared focus timer follows you across Mica windows and can notify you when a focus or break period ends.
-
-## A few shortcuts
-
-| Action | Shortcut |
+| | |
 | --- | --- |
-| Switch tabs | `⌘1`–`⌘8`, `⌘9` |
-| New tab / close tab | `⌘T` / `⌘W` |
-| Choose a tab / browse scrollback | `⌘⇧P` / `⌘⇧S` |
-| Dictate | Hold left `⌥` |
-| Open a terminal web link | `⌘`-click an OSC 8 link |
-| New window | `⌘N` |
-| Resize / reset terminal text | `⌘+` / `⌘−` / `⌘0` |
-| Find in scrollback / next / previous | `⌘F` / `⌘G` / `⇧⌘G` |
-| Clear scrollback | `⌘K` |
-| Light / dark terminal theme | `⌥⌘L` |
-| Cursor shape (block, bar, underline) | **View** menu |
+| Switch tabs | <kbd>⌘1</kbd>–<kbd>⌘9</kbd> |
+| New tab, close tab, new window | <kbd>⌘T</kbd> · <kbd>⌘W</kbd> · <kbd>⌘N</kbd> |
+| Dictate | hold left <kbd>⌥</kbd> |
+| Find, next, previous | <kbd>⌘F</kbd> · <kbd>⌘G</kbd> · <kbd>⇧⌘G</kbd> |
+| Text size, reset | <kbd>⌘+</kbd> <kbd>⌘−</kbd> · <kbd>⌘0</kbd> |
+| Light or dark theme | <kbd>⌥⌘L</kbd> |
+| Clear scrollback | <kbd>⌘K</kbd> |
+| All shortcuts | <kbd>⌘/</kbd> |
 
-### Create a project launcher
+## Project launchers
 
-Choose **Mica → New Project Launcher…** to make one from the app (it needs Python 3 from the Xcode Command Line Tools), or use the command line:
-
-Run `make new-instance` to create a project launcher. To skip the prompts, run `python3 scripts/install-desktop-apps.py --new-instance --name "My Project" --folder ~/code/my-project --command codex`. Use **Project → Project Settings…** (or the button in **Mica → Settings…**, `⌘,`) to edit its name and tabs. A `.mica` layout can also define named tabs, folders, and optional commands.
-
-## Built with and credits
-
-Mica’s terminal session core is C, its macOS interface uses AppKit, and terminal escape sequences are parsed by [libvterm](https://github.com/neovim/libvterm) (MIT). The terminal font is [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) (SIL Open Font License 1.1, see `fonts/OFL.txt`). Local speech recognition uses [FluidAudio](https://github.com/FluidInference/FluidAudio) (Apache-2.0), Apple Core ML and AVFoundation, and [Parakeet Ultra by Moondream](https://huggingface.co/moondream/parakeet-ultra), based on NVIDIA Parakeet TDT 0.6B v3 and distributed as a Core ML conversion by FluidInference (CC BY 4.0). See [voice/THIRD_PARTY_NOTICES.md](voice/THIRD_PARTY_NOTICES.md) and [voice/ThirdPartyLicenses](voice/ThirdPartyLicenses/) for model and dependency notices. Mica itself is released under the [MIT License](LICENSE).
-
-## Build and contribute
+Choose **Mica → New Project Launcher…**, or run `make new-instance`. For a script, skip the prompts:
 
 ```sh
-make app       # build Mica.app and its local speech helper
-make test      # run the PTY, UI, launcher, and fixture checks
-make validate  # run tests, build, and check the app bundle
-make dist      # ad-hoc sign (SIGN_ID="Developer ID Application: …" to override) and zip build/Mica.zip
+python3 scripts/install-desktop-apps.py --new-instance \
+  --name "My Project" --folder ~/code/my-project --command codex
 ```
 
-Tests use local fixtures and never send prompts to agent CLIs. See [memory notes and a Zellij comparison](docs/MEMORY-BASELINE.md), [agent notifications](docs/AGENT-NOTIFICATIONS.md), and [all workflows](https://github.com/megasoft1978/mica-terminal/actions).
+Edit a project’s tabs later with **Project → Project Settings…**. A `.mica` layout file can define named tabs, folders and optional commands.
+
+## Under the hood
+
+A C session core owns the shells and scrollback, [libvterm](https://github.com/neovim/libvterm) parses escape sequences, and a thin AppKit layer draws everything. Three idle tabs use about 77 MB ([measurements](docs/MEMORY-BASELINE.md), [performance](docs/PERFORMANCE.md)); Mica is an integrated app, not a memory saver.
+
+```sh
+make test       # PTY, UI, launcher and fixture checks; never sends prompts to agent CLIs
+make validate   # tests, build, helper build and bundle checks
+make dist       # ad-hoc sign and zip (SIGN_ID="Developer ID Application: …" to override)
+```
+
+More: [UI plan](docs/UI-REVIEW.md) · [releasing](docs/RELEASING.md) · [agent notifications](docs/AGENT-NOTIFICATIONS.md) · [contributing](CONTRIBUTING.md) · [security](SECURITY.md)
+
+## Credits
+
+Mica is released under the [MIT License](LICENSE). It uses [libvterm](https://github.com/neovim/libvterm) (MIT), [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) (SIL OFL 1.1), and for local dictation [FluidAudio](https://github.com/FluidInference/FluidAudio) (Apache-2.0), Apple Core ML, and [Parakeet Ultra by Moondream](https://huggingface.co/moondream/parakeet-ultra), based on NVIDIA Parakeet TDT 0.6B v3 (CC BY 4.0). Full notices: [voice/THIRD_PARTY_NOTICES.md](voice/THIRD_PARTY_NOTICES.md).
