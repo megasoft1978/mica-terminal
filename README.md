@@ -34,6 +34,7 @@ The first dictation use downloads the local speech model (about 630 MB). Mica re
 - **Find the right project.** Project windows show a short project mark in the Dock and macOS app switcher icon; window titles keep the full project name.
 - **Speak a command.** Hold left Option, dictate, then review or edit the inserted text before pressing Return. Recognition runs locally after the initial model download.
 - **Keep dictation out of your way.** The live transcript and listening state appear in the bottom status strip, so they never cover terminal output or the cursor.
+- **Find what scrolled by.** Search scrollback with `⌘F`, step through matches with `⌘G`, and reorder tabs by dragging them.
 - **Open terminal links.** Command-click OSC 8 `http` and `https` links. Ordinary clicks still go to terminal apps that capture the mouse.
 - **Know what it costs.** Three idle tabs use about 77 MiB of physical footprint, roughly on par with Terminal.app running Zellij (about 64 MiB); Mica is an integrated app, not a memory saver. [Details](docs/MEMORY-BASELINE.md)
 - **Copy from remote sessions.** Programs over SSH or tmux can set your clipboard (OSC 52). Mica asks before the first copy in each tab and never lets a program read your clipboard.
