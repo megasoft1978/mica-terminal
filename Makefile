@@ -30,7 +30,7 @@ VTERM_STATIC := $(shell $(PKG_CONFIG) --variable=libdir vterm 2>/dev/null)/libvt
 CORE := src/session.c
 POMODORO := src/pomodoro.c
 
-.PHONY: all app sign dist test test-voice validate preflight clean run memory desktop-apps install-desktop-apps new-instance
+.PHONY: all app sign dist notarize test test-voice validate preflight clean run memory desktop-apps install-desktop-apps new-instance
 
 all: app
 
@@ -145,6 +145,15 @@ sign: app
 
 dist: sign
 	ditto -c -k --keepParent $(APP) $(BUILD)/Mica.zip
+
+# Needs a Developer ID Application certificate and a notarytool keychain profile; see docs/RELEASING.md.
+NOTARY_PROFILE ?= mica-notary
+
+notarize: dist
+	xcrun notarytool submit $(BUILD)/Mica.zip --keychain-profile "$(NOTARY_PROFILE)" --wait
+	xcrun stapler staple $(APP)
+	ditto -c -k --keepParent $(APP) $(BUILD)/Mica.zip
+	spctl --assess --type execute --verbose $(APP)
 
 clean:
 	rm -rf $(BUILD)
