@@ -51,6 +51,7 @@ The first dictation use downloads the local speech model (about 630 MB). Mica re
 | Choose a tab / browse scrollback | `⌘⇧P` / `⌘⇧S` |
 | Dictate | Hold left `⌥` |
 | Open a terminal web link | `⌘`-click an OSC 8 link |
+| New window | `⌘N` |
 | Resize / reset terminal text | `⌘+` / `⌘−` / `⌘0` |
 | Find in scrollback / next / previous | `⌘F` / `⌘G` / `⇧⌘G` |
 | Clear scrollback | `⌘K` |

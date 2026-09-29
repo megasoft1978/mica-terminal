@@ -3060,8 +3060,8 @@ static NSDictionary *MicaScalarDictionary(id object) {
     NSMenuItem *appRoot = [[NSMenuItem alloc] initWithTitle:@"Mica" action:nil keyEquivalent:@""];
     NSMenu *appMenu = [[NSMenu alloc] initWithTitle:@"Mica"];
     AddMenuItem(appMenu, @"About Mica", @selector(orderFrontStandardAboutPanel:), @"", 0);
-    AddMenuItem(appMenu, @"New Instance", @selector(newInstance:), @"",
-                NSEventModifierFlagCommand | NSEventModifierFlagOption).target = self;
+    AddMenuItem(appMenu, @"New Window", @selector(newInstance:), @"n",
+                NSEventModifierFlagCommand).target = self;
     [appMenu addItem:NSMenuItem.separatorItem];
     AddMenuItem(appMenu, @"Hide Mica", @selector(hide:), @"h", NSEventModifierFlagCommand);
     AddMenuItem(appMenu, @"Hide Others", @selector(hideOtherApplications:), @"h",
@@ -3158,6 +3158,7 @@ static NSDictionary *MicaScalarDictionary(id object) {
         @"Drag a tab  Reorder tabs",
         @"⌘+ / ⌘− / ⌘0  Increase / decrease / reset font size",
         @"⌘F / ⌘G / ⇧⌘G  Find in scrollback, next, previous",
+        @"⌘N  New window",
         @"⌘K  Clear scrollback",
         @"⌥⌘L  Toggle the light terminal theme",
         @"⌥⌘F  Fold selected lines",
@@ -3384,6 +3385,11 @@ static NSDictionary *MicaScalarDictionary(id object) {
     if (state != self.lastVoiceState) {
         self.lastVoiceState = state;
         [self.terminalView setNeedsDisplay:YES];
+        // The dictation strip is drawn text, so tell VoiceOver when its state changes.
+        if (controller.statusText.length)
+            NSAccessibilityPostNotificationWithUserInfo(self.terminalView, NSAccessibilityAnnouncementRequestedNotification,
+                @{ NSAccessibilityAnnouncementKey: controller.statusText,
+                   NSAccessibilityPriorityKey: @(NSAccessibilityPriorityMedium) });
     } else {
         [self.terminalView setNeedsDisplayInRect:[self.terminalView dictationStatusRect]];
     }
