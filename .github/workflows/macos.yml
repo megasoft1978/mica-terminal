@@ -19,10 +19,10 @@ jobs:
         with:
           path: build/swift-build
           key: swift-${{ runner.os }}-${{ hashFiles('voice/Package.resolved') }}
-      - name: Install libvterm
-        run: brew install libvterm pkg-config
       - name: Validate tests and app bundle
         run: make validate
+      - name: Sanitizer, fuzz and UI stress tests
+        run: make sanitize FUZZ_SEEDS=3 && make stress STRESS_SEEDS=3
       - name: Upload AppKit smoke results
         if: always()
         uses: actions/upload-artifact@v7

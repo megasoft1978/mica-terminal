@@ -3132,6 +3132,8 @@ static NSDictionary *MicaScalarDictionary(id object) {
         backing:NSBackingStoreBuffered defer:NO];
     self.projectName = nil;
     self.window.title = @"Mica Terminal";
+    // ARC owns the window; AppKit must not also release it when it closes (that double release crashed).
+    self.window.releasedWhenClosed = NO;
     // One merged title bar: the tab strip sits beside the traffic lights instead of under a second bar.
     self.window.styleMask |= NSWindowStyleMaskFullSizeContentView;
     self.window.titlebarAppearsTransparent = YES;

@@ -36,10 +36,9 @@
 
 ## Build it
 
-You need Xcode’s command line tools and [Homebrew](https://brew.sh).
+You need Xcode’s command line tools. Everything else, including the terminal parsing library, is in the repository.
 
 ```sh
-brew install libvterm pkg-config
 git clone https://github.com/megasoft1978/mica-terminal.git
 cd mica-terminal
 make app && open build/Mica.app
@@ -73,15 +72,17 @@ Edit a project’s tabs later with **Project → Project Settings…**. A `.mica
 
 ## Under the hood
 
-A C session core owns the shells and scrollback, [libvterm](https://github.com/neovim/libvterm) parses escape sequences, and a thin AppKit layer draws everything. Three idle tabs use about 77 MB ([measurements](docs/MEMORY-BASELINE.md), [performance](docs/PERFORMANCE.md)); Mica is an integrated app, not a memory saver.
+A C session core owns the shells and scrollback, a vendored, patched [libvterm](third_party/libvterm) parses escape sequences, and a thin AppKit layer draws everything. Three idle tabs use about 77 MB ([measurements](docs/MEMORY-BASELINE.md), [performance](docs/PERFORMANCE.md)); Mica is an integrated app, not a memory saver.
 
 ```sh
 make test       # PTY, UI, launcher and fixture checks; never sends prompts to agent CLIs
+make sanitize   # session tests and a fuzzer under AddressSanitizer and UBSan
+make stress     # thousands of random UI actions under the sanitizers
 make validate   # tests, build, helper build and bundle checks
 make dist       # ad-hoc sign and zip (SIGN_ID="Developer ID Application: …" to override)
 ```
 
-More: [UI plan](docs/UI-REVIEW.md) · [releasing](docs/RELEASING.md) · [agent notifications](docs/AGENT-NOTIFICATIONS.md) · [contributing](CONTRIBUTING.md) · [security](SECURITY.md)
+More: [stability testing](docs/STABILITY.md) · [UI plan](docs/UI-REVIEW.md) · [releasing](docs/RELEASING.md) · [agent notifications](docs/AGENT-NOTIFICATIONS.md) · [contributing](CONTRIBUTING.md) · [security](SECURITY.md)
 
 ## Credits
 

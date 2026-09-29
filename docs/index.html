@@ -171,12 +171,10 @@
     <div class="wrap" id="install">
       <section class="install">
         <div>
-          <h2>Build it in four commands.</h2>
-          <p>You need the Xcode command line tools and Homebrew. Mica links its one C dependency into the app, so the finished bundle runs on its own.</p>
+          <h2>Build it in three commands.</h2>
+          <p>You need the Xcode command line tools. The terminal parsing library ships in the repository and is linked into the app, so the finished bundle runs on its own.</p>
         </div>
-        <div class="code" role="group" aria-label="Build instructions"><button class="copy" type="button" data-copy="brew install libvterm pkg-config&#10;git clone https://github.com/megasoft1978/mica-terminal.git&#10;cd mica-terminal&#10;make app &amp;&amp; open build/Mica.app">Copy</button><span class="c"># the terminal parsing library</span>
-brew install libvterm pkg-config
-git clone https://github.com/megasoft1978/mica-terminal.git
+        <div class="code" role="group" aria-label="Build instructions"><button class="copy" type="button" data-copy="git clone https://github.com/megasoft1978/mica-terminal.git&#10;cd mica-terminal&#10;make app &amp;&amp; open build/Mica.app">Copy</button>git clone https://github.com/megasoft1978/mica-terminal.git
 cd mica-terminal
 make app &amp;&amp; open build/Mica.app</div>
       </section>
@@ -246,7 +244,7 @@ make app &amp;&amp; open build/Mica.app</div>
     <div class="wrap">
       <div class="cols">
         <div>
-          <p>Mica uses AppKit and a C session core, with <a href="https://github.com/neovim/libvterm">libvterm</a> (MIT) parsing terminal output and <a href="https://github.com/JetBrains/JetBrainsMono">JetBrains Mono</a> (SIL OFL 1.1) as its font. Local dictation uses <a href="https://github.com/FluidInference/FluidAudio">FluidAudio</a> (Apache-2.0), Apple Core ML, and <a href="https://huggingface.co/moondream/parakeet-ultra">Parakeet Ultra by Moondream</a>, based on NVIDIA Parakeet TDT 0.6B v3 (CC BY 4.0). See the <a href="https://github.com/megasoft1978/mica-terminal/blob/main/voice/THIRD_PARTY_NOTICES.md">full notices</a>.</p>
+          <p>Mica uses AppKit and a C session core, with a patched copy of <a href="https://github.com/neovim/libvterm">libvterm</a> (MIT) parsing terminal output and <a href="https://github.com/JetBrains/JetBrainsMono">JetBrains Mono</a> (SIL OFL 1.1) as its font. Local dictation uses <a href="https://github.com/FluidInference/FluidAudio">FluidAudio</a> (Apache-2.0), Apple Core ML, and <a href="https://huggingface.co/moondream/parakeet-ultra">Parakeet Ultra by Moondream</a>, based on NVIDIA Parakeet TDT 0.6B v3 (CC BY 4.0). See the <a href="https://github.com/megasoft1978/mica-terminal/blob/main/voice/THIRD_PARTY_NOTICES.md">full notices</a>.</p>
           <p>Mica is released under the <a href="https://github.com/megasoft1978/mica-terminal/blob/main/LICENSE">MIT License</a>. © 2026 Gabriele Ferreri.</p>
         </div>
         <nav aria-label="Footer">

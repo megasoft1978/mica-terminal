@@ -1,5 +1,4 @@
 CC := clang
-PKG_CONFIG ?= pkg-config
 MACOSX_DEPLOYMENT_TARGET ?= 14.0
 MACOSX_VERSION_FLAG := -mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET)
 BUILD := build
@@ -17,21 +16,36 @@ APP_LAUNCHER_SCRIPT := $(APP)/Contents/Resources/Scripts/install-desktop-apps.py
 APP_ICON_TOOL := $(APP)/Contents/Helpers/mica-project-icon
 VOICE_SWIFT_SOURCES := $(shell find voice/Sources -type f -not -name '.*')
 VOICE_LICENSES := $(wildcard voice/ThirdPartyLicenses/*)
-VTERM_CFLAGS := $(shell $(PKG_CONFIG) --cflags vterm 2>/dev/null)
-VTERM_LIBS := $(shell $(PKG_CONFIG) --libs vterm 2>/dev/null)
-ifeq ($(strip $(VTERM_LIBS)),)
-$(error libvterm not found: run `brew install libvterm pkg-config`)
-endif
 CFLAGS ?= -O2
 C_WARNINGS := -Wall -Wextra -Wpedantic
 OBJC_WARNINGS := -Wall -Wextra -Wno-deprecated-declarations
-CPPFLAGS := -Iinclude $(VTERM_CFLAGS)
-# Link libvterm statically into the app so the bundle runs signed (hardened runtime) and on Macs without Homebrew.
-VTERM_STATIC := $(shell $(PKG_CONFIG) --variable=libdir vterm 2>/dev/null)/libvterm.a
+CPPFLAGS := -Iinclude -Ithird_party/libvterm/include
+# libvterm 0.3.3 is vendored (third_party/libvterm, MIT) with robustness patches found by the fuzz tests, and
+# linked statically so the bundle runs signed (hardened runtime) and needs no Homebrew libraries.
+VTERM_SRCS := $(wildcard third_party/libvterm/src/*.c)
+VTERM_HEADERS := $(wildcard third_party/libvterm/src/*.h third_party/libvterm/src/*.inc third_party/libvterm/src/encoding/*.inc third_party/libvterm/include/*.h)
+VTERM_OBJS := $(patsubst third_party/libvterm/src/%.c,$(BUILD)/libvterm/%.o,$(VTERM_SRCS))
+VTERM_STATIC := $(BUILD)/libvterm.a
+VTERM_SAN_OBJS := $(patsubst third_party/libvterm/src/%.c,$(BUILD)/libvterm-san/%.o,$(VTERM_SRCS))
+VTERM_SAN_STATIC := $(BUILD)/libvterm-san.a
+VTERM_CC_FLAGS := -std=c99 -Ithird_party/libvterm/include -Ithird_party/libvterm/src
+$(BUILD)/libvterm/%.o: third_party/libvterm/src/%.c $(VTERM_HEADERS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(VTERM_CC_FLAGS) -c $< -o $@
+$(VTERM_STATIC): $(VTERM_OBJS)
+	@rm -f $@
+	ar rcs $@ $^
+$(BUILD)/libvterm-san/%.o: third_party/libvterm/src/%.c $(VTERM_HEADERS)
+	@mkdir -p $(dir $@)
+	$(CC) $(SAN_FLAGS) $(MACOSX_VERSION_FLAG) $(VTERM_CC_FLAGS) -c $< -o $@
+$(VTERM_SAN_STATIC): $(VTERM_SAN_OBJS)
+	@rm -f $@
+	ar rcs $@ $^
+
 CORE := src/session.c
 POMODORO := src/pomodoro.c
 
-.PHONY: all app sign dist notarize screenshots test test-voice validate preflight clean run memory desktop-apps install-desktop-apps new-instance
+.PHONY: all app sign dist notarize screenshots sanitize fuzz stress test test-voice validate preflight clean run memory desktop-apps install-desktop-apps new-instance
 
 all: app
 
@@ -88,18 +102,18 @@ $(PROJECT_ICON_TOOL): scripts/build-project-icon.m
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(OBJC_WARNINGS) -fobjc-arc -framework Cocoa $< -o $@
 
-$(BUILD)/test-session: tests/test_session.c $(CORE) include/mica.h
+$(BUILD)/test-session: tests/test_session.c $(CORE) include/mica.h $(VTERM_STATIC)
 	@mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(C_WARNINGS) $(CPPFLAGS) $(CORE) tests/test_session.c $(VTERM_LIBS) -o $@
+	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(C_WARNINGS) $(CPPFLAGS) $(CORE) tests/test_session.c $(VTERM_STATIC) -o $@
 
 $(BUILD)/test-pomodoro: tests/test_pomodoro.c $(POMODORO) include/mica_pomodoro.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(C_WARNINGS) $(CPPFLAGS) $(POMODORO) tests/test_pomodoro.c -lm -o $@
 
-$(BUILD)/test-ui: tests/test_app_ui.m src/mica_app.m src/mica_voice_controller.m src/mica_voice_controller.h src/mica_diagnostics.m src/mica_diagnostics.h $(CORE) $(POMODORO) include/mica.h include/mica_pomodoro.h
+$(BUILD)/test-ui: $(VTERM_STATIC) tests/test_app_ui.m src/mica_app.m src/mica_voice_controller.m src/mica_voice_controller.h src/mica_diagnostics.m src/mica_diagnostics.h $(CORE) $(POMODORO) include/mica.h include/mica_pomodoro.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(OBJC_WARNINGS) -fobjc-arc $(CPPFLAGS) \
-		-framework Cocoa -framework AVFoundation -framework UserNotifications $(CORE) $(POMODORO) src/mica_diagnostics.m src/mica_voice_controller.m tests/test_app_ui.m $(VTERM_LIBS) -o $@
+		-framework Cocoa -framework AVFoundation -framework UserNotifications $(CORE) $(POMODORO) src/mica_diagnostics.m src/mica_voice_controller.m tests/test_app_ui.m $(VTERM_STATIC) -o $@
 
 test: $(BUILD)/test-session $(BUILD)/test-pomodoro $(BUILD)/test-ui $(APP_ICON) $(PROJECT_ICON_TOOL)
 	rm -f $(BUILD)/ui-smoke.png $(BUILD)/ui-smoke-report.txt
@@ -161,8 +175,37 @@ notarize: dist
 	ditto -c -k --keepParent $(APP) $(BUILD)/Mica.zip
 	spctl --assess --type execute --verbose $(APP)
 
+# Sanitizer builds: the session tests and the fuzz/stress test run under AddressSanitizer + UBSan.
+SAN_FLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1
+
+$(BUILD)/test-session-san: tests/test_session.c $(CORE) include/mica.h $(VTERM_SAN_STATIC)
+	@mkdir -p $(BUILD)
+	$(CC) $(SAN_FLAGS) $(MACOSX_VERSION_FLAG) $(C_WARNINGS) $(CPPFLAGS) $(CORE) tests/test_session.c $(VTERM_SAN_STATIC) -o $@
+
+$(BUILD)/fuzz-session-san: tests/fuzz_session.c $(CORE) include/mica.h $(VTERM_SAN_STATIC)
+	@mkdir -p $(BUILD)
+	$(CC) $(SAN_FLAGS) $(MACOSX_VERSION_FLAG) $(C_WARNINGS) $(CPPFLAGS) $(CORE) tests/fuzz_session.c $(VTERM_SAN_STATIC) -o $@
+
+$(BUILD)/stress-ui-san: tests/stress_app_ui.m src/mica_app.m src/mica_voice_controller.m src/mica_diagnostics.m $(CORE) $(POMODORO) include/mica.h $(VTERM_SAN_STATIC)
+	@mkdir -p $(BUILD)
+	$(CC) $(SAN_FLAGS) $(MACOSX_VERSION_FLAG) -Wno-deprecated-declarations -fobjc-arc $(CPPFLAGS) \
+		-framework Cocoa -framework AVFoundation -framework UserNotifications $(CORE) $(POMODORO) src/mica_diagnostics.m src/mica_voice_controller.m tests/stress_app_ui.m $(VTERM_SAN_STATIC) -o $@
+
+# STRESS_SEEDS random seeds of 1500 random user actions each, under the sanitizers.
+STRESS_SEEDS ?= 3
+stress: $(BUILD)/stress-ui-san
+	@i=1; while [ $$i -le $(STRESS_SEEDS) ]; do $(BUILD)/stress-ui-san $$((i * 104729)) 1500 || exit 1; i=$$((i+1)); done
+
+# FUZZ_SEEDS: how many random seeds to run (default 3). Seeds are printed so failures can be replayed.
+FUZZ_SEEDS ?= 3
+fuzz: $(BUILD)/fuzz-session-san
+	@i=1; while [ $$i -le $(FUZZ_SEEDS) ]; do $(BUILD)/fuzz-session-san $$((i * 7919)) || exit 1; i=$$((i+1)); done
+
+sanitize: $(BUILD)/test-session-san fuzz
+	$(BUILD)/test-session-san
+
 # Renders the website/README product images from the real terminal view (fictional project, sample output only).
-$(BUILD)/render-marketing: tools/render_marketing.m src/mica_app.m src/mica_voice_controller.m src/mica_diagnostics.m $(CORE) $(POMODORO) include/mica.h
+$(BUILD)/render-marketing: $(VTERM_STATIC) tools/render_marketing.m src/mica_app.m src/mica_voice_controller.m src/mica_diagnostics.m $(CORE) $(POMODORO) include/mica.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(OBJC_WARNINGS) -fobjc-arc $(CPPFLAGS) \
 		-framework Cocoa -framework AVFoundation -framework UserNotifications $(CORE) $(POMODORO) src/mica_diagnostics.m src/mica_voice_controller.m tools/render_marketing.m $(VTERM_STATIC) -o $@

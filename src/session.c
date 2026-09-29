@@ -1034,8 +1034,12 @@ static int history_push(int cols, const VTermScreenCell *cells, void *user) {
     memset(destination, 0, session->history_cols * sizeof(*destination));
     memcpy(destination, cells, (size_t)session->cols * sizeof(*cells));
     if (session->history_link_ids && session->screen_link_ids) {
-        memcpy(session->history_link_ids + slot * session->history_cols,
-            session->screen_link_ids, session->history_cols * sizeof(*session->history_link_ids));
+        // history_cols only grows, so after narrowing the window it exceeds the screen width; copy just the
+        // screen's columns and clear the rest of the history row.
+        uint32_t *link_row = session->history_link_ids + slot * session->history_cols;
+        size_t link_columns = (size_t)session->cols < session->history_cols ? (size_t)session->cols : session->history_cols;
+        memset(link_row, 0, session->history_cols * sizeof(*link_row));
+        memcpy(link_row, session->screen_link_ids, link_columns * sizeof(*link_row));
     }
     size_t new_display_count = display_history_count(session);
     if (new_display_count > old_display_count && session->view_offset > 0 &&
