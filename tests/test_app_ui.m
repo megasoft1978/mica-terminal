@@ -1007,8 +1007,8 @@ static int MicaRunUISelfTest(void) {
                 lazygitInputDoesNotShowLoading]);
         MicaUITestRecord(report, &allPassed, delegate.terminalView.terminalFont.pointSize >= 16,
                          @"default terminal font remains at least 16 points");
-        MicaUITestRecord(report, &allPassed, kTabTitleFontSize <= 11.0 && kHeaderHeight == 28.0,
-                         @"tab titles use a compact 10.5-point system font and a shorter 28-point header");
+        MicaUITestRecord(report, &allPassed, kTabTitleFontSize == 12.0 && kHeaderHeight == 28.0,
+                         @"tab titles use a readable 12-point system font in a 28-point header");
         NSDictionary *footerTextAttrs = @{ NSFontAttributeName: [NSFont systemFontOfSize:10.5] };
         NSFont *footerFont = footerTextAttrs[NSFontAttributeName];
         NSFont *tabFont = [NSFont systemFontOfSize:kTabTitleFontSize weight:NSFontWeightMedium];

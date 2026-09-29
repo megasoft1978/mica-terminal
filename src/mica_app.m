@@ -18,7 +18,7 @@ static const CGFloat kStatusHeight = 32.0;
 static NSTimeInterval gLastVoiceAnimationAt = 0;
 static const NSTimeInterval kAgentActivityQuietInterval = 2.5;
 static const CGFloat kFontSizeDefault = 16.0;
-static const CGFloat kTabTitleFontSize = 10.5;
+static const CGFloat kTabTitleFontSize = 12.0;
 static const CGFloat kTabMinimumWidth = 140.0;
 static const CGFloat kTabMaximumWidth = 240.0;
 static const CGFloat kTabOverflowWidth = 56.0;
@@ -533,6 +533,19 @@ static CGFloat MicaCenteredTextBaseline(NSFont *font, CGFloat height) {
     return (height - (font.ascender - font.descender)) / 2.0 - font.descender;
 }
 
+// Draws one line of text vertically centered in `rect`, optionally centered or right-aligned horizontally.
+// (drawInRect: top-aligns text, which made some labels sit higher than their neighbours.)
+static void MicaDrawCenteredLine(NSString *text, NSRect rect, NSDictionary *attributes, NSTextAlignment alignment) {
+    if (!text.length) return;
+    NSFont *font = attributes[NSFontAttributeName];
+    CGFloat width = [text sizeWithAttributes:attributes].width;
+    CGFloat x = NSMinX(rect);
+    if (alignment == NSTextAlignmentCenter) x += MAX(0, (rect.size.width - width) / 2.0);
+    else if (alignment == NSTextAlignmentRight) x += MAX(0, rect.size.width - width);
+    [text drawAtPoint:NSMakePoint(x, NSMinY(rect) + MicaCenteredTextBaseline(font, rect.size.height))
+       withAttributes:attributes];
+}
+
 static NSString *MicaTruncatedText(NSString *text, CGFloat width, NSDictionary *attributes) {
     if (!text.length || width <= 0) return @"";
     if ([text sizeWithAttributes:attributes].width <= width) return text;
@@ -556,6 +569,27 @@ static NSString *MicaTruncatedText(NSString *text, CGFloat width, NSDictionary *
     }
     NSUInteger end = low ? clusterEnds[low - 1].unsignedIntegerValue : 0;
     return [[text substringToIndex:end] stringByAppendingString:ellipsis];
+}
+
+// Keeps the END of the text (most recent words) and puts the ellipsis at the start.
+static NSString *MicaHeadTruncatedText(NSString *text, CGFloat width, NSDictionary *attributes) {
+    if (!text.length || width <= 0) return @"";
+    if ([text sizeWithAttributes:attributes].width <= width) return text;
+    NSMutableArray<NSNumber *> *starts = [NSMutableArray array];
+    [text enumerateSubstringsInRange:NSMakeRange(0, text.length)
+                             options:NSStringEnumerationByComposedCharacterSequences
+                          usingBlock:^(__unused NSString *substring, NSRange range,
+                                       __unused NSRange enclosing, __unused BOOL *stop) {
+        [starts addObject:@(range.location)];
+    }];
+    NSUInteger low = 0, high = starts.count;
+    while (low < high) {
+        NSUInteger middle = low + (high - low) / 2;
+        NSString *candidate = [@"…" stringByAppendingString:[text substringFromIndex:starts[middle].unsignedIntegerValue]];
+        if ([candidate sizeWithAttributes:attributes].width <= width) high = middle; else low = middle + 1;
+    }
+    if (low >= starts.count) return @"";
+    return [@"…" stringByAppendingString:[text substringFromIndex:starts[low].unsignedIntegerValue]];
 }
 
 static NSURL *MicaSafeHyperlinkURL(NSString *rawURL) {
@@ -936,7 +970,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     NSString *modeName = mode == MicaUIModeTab ? @"TAB PICKER" :
         ((mode == MicaUIModeScroll || offset > 0) ? @"SCROLLBACK" : nil);
     if (modeName) {
-        NSDictionary *attributes = @{NSFontAttributeName: [NSFont systemFontOfSize:10.5 weight:NSFontWeightSemibold]};
+        NSDictionary *attributes = @{NSFontAttributeName: [NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold]};
         x = 12 + [modeName sizeWithAttributes:attributes].width + 18 + 12;
     }
     return NSMakeRect(x, floor((kStatusHeight - 23) / 2), 190, 23);
@@ -1357,7 +1391,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     NSString *modeName = mode == MicaUIModeTab ? @"TAB PICKER" : (scrollView ? @"SCROLLBACK" : nil);
     NSColor *modeColor = scrollView ? NSColor.systemPurpleColor : NSColor.controlAccentColor;
     NSDictionary *modeAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:10.5 weight:NSFontWeightSemibold],
+        NSFontAttributeName: [NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold],
         NSForegroundColorAttributeName: NSColor.alternateSelectedControlTextColor
     };
     CGFloat contextX = 12;
@@ -1407,7 +1441,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         [ringProgress stroke];
     }
     NSDictionary *timerAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:10.5 weight:NSFontWeightSemibold],
+        NSFontAttributeName: [NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold],
         NSForegroundColorAttributeName: NSColor.labelColor
     };
     [timerText drawAtPoint:NSMakePoint(NSMinX(timerControl) + 25,
@@ -1477,14 +1511,14 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         context = [NSString stringWithFormat:@"%d lines back · Esc returns live", viewOffset];
     }
     NSDictionary *contextAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:10.5],
+        NSFontAttributeName: [NSFont systemFontOfSize:11.5],
         NSForegroundColorAttributeName: contextColor
     };
 
     NSArray<NSString *> *hintParts = @[@"⌘/ Shortcuts", @"⌥ Dictate", @"⌘1–8 Switch tab",
         @"⌘T New tab", @"⌘Q Quit"];
     NSDictionary *hintAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:10.5],
+        NSFontAttributeName: [NSFont systemFontOfSize:11.5],
         NSForegroundColorAttributeName: [NSColor.labelColor colorWithAlphaComponent:0.70]
     };
     NSFont *hintFont = hintAttrs[NSFontAttributeName];
@@ -1552,7 +1586,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     }
 
     NSDictionary *statusAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:10.5 weight:NSFontWeightSemibold],
+        NSFontAttributeName: [NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold],
         NSForegroundColorAttributeName: state == MicaVoiceControllerStateFailed
             ? NSColor.systemRedColor : NSColor.labelColor
     };
@@ -1580,14 +1614,18 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     NSMutableParagraphStyle *tailStyle = [NSMutableParagraphStyle new];
     tailStyle.lineBreakMode = NSLineBreakByTruncatingHead;
     NSDictionary *transcriptAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:10.5],
+        NSFontAttributeName: [NSFont systemFontOfSize:11.5],
         NSForegroundColorAttributeName: [NSColor.labelColor colorWithAlphaComponent:0.82],
         NSParagraphStyleAttributeName: tailStyle
     };
-    CGFloat transcriptX = 205;
-    NSRect transcriptRect = NSMakeRect(transcriptX, 0,
+    // Start after the status label (measured) so long labels never collide with the transcript.
+    CGFloat statusWidth = [statusText sizeWithAttributes:statusAttrs].width;
+    CGFloat transcriptX = MAX(205, 38 + statusWidth + 16);
+    NSRect transcriptRect = NSMakeRect(transcriptX, NSMinY(status),
         MAX(0, status.size.width - transcriptX - 12), status.size.height);
-    [text drawInRect:transcriptRect withAttributes:transcriptAttrs];
+    // Head truncation keeps the most recent words visible; the line is centered like its neighbours.
+    MicaDrawCenteredLine(MicaHeadTruncatedText(text, transcriptRect.size.width, transcriptAttrs),
+                         transcriptRect, transcriptAttrs, NSTextAlignmentLeft);
 
     BOOL showsActivity = state == MicaVoiceControllerStatePreparing ||
         state == MicaVoiceControllerStateTranscribing;
@@ -1752,7 +1790,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
                 NSParagraphStyleAttributeName: moreStyle
             };
             NSString *moreLabel = [NSString stringWithFormat:@"… %lu", (unsigned long)hidden];
-            [moreLabel drawInRect:NSInsetRect(moreRect, 2, 4) withAttributes:moreAttrs];
+            MicaDrawCenteredLine(moreLabel, moreRect, moreAttrs, NSTextAlignmentCenter);
         }
         if (self.owner.projectName.length) {
             CGFloat badgeWidth = [self projectBadgeWidth];
@@ -1772,7 +1810,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
             NSRect projectText = NSInsetRect(badge, 10, 2);
             NSString *projectTitle = MicaTruncatedText(self.owner.projectName,
                 projectText.size.width, projectAttrs);
-            [projectTitle drawInRect:projectText withAttributes:projectAttrs];
+            MicaDrawCenteredLine(projectTitle, projectText, projectAttrs, NSTextAlignmentLeft);
         }
     }
     for (NSInteger row = 0; row < _rows; row++) {
