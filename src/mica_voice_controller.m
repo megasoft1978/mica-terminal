@@ -18,6 +18,9 @@
 @property(nonatomic, assign, readwrite) BOOL hasProgress;
 @property(nonatomic, assign, readwrite) BOOL isPushToTalk;
 @property(nonatomic, copy) NSString *workingDirectory;
+@property(nonatomic, strong) NSTask *prefetchTask;
+@property(nonatomic, copy, readwrite) NSString *prefetchStatus;
+@property(nonatomic, assign, readwrite) double prefetchFraction;
 @property(nonatomic, strong) NSTask *process;
 @property(nonatomic, strong) NSPipe *outputPipe;
 @property(nonatomic, strong) NSPipe *audioPipe;
@@ -73,25 +76,64 @@
 
 - (void)prewarmSpeechModelIfNeeded {
     NSString *path = self.helperURL.path;
-    if (![NSFileManager.defaultManager isExecutableFileAtPath:path]) return;
+    if (self.prefetchTask.isRunning || ![NSFileManager.defaultManager isExecutableFileAtPath:path]) return;
     NSDate *modified = [NSFileManager.defaultManager attributesOfItemAtPath:path error:nil][NSFileModificationDate];
     NSString *stamp = [NSString stringWithFormat:@"%.0f", modified.timeIntervalSince1970];
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     if ([[defaults stringForKey:@"MicaWarmedHelperStamp"] isEqualToString:stamp]) return;
     NSTask *task = [NSTask new];
+    NSPipe *output = [NSPipe pipe];
     task.executableURL = self.helperURL;
     task.arguments = @[@"warm"];
     task.standardInput = NSFileHandle.fileHandleWithNullDevice;
-    task.standardOutput = NSFileHandle.fileHandleWithNullDevice;
+    task.standardOutput = output;
     task.standardError = NSFileHandle.fileHandleWithNullDevice;
-    task.qualityOfService = NSQualityOfServiceBackground;
+    task.qualityOfService = NSQualityOfServiceUtility;
+    __weak typeof(self) weakSelf = self;
+    NSMutableData *buffer = [NSMutableData data];
+    output.fileHandleForReading.readabilityHandler = ^(NSFileHandle *handle) {
+        NSData *data = handle.availableData;
+        if (!data.length) { handle.readabilityHandler = nil; return; }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [buffer appendData:data];
+            NSRange newline;
+            while ((newline = [buffer rangeOfData:[NSData dataWithBytes:"\n" length:1] options:0
+                                            range:NSMakeRange(0, buffer.length)]).location != NSNotFound) {
+                NSData *line = [buffer subdataWithRange:NSMakeRange(0, newline.location)];
+                [buffer replaceBytesInRange:NSMakeRange(0, newline.location + 1) withBytes:NULL length:0];
+                NSDictionary *message = [NSJSONSerialization JSONObjectWithData:line options:0 error:nil];
+                if (![message isKindOfClass:NSDictionary.class] ||
+                    ![message[@"type"] isEqual:@"status"]) continue;
+                MicaVoiceController *strongSelf = weakSelf;
+                NSNumber *fraction = [message[@"progress"] isKindOfClass:NSNumber.class] ? message[@"progress"] : nil;
+                strongSelf.prefetchStatus = [message[@"message"] isKindOfClass:NSString.class] ? message[@"message"] : @"";
+                strongSelf.prefetchFraction = fraction ? MIN(1.0, MAX(0.0, fraction.doubleValue)) : -1;
+                [strongSelf notifyUpdate];
+            }
+        });
+    };
     task.terminationHandler = ^(NSTask *finished) {
-        MicaDiagnosticsLog(@"dictation", [NSString stringWithFormat:@"speech model prewarm finished status=%d", finished.terminationStatus]);
+        MicaDiagnosticsLog(@"dictation", [NSString stringWithFormat:@"speech model prefetch finished status=%d", finished.terminationStatus]);
         if (finished.terminationStatus == 0) [defaults setObject:stamp forKey:@"MicaWarmedHelperStamp"];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            MicaVoiceController *strongSelf = weakSelf;
+            strongSelf.prefetchTask = nil;
+            strongSelf.prefetchStatus = nil;
+            strongSelf.prefetchFraction = -1;
+            [strongSelf notifyUpdate];
+        });
     };
     NSError *error = nil;
-    if ([task launchAndReturnError:&error]) MicaDiagnosticsLog(@"dictation", @"prewarming the speech model in the background");
+    if ([task launchAndReturnError:&error]) {
+        self.prefetchTask = task;
+        self.prefetchStatus = @"Checking speech model files…";
+        self.prefetchFraction = -1;
+        MicaDiagnosticsLog(@"dictation", @"prefetching the speech model in the background");
+        [self notifyUpdate];
+    }
 }
+
+- (BOOL)isPrefetchingModel { return self.prefetchTask.isRunning; }
 
 - (instancetype)initWithHelperURL:(NSURL *)helperURL {
     self = [super init];
@@ -136,6 +178,7 @@
 }
 
 - (void)startPushToTalkForWorkingDirectory:(NSString *)workingDirectory {
+    if (self.prefetchTask.isRunning) [self.prefetchTask terminate];
     NSAssert(NSThread.isMainThread, @"Voice actions must run on the main thread");
     if (self.isBusy) return;
     [self beginForWorkingDirectory:workingDirectory];

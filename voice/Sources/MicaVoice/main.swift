@@ -72,13 +72,38 @@ private struct MicaVoiceCLI {
         }
     }
 
-    /// Loads the already-downloaded models once so Core ML rebuilds its compiled cache in the
-    /// background (it does after every app update). Never downloads anything.
+    /// Downloads the speech model if it is missing (reporting progress as JSON lines) and loads it once
+    /// so Core ML builds its compiled cache. Run by the app in the background after first launch and
+    /// after each update, so the first dictation does not wait.
     private static func warmModels() async {
         let cacheDirectory = modelCacheDirectory()
-        guard AsrModels.modelsExist(at: cacheDirectory, version: .ultra) else { exit(0) }
-        _ = try? await AsrModels.downloadAndLoad(to: cacheDirectory, version: .ultra, progressHandler: nil)
-        exit(0)
+        let alreadyDownloaded = AsrModels.modelsExist(at: cacheDirectory, version: .ultra)
+        let progressThrottle = DownloadProgressThrottle()
+        do {
+            _ = try await AsrModels.downloadAndLoad(
+                to: cacheDirectory,
+                version: .ultra,
+                progressHandler: { progress in
+                    guard progressThrottle.shouldEmit(progress) else { return }
+                    switch progress.phase {
+                    case .listing:
+                        emit(HelperMessage(type: "status", message: "Checking speech model files…"))
+                    case .downloading:
+                        emit(HelperMessage(
+                            type: "status",
+                            message: alreadyDownloaded ? "Loading the speech model…" : "Downloading speech model",
+                            progress: alreadyDownloaded ? nil : progress.fractionCompleted
+                        ))
+                    case .compiling:
+                        emit(HelperMessage(type: "status", message: "Optimizing the speech model for this Mac…"))
+                    }
+                }
+            )
+            exit(0)
+        } catch {
+            emit(HelperMessage(type: "error", message: "\(error.localizedDescription)"))
+            exit(1)
+        }
     }
 
     private static func transcribeStream() async {

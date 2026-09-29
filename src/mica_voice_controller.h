@@ -26,6 +26,10 @@ typedef NS_ENUM(NSInteger, MicaVoiceControllerState) {
 @property(nonatomic, assign, readonly) double progress;
 @property(nonatomic, assign, readonly) BOOL hasProgress;
 @property(nonatomic, assign, readonly) BOOL isPushToTalk;
+// Background model download at launch: status text and fraction (-1 while indeterminate).
+@property(nonatomic, assign, readonly) BOOL isPrefetchingModel;
+@property(nonatomic, copy, readonly) NSString *prefetchStatus;
+@property(nonatomic, assign, readonly) double prefetchFraction;
 
 - (instancetype)initWithHelperURL:(NSURL *)helperURL;
 - (void)startPushToTalkForWorkingDirectory:(NSString *)workingDirectory;

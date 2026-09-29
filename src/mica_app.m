@@ -243,6 +243,18 @@ static NSString *MicaAgentNameForText(NSString *text) {
     return nil;
 }
 
+static const NSUInteger kDictationVisibleWords = 8;
+
+// The last few words of a running transcript, so the status bar shows progress without filling up.
+static NSString *MicaLastWords(NSString *text, NSUInteger count) {
+    NSArray<NSString *> *words = [text componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSMutableArray<NSString *> *kept = [NSMutableArray array];
+    for (NSString *word in words) if (word.length) [kept addObject:word];
+    if (kept.count <= count) return [kept componentsJoinedByString:@" "];
+    NSArray *tail = [kept subarrayWithRange:NSMakeRange(kept.count - count, count)];
+    return [@"… " stringByAppendingString:[tail componentsJoinedByString:@" "]];
+}
+
 static NSString *MicaAgentNameForTab(MicaTab *tab) {
     if (tab.currentCommand.length) return MicaAgentNameForText(tab.currentCommand);
     NSString *terminalTitleAgent = MicaAgentNameForText(tab.terminalTitle);
@@ -1718,6 +1730,15 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         context = [[folderLabel stringByAppendingString:
             MicaTruncatedPath(folderName, pathWidth, contextAttrs)] stringByAppendingString:branchSuffix];
     }
+    MicaVoiceController *prefetchVoice = self.owner.voiceController;
+    BOOL prefetching = prefetchVoice.isPrefetchingModel;
+    if (prefetching) {
+        double fraction = prefetchVoice.prefetchFraction;
+        context = fraction > 0
+            ? [NSString stringWithFormat:@"%@ · %.0f%%", prefetchVoice.prefetchStatus, fraction * 100.0]
+            : (prefetchVoice.prefetchStatus.length ? prefetchVoice.prefetchStatus : @"Preparing speech");
+        if (![context hasSuffix:@"%"] && ![context hasSuffix:@"…"]) context = [context stringByAppendingString:@"…"];
+    }
     CGFloat contextWidth = availableWidth;
     contextWidth = MIN(contextWidth, [context sizeWithAttributes:contextAttrs].width);
     NSString *shortContext = MicaTruncatedText(context, contextWidth, contextAttrs);
@@ -1744,6 +1765,24 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
             [hintDivider stroke];
             x += 8;
         }
+    }
+    if (prefetching) {
+        NSRect track = NSMakeRect(0, 0, self.bounds.size.width, 2);
+        [[NSColor.controlAccentColor colorWithAlphaComponent:0.16] setFill];
+        NSRectFill(track);
+        double fraction = prefetchVoice.prefetchFraction;
+        NSRect fill = track;
+        if (fraction > 0) {
+            fill.size.width *= fraction;
+        } else {
+            CGFloat segmentWidth = MIN(100, track.size.width * 0.2);
+            CGFloat phase = fmod(NSProcessInfo.processInfo.systemUptime / 1.25, 2.0);
+            if (phase > 1.0) phase = 2.0 - phase;
+            fill.origin.x += MAX(0, track.size.width - segmentWidth) * phase;
+            fill.size.width = segmentWidth;
+        }
+        [NSColor.controlAccentColor setFill];
+        NSRectFill(fill);
     }
 }
 
@@ -1777,6 +1816,15 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
             [accent setFill];
             [[NSBezierPath bezierPathWithRoundedRect:wave xRadius:1.2 yRadius:1.2] fill];
         }
+    } else if (state == MicaVoiceControllerStatePreparing || state == MicaVoiceControllerStateTranscribing) {
+        CGFloat start = fmod(NSProcessInfo.processInfo.systemUptime * 300.0, 360.0);
+        NSBezierPath *arc = [NSBezierPath bezierPath];
+        arc.lineWidth = 2;
+        arc.lineCapStyle = NSLineCapStyleRound;
+        [arc appendBezierPathWithArcWithCenter:NSMakePoint(18, centerY) radius:6
+            startAngle:start endAngle:start + 260];
+        [accent setStroke];
+        [arc stroke];
     } else {
         NSBezierPath *micDot = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(15, centerY - 3, 6, 6)];
         [accent setFill];
@@ -1786,22 +1834,44 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         MicaCenteredTextBaseline(statusAttrs[NSFontAttributeName], status.size.height))
         withAttributes:statusAttrs];
 
-    NSString *text = voice.transcript.length ? voice.transcript :
-        (state == MicaVoiceControllerStateFailed ? (voice.statusText ?: @"Press Escape to dismiss") :
-            (state == MicaVoiceControllerStateListening ? @"Speak to see your words here" : @""));
+    NSString *text;
+    if (state == MicaVoiceControllerStatePreparing) {
+        text = voice.statusText.length ? voice.statusText : @"Getting the speech model ready…";
+        if (voice.hasProgress)
+            text = [NSString stringWithFormat:@"%@  %.0f%%", text, MIN(1.0, MAX(0.0, voice.progress)) * 100.0];
+    } else if (state == MicaVoiceControllerStateFailed) {
+        text = voice.statusText ?: @"Press Escape to dismiss";
+    } else if (voice.transcript.length) {
+        text = MicaLastWords(voice.transcript, kDictationVisibleWords);
+    } else {
+        text = state == MicaVoiceControllerStateListening ? @"Speak to see your words here" : @"";
+    }
+    BOOL hasWords = state != MicaVoiceControllerStatePreparing && state != MicaVoiceControllerStateFailed &&
+        voice.transcript.length > 0;
     NSMutableParagraphStyle *tailStyle = [NSMutableParagraphStyle new];
     tailStyle.lineBreakMode = NSLineBreakByTruncatingHead;
     NSDictionary *transcriptAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:11.5],
-        NSForegroundColorAttributeName: [NSColor.labelColor colorWithAlphaComponent:0.82],
+        NSFontAttributeName: hasWords ? [NSFont systemFontOfSize:15 weight:NSFontWeightMedium] : [NSFont systemFontOfSize:12],
+        NSForegroundColorAttributeName: hasWords ? NSColor.labelColor : NSColor.secondaryLabelColor,
         NSParagraphStyleAttributeName: tailStyle
     };
-    // Start after the status label (measured) so long labels never collide with the transcript.
+    // Keep a column free on the right for key hints (room for more controls later).
+    NSString *keyHint = state == MicaVoiceControllerStateListening ? @"Release ⌥ to insert   Esc to cancel" : @"";
+    NSDictionary *hintAttrs = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:11],
+        NSForegroundColorAttributeName: NSColor.tertiaryLabelColor
+    };
+    CGFloat hintWidth = keyHint.length ? [keyHint sizeWithAttributes:hintAttrs].width : 0;
     CGFloat statusWidth = [statusText sizeWithAttributes:statusAttrs].width;
-    CGFloat transcriptX = MAX(205, 38 + statusWidth + 16);
+    CGFloat transcriptX = 38 + statusWidth + 20;
+    CGFloat rightReserve = hintWidth ? hintWidth + 24 : 12;
+    if (status.size.width - transcriptX - rightReserve < 160) { rightReserve = 12; hintWidth = 0; }
+    if (hintWidth) {
+        NSRect hintRect = NSMakeRect(status.size.width - hintWidth - 14, NSMinY(status), hintWidth, status.size.height);
+        MicaDrawCenteredLine(keyHint, hintRect, hintAttrs, NSTextAlignmentRight);
+    }
     NSRect transcriptRect = NSMakeRect(transcriptX, NSMinY(status),
-        MAX(0, status.size.width - transcriptX - 12), status.size.height);
-    // Head truncation keeps the most recent words visible; the line is centered like its neighbours.
+        MAX(0, status.size.width - transcriptX - rightReserve), status.size.height);
     MicaDrawCenteredLine(MicaHeadTruncatedText(text, transcriptRect.size.width, transcriptAttrs),
                          transcriptRect, transcriptAttrs, NSTextAlignmentLeft);
 

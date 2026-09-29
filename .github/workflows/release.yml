@@ -12,7 +12,8 @@ jobs:
       - name: Check tag matches version
         run: |
           v=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)
-          [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != Info.plist $v"; exit 1; }
+          base="${GITHUB_REF_NAME%%-*}"
+          [ "v$v" = "$base" ] || { echo "tag ${GITHUB_REF_NAME} does not start from Info.plist version $v"; exit 1; }
       - name: Test
         run: make test
       - name: Import Developer ID certificate (optional)
@@ -46,4 +47,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" build/Mica.dmg build/Mica.zip build/SHA256SUMS.txt \
-            --title "Mica ${GITHUB_REF_NAME#v}" --generate-notes
+            --title "Mica ${GITHUB_REF_NAME#v}" --generate-notes \
+            $(case "$GITHUB_REF_NAME" in *-*) echo --prerelease;; esac)
