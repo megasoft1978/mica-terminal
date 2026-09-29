@@ -414,6 +414,9 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, strong) MicaVoiceController *voiceController;
 @property(nonatomic, strong) MicaTab *voiceTargetTab;
 @property(nonatomic) NSInteger lastVoiceState;
+@property(nonatomic) NSUInteger idlePollTicks;
+@property(nonatomic) BOOL pollSawOutput;
+@property(nonatomic) BOOL pollIsSlow;
 @property(nonatomic, copy) NSString *appliedIconProjectName;
 @property(nonatomic, assign) NSInteger attentionRequest;
 @property(nonatomic, assign) NSInteger focusDurationMinutes;
@@ -443,6 +446,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)installMenus;
 - (void)updateWindowTitle;
 - (void)pollSessions:(NSTimer *)timer;
+- (void)wakePollTimer;
 - (void)loadLaunchConfiguration;
 - (void)loadLaunchConfigurationFromArguments:(NSArray<NSString *> *)arguments bundleInfo:(NSDictionary *)bundleInfo;
 - (void)startPushToTalk;
@@ -1922,6 +1926,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         [self setNeedsDisplay:YES];
         return;
     }
+    [self.owner wakePollTimer];
     VTermModifier modifiers = VTERM_MOD_NONE;
     if (flags & NSEventModifierFlagShift) modifiers |= VTERM_MOD_SHIFT;
     if (option) modifiers |= VTERM_MOD_ALT;
@@ -2852,9 +2857,7 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     self.uiMode = MicaUIModeNormal;
     [self loadLaunchConfiguration];
     [self.window makeFirstResponder:self.terminalView];
-    self.pollTimer = [NSTimer timerWithTimeInterval:0.015 target:self selector:@selector(pollSessions:) userInfo:nil repeats:YES];
-    self.pollTimer.tolerance = 0.005;
-[[NSRunLoop mainRunLoop] addTimer:self.pollTimer forMode:NSRunLoopCommonModes];
+    [self restartPollTimerWithInterval:0.015];
 }
 
 - (void)installMenus {
@@ -3230,9 +3233,26 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     [self.terminalView setNeedsDisplay:YES];
 }
 
+- (void)restartPollTimerWithInterval:(NSTimeInterval)interval {
+    [self.pollTimer invalidate];
+    self.pollTimer = [NSTimer timerWithTimeInterval:interval target:self selector:@selector(pollSessions:) userInfo:nil repeats:YES];
+    self.pollTimer.tolerance = interval / 3.0;
+    [[NSRunLoop mainRunLoop] addTimer:self.pollTimer forMode:NSRunLoopCommonModes];
+    self.pollIsSlow = interval > 0.02;
+}
+
+// Typing or new output returns polling to full speed after an idle stretch.
+- (void)wakePollTimer {
+    self.idlePollTicks = 0;
+    if (self.pollIsSlow && self.pollTimer) [self restartPollTimerWithInterval:0.015];
+}
+
 - (void)pollSessions:(NSTimer *)timer {
     (void)timer;
     BOOL redraw = NO;
+    // Idle backoff: after ~5 s without output, poll at 50 ms instead of 15 ms.
+    if (self.pollSawOutput) { self.pollSawOutput = NO; [self wakePollTimer]; }
+    else if (!self.pollIsSlow && ++self.idlePollTicks > 330 && self.pollTimer) [self restartPollTimerWithInterval:0.050];
     NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
     MicaVoiceController *voice = self.voiceController;
     if (voice.state == MicaVoiceControllerStateListening && voice.transcript.length == 0 &&
@@ -3241,7 +3261,7 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
         [self.terminalView setNeedsDisplayInRect:[self.terminalView dictationStatusRect]];
     }
     NSTimeInterval pollStartedAt = now;
-    if (self.lastPollTimerTickAt > 0 && now - self.lastPollTimerTickAt >= 0.050 &&
+    if (self.lastPollTimerTickAt > 0 && now - self.lastPollTimerTickAt >= (self.pollIsSlow ? 0.150 : 0.050) &&
         now - self.lastSlowPollLogAt >= 1.0) {
         MicaDiagnosticsLog(@"performance", [NSString stringWithFormat:
             @"poll-timer-gap duration_ms=%.1f tabs=%lu", (now - self.lastPollTimerTickAt) * 1000.0,
@@ -3260,6 +3280,7 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
         if (tab.outputMetricsStartedAt == 0) tab.outputMetricsStartedAt = now;
         tab.outputPollMilliseconds += (tabPollEndedAt - tabPollStartedAt) * 1000.0;
         if (receivedOutput) {
+            self.pollSawOutput = YES;
             tab.outputBytes += outputMetrics.bytes_read;
             tab.outputReadCalls += outputMetrics.read_calls;
             tab.outputLargestRead = MAX(tab.outputLargestRead, outputMetrics.largest_read);
