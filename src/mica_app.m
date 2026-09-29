@@ -727,13 +727,20 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     if (!NSIsEmptyRect(terminal)) [self addCursorRect:terminal cursor:NSCursor.IBeamCursor];
     MicaTab *tab = self.owner.activeTab;
     if (tab.session) {
+        // Validate each distinct link once instead of parsing its URL for every cell.
+        NSMutableDictionary<NSNumber *, NSNumber *> *safeLinks = [NSMutableDictionary dictionary];
         for (NSInteger row = 0; row < _rows; row++) {
             for (NSInteger col = 0; col < _cols; col++) {
                 MicaCell cell;
-                if (mica_session_get_cell(tab.session, (int)row, (int)col, &cell) && cell.hyperlink_id &&
-                    MicaSafeHyperlinkURL([NSString stringWithUTF8String:
-                        mica_session_hyperlink_uri(tab.session, cell.hyperlink_id) ?: ""]))
-                    [self addCursorRect:[self cellRectAtRow:row col:col] cursor:NSCursor.pointingHandCursor];
+                if (!mica_session_get_cell(tab.session, (int)row, (int)col, &cell) || !cell.hyperlink_id) continue;
+                NSNumber *key = @(cell.hyperlink_id);
+                NSNumber *safe = safeLinks[key];
+                if (!safe) {
+                    safe = @(MicaSafeHyperlinkURL([NSString stringWithUTF8String:
+                        mica_session_hyperlink_uri(tab.session, cell.hyperlink_id) ?: ""]) != nil);
+                    safeLinks[key] = safe;
+                }
+                if (safe.boolValue) [self addCursorRect:[self cellRectAtRow:row col:col] cursor:NSCursor.pointingHandCursor];
             }
         }
     }
