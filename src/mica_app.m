@@ -244,6 +244,9 @@ static NSString *MicaAgentNameForText(NSString *text) {
 }
 
 static const NSUInteger kDictationVisibleWords = 8;
+// One type scale for the dictation strip: label and hints match the status bar (11.5), the live words are one step up.
+static const CGFloat kDictationLabelFontSize = 11.5;
+static const CGFloat kDictationWordsFontSize = 13;
 
 // The last few words of a running transcript, so the status bar shows progress without filling up.
 static NSString *MicaLastWords(NSString *text, NSUInteger count) {
@@ -1803,18 +1806,23 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     }
 
     NSDictionary *statusAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold],
+        NSFontAttributeName: [NSFont systemFontOfSize:kDictationLabelFontSize weight:NSFontWeightSemibold],
         NSForegroundColorAttributeName: state == MicaVoiceControllerStateFailed
             ? NSColor.systemRedColor : NSColor.labelColor
     };
     CGFloat centerY = NSMidY(status);
-    if (state == MicaVoiceControllerStateListening && voice.transcript.length == 0) {
-        for (NSInteger bar = 0; bar < 4; bar++) {
-            CGFloat phase = NSProcessInfo.processInfo.systemUptime * 5.0 + bar * 0.8;
-            CGFloat barHeight = 4 + (sin(phase) + 1.0) * 5.0;
-            NSRect wave = NSMakeRect(13 + bar * 4.5, centerY - barHeight / 2.0, 2.5, barHeight);
-            [accent setFill];
-            [[NSBezierPath bezierPathWithRoundedRect:wave xRadius:1.2 yRadius:1.2] fill];
+    BOOL meter = state == MicaVoiceControllerStateListening ||
+        (state == MicaVoiceControllerStatePreparing && voice.isCapturing);
+    if (meter) {
+        // Live microphone level: shows at once that Mica hears you, even while the model is still loading.
+        static const CGFloat weights[5] = { 0.55, 0.85, 1.0, 0.8, 0.5 };
+        CGFloat level = voice.audioLevel;
+        for (NSInteger bar = 0; bar < 5; bar++) {
+            CGFloat wobble = 0.85 + 0.15 * sin(NSProcessInfo.processInfo.systemUptime * 9.0 + bar * 1.7);
+            CGFloat barHeight = 3 + level * 15 * weights[bar] * wobble;
+            NSRect wave = NSMakeRect(12 + bar * 4.5, centerY - barHeight / 2.0, 2.5, barHeight);
+            [[accent colorWithAlphaComponent:state == MicaVoiceControllerStateListening ? 1.0 : 0.6] setFill];
+            [[NSBezierPath bezierPathWithRoundedRect:wave xRadius:1.25 yRadius:1.25] fill];
         }
     } else if (state == MicaVoiceControllerStatePreparing || state == MicaVoiceControllerStateTranscribing) {
         CGFloat start = fmod(NSProcessInfo.processInfo.systemUptime * 300.0, 360.0);
@@ -1837,6 +1845,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     NSString *text;
     if (state == MicaVoiceControllerStatePreparing) {
         text = voice.statusText.length ? voice.statusText : @"Getting the speech model ready…";
+        if (voice.isCapturing) text = @"Getting ready. Keep talking, nothing is lost";
         if (voice.hasProgress)
             text = [NSString stringWithFormat:@"%@  %.0f%%", text, MIN(1.0, MAX(0.0, voice.progress)) * 100.0];
     } else if (state == MicaVoiceControllerStateFailed) {
@@ -1844,21 +1853,22 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     } else if (voice.transcript.length) {
         text = MicaLastWords(voice.transcript, kDictationVisibleWords);
     } else {
-        text = state == MicaVoiceControllerStateListening ? @"Speak to see your words here" : @"";
+        text = state == MicaVoiceControllerStateListening ? @"Listening. Your words appear in a few seconds" : @"";
     }
     BOOL hasWords = state != MicaVoiceControllerStatePreparing && state != MicaVoiceControllerStateFailed &&
         voice.transcript.length > 0;
     NSMutableParagraphStyle *tailStyle = [NSMutableParagraphStyle new];
     tailStyle.lineBreakMode = NSLineBreakByTruncatingHead;
     NSDictionary *transcriptAttrs = @{
-        NSFontAttributeName: hasWords ? [NSFont systemFontOfSize:15 weight:NSFontWeightMedium] : [NSFont systemFontOfSize:12],
+        NSFontAttributeName: hasWords ? [NSFont systemFontOfSize:kDictationWordsFontSize weight:NSFontWeightMedium]
+                                      : [NSFont systemFontOfSize:kDictationLabelFontSize],
         NSForegroundColorAttributeName: hasWords ? NSColor.labelColor : NSColor.secondaryLabelColor,
         NSParagraphStyleAttributeName: tailStyle
     };
     // Keep a column free on the right for key hints (room for more controls later).
     NSString *keyHint = state == MicaVoiceControllerStateListening ? @"Release ⌥ to insert   Esc to cancel" : @"";
     NSDictionary *hintAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:11],
+        NSFontAttributeName: [NSFont systemFontOfSize:kDictationLabelFontSize - 0.5],
         NSForegroundColorAttributeName: NSColor.tertiaryLabelColor
     };
     CGFloat hintWidth = keyHint.length ? [keyHint sizeWithAttributes:hintAttrs].width : 0;

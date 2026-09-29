@@ -1027,7 +1027,6 @@ static int history_push(int cols, const VTermScreenCell *cells, void *user) {
                        session->history_cols * sizeof(*grown));
             }
             free(session->history);
-    free(session->sync_hold);
             session->history = grown;
             session->history_capacity = next_capacity;
             session->history_start = 0;
@@ -1616,6 +1615,7 @@ void mica_session_destroy(MicaSession *session) {
     free(terminal_processes);
     if (session->vt) vterm_free(session->vt);
     free(session->history);
+    free(session->sync_hold);
     free(session->screen_link_ids);
     free(session->history_link_ids);
     for (size_t i = 0; i < session->hyperlink_count; i++) free(session->hyperlink_uris[i]);

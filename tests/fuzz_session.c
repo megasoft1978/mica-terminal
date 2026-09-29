@@ -94,6 +94,22 @@ int main(int argc, char **argv) {
     run_case("modes",
         "perl -e 'for(1..800){ print \"\\e[?1049h\\e[?1000h\\e[?2004h\\e[?2026h\\e[1;\".int(rand(30)).\"r\"; print \"x\" x int(rand(400)); "
         "print \"\\e[?2026l\\e[?1049l\\e[r\\e[3J\\e[2J\\e[H\"; print \"\\e]52;c;\".(\"QUJD\" x int(rand(900))).\"\\a\"; print \"\\e]8;;http://a/\".int(rand(9)).\"\\e\\\\link\\e]8;;\\e\\\\\"; }'; sleep 1", 600);
+    // Synchronized-output frames with the begin/end markers cut at every possible byte position, mixed with
+    // scrolling, alternate-screen switches and the whole poke() API (resize, find, fold, clear) in between.
+    run_case("sync markers split at random points",
+        "perl -e 'srand(11); $|=1; @m=(\"\\e[?2026h\",\"\\e[?2026l\"); for(1..1500){ $x=$m[int(rand(2))]; "
+        "$c=int(rand(length($x)+1)); print substr($x,0,$c); print \"filler \" x int(rand(40)) if rand()<.4; print substr($x,$c); "
+        "print \"\\n\" x int(rand(5)); print \"\\e[?1049\".(rand()<.5?\"h\":\"l\") if rand()<.2; print \"line $_\\n\" }'; sleep 1", 800);
+    run_case("sync frames with clears and scrolling",
+        "perl -e '$|=1; for $i (1..600){ print \"\\e[?2026h\\e[2J\\e[H\"; print \"row $_\\n\" for 1..int(rand(60)); "
+        "print \"\\e[?2026l\"; print \"after $i\\n\" x int(rand(3)); }'; sleep 1", 800);
+    // A frame that never ends and grows past the hold limit must be released, not grow without bound.
+    run_case("unterminated oversized sync frame",
+        "perl -e '$|=1; print \"\\e[?2026h\"; print \"x\" x 65536, \"\\n\" for 1..90'; sleep 1", 600);
+    // Alternate-screen programs that exit without leaving, redraw constantly, and get resized mid-frame.
+    run_case("full-screen program churn",
+        "perl -e '$|=1; for $i (1..400){ print \"\\e[?1049h\\e[?25l\\e[?2026h\\e[H\\e[2J\"; print \"TUI \" x int(rand(200)); "
+        "print \"\\e[?2026l\"; print \"\\e[?1049l\" if rand()<.5; }'; sleep 1", 800);
     // Session churn: create and destroy quickly.
     for (int i = 0; i < 25; i++) {
         MicaSession *session = mica_session_create("/tmp", "printf 'hi\\n'; sleep 5", between(1, 30), between(1, 100));

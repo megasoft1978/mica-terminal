@@ -34,7 +34,7 @@ static NSMutableArray<MicaAppDelegate *> *gWindows;
 static void Act(MicaAppDelegate *delegate) {
     MicaTerminalView *view = delegate.terminalView;
     NSSize size = view.bounds.size;
-    int chosen = Between(0, 26);
+    int chosen = Between(0, 36);
     const char *only = getenv("STRESS_ONLY");
     if (only && chosen != atoi(only)) return;
     switch (chosen) {
@@ -103,6 +103,87 @@ static void Act(MicaAppDelegate *delegate) {
             for (MicaAppDelegate *other in gWindows) [other takeMenuOwnership];
         }
         break;
+    case 27: {   // dictation strip in every state, with awkward transcripts and levels
+        MicaVoiceController *voice = delegate.voiceController;
+        static NSString *const transcripts[] = { @"", @"hello", @"the quick brown fox jumps over the lazy dog again and again and again",
+            @"emoji 🎤🎧 and ünïcödé and 日本語のテキスト mixed", @"a  b   c\n\td", @"supercalifragilisticexpialidocious_supercalifragilisticexpialidocious_supercalifragilistic" };
+        static NSString *const statuses[] = { @"", @"Downloading speech model", @"Checking speech model files…",
+            @"Microphone access is off. Enable Mica in System Settings → Privacy & Security → Microphone." };
+        [voice setValue:@(Between(0, 4)) forKey:@"state"];
+        [voice setValue:transcripts[Between(0, 5)] forKey:@"transcript"];
+        [voice setValue:statuses[Between(0, 3)] forKey:@"statusText"];
+        [voice setValue:@(Between(0, 1)) forKey:@"hasProgress"];
+        [voice setValue:@(Between(0, 100) / 100.0) forKey:@"progress"];
+        [voice setValue:@(Between(0, 100) / 100.0f) forKey:@"audioLevel"];
+        [voice setValue:@(Between(0, 700)) forKey:@"elapsedSeconds"];
+        [voice setValue:@(Between(0, 100) / 100.0) forKey:@"prefetchFraction"];
+        [voice setValue:Between(0, 1) ? @"Downloading speech model" : nil forKey:@"prefetchStatus"];
+        [delegate voiceControllerDidUpdate:voice];
+        [view displayIfNeeded];
+        break;
+    }
+    case 28: {   // left Option holds, taps and Option-composed characters (Italian, German, US layouts)
+        static NSString *const composed[][2] = { {@"@", @"\u00f2"}, {@"#", @"\u00e0"}, {@"[", @"\u00e8"}, {@"{", @"\u00e8"},
+            {@"~", @"n"}, {@"\u00e9", @"e"}, {@"\u03c0", @"p"}, {@"|", @"7"} };
+        NSEvent *down = [NSEvent keyEventWithType:NSEventTypeFlagsChanged location:NSZeroPoint modifierFlags:NSEventModifierFlagOption
+            timestamp:0 windowNumber:delegate.window.windowNumber context:nil characters:@"" charactersIgnoringModifiers:@"" isARepeat:NO keyCode:58];
+        if (down) [view flagsChanged:down];
+        if (Between(0, 1)) RunLoopFor(Between(0, 1) ? 0.01 : 0.3);
+        int pick = Between(0, 7);
+        NSEvent *character = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:NSEventModifierFlagOption
+            timestamp:0 windowNumber:delegate.window.windowNumber context:nil characters:composed[pick][0]
+            charactersIgnoringModifiers:Between(0, 1) ? composed[pick][1] : composed[pick][0] isARepeat:NO keyCode:(unsigned short)Between(0, 50)];
+        if (character) [view keyDown:character];
+        NSEvent *up = [NSEvent keyEventWithType:NSEventTypeFlagsChanged location:NSZeroPoint modifierFlags:0
+            timestamp:0 windowNumber:delegate.window.windowNumber context:nil characters:@"" charactersIgnoringModifiers:@"" isARepeat:NO keyCode:58];
+        if (up) [view flagsChanged:up];
+        break;
+    }
+    case 29: {   // a tab whose program draws synchronized-output frames, sometimes never finishing them
+        if (delegate.tabs.count >= 9) break;
+        static NSString *const scripts[] = {
+            @"perl -e '$|=1; for $i (1..60){print \"\\e[?2026h\\e[2J\\e[Hframe $i\\n\"; select(undef,undef,undef,0.01); print \"body line\\n\\e[?2026l\"; select(undef,undef,undef,0.01)}'; sleep 3",
+            @"perl -e '$|=1; print \"\\e[?2026hnever ends\\n\"; sleep 3'",
+            @"perl -e '$|=1; for $i (1..80){print \"\\e[?20\"; select(undef,undef,undef,0.003); print \"26hpart $i\\e[?2026\"; select(undef,undef,undef,0.003); print \"l\"}'; sleep 3",
+        };
+        [delegate newTabWithName:@"Sync" command:scripts[Between(0, 2)]];
+        break;
+    }
+    case 30: {   // full-screen program on the alternate screen, with and without a clean exit
+        if (delegate.tabs.count >= 9) break;
+        [delegate newTabWithName:@"Tui" command:Between(0, 1)
+            ? @"perl -e '$|=1; print \"\\e[?1049h\\e[?25l\"; for $i (1..40){print \"\\e[H\\e[2JTUI $i\\n\"; select(undef,undef,undef,0.02)} print \"\\e[?25h\\e[?1049l\"'; sleep 2"
+            : @"perl -e '$|=1; print \"\\e[?1049h\"; for $i (1..40){print \"\\e[H\\e[2JTUI $i\\n\"; select(undef,undef,undef,0.02)}'; sleep 2"];
+        break;
+    }
+    case 31: {   // hostile output: random escape sequences, wide characters, huge titles
+        if (delegate.tabs.count >= 9) break;
+        int seed = Between(1, 100000);
+        [delegate newTabWithName:@"Noise" command:[NSString stringWithFormat:
+            @"perl -e 'srand(%d); $|=1; @s=(\"\\e[2J\",\"\\e[H\",\"\\e[%%dA\",\"\\e[%%d;%%dH\",\"\\e[1;%%dr\",\"\\e[?1049h\",\"\\e[?1049l\",\"\\e[?2026h\",\"\\e[?2026l\",\"\\e]0;\".(\"t\" x 400).\"\\a\",\"\\e[38;2;1;2;3m\",\"\\e[0m\",\"日本語\",\"👩‍👩‍👧\",\"\\e[4m\",\"\\e[?2004h\",\"\\e[?1000h\",\"\\e[K\",\"\\e[L\",\"\\e[M\",\"\\e[@\",\"\\e[P\",\"\\eM\",\"\\n\",\"text \"); for(1..3000){ $x=$s[int(rand(@s))]; $x=~s/%%d/int(rand(30))+1/ge; print $x }'; sleep 2", seed]];
+        break;
+    }
+    case 32: {   // wheel scrolling and tab-picker / scrollback navigation keys
+        CGEventRef cgWheel = CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitLine, 1, Between(-8, 8));
+        NSEvent *wheel = cgWheel ? [NSEvent eventWithCGEvent:cgWheel] : nil;
+        if (cgWheel) CFRelease(cgWheel);
+        if (wheel) [view scrollWheel:wheel];
+        static NSString *const keys[] = { @"j", @"k", @"u", @"d", @"g", @"q", @"\r" };
+        Key(delegate, keys[Between(0, 6)], 0, (unsigned short)Between(0, 50));
+        break;
+    }
+    case 33: [delegate toggleLightTheme:nil]; [delegate refreshPreferencesSizeLabel]; break;
+    case 34: {   // Command shortcuts
+        static NSString *const commandKeys[] = { @"t", @"w", @"1", @"2", @"9", @"+", @"-", @"0", @"k", @"v", @"c" };
+        Key(delegate, commandKeys[Between(0, 10)], NSEventModifierFlagCommand | (Between(0, 3) == 0 ? NSEventModifierFlagShift : 0), (unsigned short)Between(0, 50));
+        break;
+    }
+    case 35: [delegate updatePomodoroTimer]; break;
+    case 36: {   // keys while the window is not key, plus programmatic focus changes
+        [view setNeedsDisplay:YES];
+        [view displayIfNeeded];
+        break;
+    }
     }
 }
 

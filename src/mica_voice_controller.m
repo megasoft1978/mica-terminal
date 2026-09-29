@@ -41,6 +41,7 @@
 @property(nonatomic, assign) int processExitCode;
 @property(nonatomic, assign) NSTaskTerminationReason processTerminationReason;
 @property(nonatomic, strong) NSDate *recordingStartedAt;
+@property(nonatomic, assign, readwrite) float audioLevel;
 @property(nonatomic, copy) NSString *lastLoggedHelperStatus;
 @property(nonatomic, assign) NSInteger lastLoggedProgressBucket;
 @property(nonatomic, assign) NSUInteger recordingGeneration;
@@ -62,6 +63,8 @@
     atomic_bool _audioHelperReady;
     atomic_uint _queuedAudioFrames;
     atomic_uint_fast64_t _recordedAudioFrames;
+_Atomic(float) _audioPeak;
+float _displayLevel;
     atomic_uint _audioGeneration;
     NSFileHandle *_audioStreamWriter;
     NSMutableData *_preparationAudio;
@@ -134,6 +137,7 @@
 }
 
 - (BOOL)isPrefetchingModel { return self.prefetchTask.isRunning; }
+- (BOOL)isCapturing { return self.recordingStartedAt != nil && self.elapsedTimer != nil; }
 
 - (instancetype)initWithHelperURL:(NSURL *)helperURL {
     self = [super init];
@@ -593,6 +597,14 @@
             return;
         }
         if (converted.frameLength == 0) return;
+        {
+            // Peak of this buffer for the live level meter (the main thread decays and reads it).
+            const float *samples = converted.floatChannelData[0];
+            float peak = 0;
+            for (AVAudioFrameCount k = 0; k < converted.frameLength; k++) peak = MAX(peak, fabsf(samples[k]));
+            float previous = atomic_load(&strongSelf->_audioPeak);
+            if (peak > previous) atomic_store(&strongSelf->_audioPeak, peak);
+        }
 
         unsigned int frameCountValue = converted.frameLength;
         uint64_t recordedFrames = atomic_fetch_add(&strongSelf->_recordedAudioFrames, frameCountValue) + frameCountValue;
@@ -663,7 +675,7 @@
               progress:-1];
     }
     [self.elapsedTimer invalidate];
-    self.elapsedTimer = [NSTimer scheduledTimerWithTimeInterval:0.25
+    self.elapsedTimer = [NSTimer scheduledTimerWithTimeInterval:0.06
         target:self selector:@selector(updateElapsedTime:) userInfo:nil repeats:YES];
 }
 
@@ -795,6 +807,9 @@
     if (!self.recordingStartedAt || (self.state != MicaVoiceControllerStateListening &&
         self.state != MicaVoiceControllerStatePreparing)) return;
     self.elapsedSeconds = -self.recordingStartedAt.timeIntervalSinceNow;
+    float peak = atomic_exchange(&_audioPeak, 0.0f);
+    _displayLevel = MAX(peak, _displayLevel * 0.82f);
+    self.audioLevel = MIN(1.0f, sqrtf(_displayLevel * 4.0f));
     [self notifyUpdate];
 }
 
