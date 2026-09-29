@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#f3f5f8" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0b0f14" media="(prefers-color-scheme: dark)">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; font-src 'self'; style-src 'sha256-Eanym3+HyjPUZ/KUPFzcRhRGt7qQ9JT8FDqt2Pded88='; script-src 'sha256-obQLhE2id96/7pWU+OVxA2Il4k1t4IAuXtnh2TzQdyE='; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; font-src 'self'; style-src 'sha256-zuHtESyke/2vTdh/fiDFqbMpMC8DzSmw5gFmmT69syE='; script-src 'sha256-obQLhE2id96/7pWU+OVxA2Il4k1t4IAuXtnh2TzQdyE='; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
   <title>Mica — a native Mac terminal for your projects</title>
   <meta name="description" content="Mica is a native macOS terminal that keeps each project's shells and coding agents together, and shows you when one needs you.">
@@ -71,8 +71,9 @@
               box-shadow: 0 1px 0 rgba(255,255,255,.08) inset, 0 40px 80px -20px rgba(15,23,32,.45), 0 12px 30px -10px rgba(15,23,32,.35); }
     .window img { width: 100%; }
     .window img[hidden] { display: none; }
-    .lights { position: absolute; top: 19px; left: 18px; display: flex; gap: 8px; }
-    .lights i { width: 12px; height: 12px; border-radius: 50%; background: #ff5f57; }
+    .window { container-type: inline-size; }
+    .lights { position: absolute; top: .78cqw; left: 1.5cqw; display: flex; gap: .62cqw; }
+    .lights i { width: .98cqw; height: .98cqw; border-radius: 50%; background: #ff5f57; }
     .lights i:nth-child(2) { background: #febc2e; } .lights i:nth-child(3) { background: #28c840; }
     .themes { display: inline-flex; margin-top: 30px; padding: 4px; gap: 4px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
     .themes button { min-height: 36px; padding: 0 16px; border: 0; border-radius: 9px; background: transparent; color: var(--muted); font: 600 14px var(--sans); cursor: pointer; }
@@ -83,7 +84,7 @@
     h2 { margin: 0; font: 700 clamp(30px, 4.4vw, 48px)/1.05 var(--display); letter-spacing: -0.035em; text-wrap: balance; }
     .install { display: grid; gap: 28px; grid-template-columns: 1fr 1.15fr; align-items: center; }
     .install p { color: var(--muted); max-width: 30em; margin: 16px 0 0; }
-    .code { position: relative; border-radius: 14px; background: var(--code-bg); color: var(--code-ink); padding: 22px 24px; font: 14.5px/1.85 var(--mono); overflow-x: auto; }
+    .code { position: relative; border-radius: 14px; background: var(--code-bg); color: var(--code-ink); padding: 22px 24px; font: 14.5px/1.85 var(--mono); overflow-x: auto; white-space: pre; }
     .code .c { color: #7d8b9b; }
     .copy { position: absolute; top: 12px; right: 12px; min-height: 32px; padding: 0 12px; border: 1px solid #2a3542; border-radius: 8px; background: #17202a; color: #c9d5e2; font: 600 13px var(--sans); cursor: pointer; }
     .copy:hover { border-color: #4a5b6e; }
@@ -95,8 +96,7 @@
     kbd { font: 600 .82em var(--mono); padding: 2px 7px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px; background: var(--surface); color: var(--ink); }
     .shot { border-radius: 14px; overflow: hidden; background: #1e1e1e; box-shadow: 0 24px 50px -24px rgba(15,23,32,.5); }
     .shot img { width: 100%; height: 100%; object-fit: cover; }
-    .shot.wide img { aspect-ratio: 2200 / 112; object-fit: cover; }
-
+    
     .facts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; margin-top: 112px; border-block: 1px solid var(--line); }
     .fact { padding: 30px 24px; border-left: 1px solid var(--line); }
     .fact:first-child { border-left: 0; padding-left: 0; }
@@ -169,8 +169,7 @@
           <p>You need the Xcode command line tools and Homebrew. Mica links its one C dependency into the app, so the finished bundle runs on its own.</p>
         </div>
         <div class="code" role="group" aria-label="Build instructions">
-          <button class="copy" type="button" data-copy="brew install libvterm pkg-config&#10;git clone https://github.com/megasoft1978/mica-terminal.git&#10;cd mica-terminal&#10;make app &amp;&amp; open build/Mica.app">Copy</button>
-<span class="c"># the terminal parsing library</span>
+          <button class="copy" type="button" data-copy="brew install libvterm pkg-config&#10;git clone https://github.com/megasoft1978/mica-terminal.git&#10;cd mica-terminal&#10;make app &amp;&amp; open build/Mica.app">Copy</button><span class="c"># the terminal parsing library</span>
 brew install libvterm pkg-config
 git clone https://github.com/megasoft1978/mica-terminal.git
 cd mica-terminal
@@ -184,7 +183,7 @@ make app &amp;&amp; open build/Mica.app</div>
           <h3>One window for each project.</h3>
           <p>Name a project, give it folders and startup tabs, and open it again from a launcher on your Desktop. Its Dock icon carries a short mark of the project name, so you can tell windows apart at a glance.</p>
         </div>
-        <div class="shot wide"><picture><img src="assets/crop-tabs-dark.png" width="2200" height="112" alt="A row of tabs named Shell, Preview, Codex, Claude Code and lazygit, with the project name at the right." loading="lazy"></picture></div>
+        <div class="shot"><img src="assets/crop-tabs-dark.png" width="1500" height="190" alt="A row of tabs named Shell, Preview, Codex, Claude Code and lazygit above terminal output." loading="lazy"></div>
       </div>
 
       <div class="row flip">
@@ -192,7 +191,7 @@ make app &amp;&amp; open build/Mica.app</div>
           <h3>Agents are ordinary programs.</h3>
           <p>Run Codex, Claude Code or anything else in a normal zsh tab. Mica watches the tab and shows whether the program is working or waiting for you, so you can look away until it asks. Your own zsh configuration keeps working.</p>
         </div>
-        <div class="shot"><img src="assets/crop-terminal-dark.png" width="1300" height="448" alt="Terminal output with coloured commit hashes and passing test lines." loading="lazy"></div>
+        <div class="shot"><img src="assets/crop-terminal-dark.png" width="1300" height="388" alt="Terminal output with coloured commit hashes and passing test lines." loading="lazy"></div>
       </div>
 
       <div class="row">
@@ -200,7 +199,7 @@ make app &amp;&amp; open build/Mica.app</div>
           <h3>Speak, then read it back.</h3>
           <p>Hold left <kbd>⌥</kbd>, say what you want to run, and release. Your words appear in the prompt for you to edit before you press Return. Recognition runs on your Mac; the first use downloads a 630 MB speech model.</p>
         </div>
-        <div class="shot wide"><img src="assets/crop-status-dark.png" width="2200" height="112" alt="The status bar with the focus timer on the left and shortcut hints on the right." loading="lazy"></div>
+        <div class="shot"><img src="assets/crop-hints-dark.png" width="1200" height="100" alt="Status bar shortcut hints: ⌘/ Shortcuts, ⌥ Dictate, ⌘1–8 Switch tab, ⌘T New tab, ⌘Q Quit." loading="lazy"></div>
       </div>
 
       <div class="row flip">
@@ -208,7 +207,7 @@ make app &amp;&amp; open build/Mica.app</div>
           <h3>A focus timer that follows you.</h3>
           <p>One timer is shared by every Mica window on your Mac, with a notification when a focus or break period ends. It lives in the status bar, so it never covers your output.</p>
         </div>
-        <div class="shot wide"><img src="assets/crop-status-dark.png" width="2200" height="112" alt="The focus timer showing Ready and 60:00 with start and reset buttons." loading="lazy" style="object-position: left center"></div>
+        <div class="shot"><img src="assets/crop-timer-dark.png" width="1300" height="100" alt="The focus timer showing Ready and 60:00 with start and reset buttons, next to the current folder." loading="lazy"></div>
       </div>
 
       <div class="row">
@@ -216,7 +215,7 @@ make app &amp;&amp; open build/Mica.app</div>
           <h3>Still your terminal.</h3>
           <p>Search what scrolled by with <kbd>⌘F</kbd>, open links with <kbd>⌘</kbd>-click, drag tabs to reorder them, and paste images for agents that read them. When a program on a remote machine asks to set your clipboard, Mica asks you first.</p>
         </div>
-        <div class="shot"><img src="assets/crop-terminal-dark.png" width="1300" height="448" alt="Terminal text in JetBrains Mono on a dark background." loading="lazy"></div>
+        <div class="shot"><img src="assets/crop-terminal-light.png" width="1300" height="388" alt="The same terminal in the light theme, with dark JetBrains Mono text on white." loading="lazy"></div>
       </div>
 
       <div class="facts">
