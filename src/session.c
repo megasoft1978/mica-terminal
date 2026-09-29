@@ -1093,6 +1093,47 @@ static bool change_to_requested_directory(const char *requested) {
 
 static const VTermStateFallbacks screen_fallbacks = { .osc = notification_osc };
 
+extern char **environ;
+
+// Builds the child's environment in the parent. Between fork and exec the child
+// of a multithreaded GUI process may only call async-signal-safe functions, so
+// setenv/getenv (which take libc locks) must not run there.
+typedef struct { const char *key; const char *value; } EnvOverride;
+
+static char **build_child_environment(const EnvOverride *overrides, size_t count) {
+    size_t existing = 0;
+    while (environ && environ[existing]) existing++;
+    char **result = calloc(existing + count + 1, sizeof(*result));
+    if (!result) return NULL;
+    size_t used = 0;
+    for (size_t i = 0; i < existing; i++) {
+        bool replaced = false;
+        for (size_t j = 0; j < count; j++) {
+            size_t key_length = strlen(overrides[j].key);
+            if (strncmp(environ[i], overrides[j].key, key_length) == 0 && environ[i][key_length] == '=') { replaced = true; break; }
+        }
+        if (!replaced && !(result[used] = strdup(environ[i]))) goto fail;
+        if (!replaced) used++;
+    }
+    for (size_t j = 0; j < count; j++) {
+        if (!overrides[j].value) continue;
+        size_t length = strlen(overrides[j].key) + strlen(overrides[j].value) + 2;
+        if (!(result[used] = malloc(length))) goto fail;
+        snprintf(result[used++], length, "%s=%s", overrides[j].key, overrides[j].value);
+    }
+    return result;
+fail:
+    for (size_t i = 0; result[i]; i++) free(result[i]);
+    free(result);
+    return NULL;
+}
+
+static void free_environment(char **environment) {
+    if (!environment) return;
+    for (size_t i = 0; environment[i]; i++) free(environment[i]);
+    free(environment);
+}
+
 static MicaSession *session_create(const char *cwd, const char *command, int rows, int cols,
                                    bool prefilled) {
     if (rows < 1 || cols < 1) return NULL;
@@ -1122,10 +1163,46 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
     configure_terminal_colors(session);
     vterm_input_write(session->vt, "\x1b[0m", 4);
 
+    const char *locale_hint = (!getenv("LANG") && !getenv("LC_ALL") && !getenv("LC_CTYPE")) ? "en_US.UTF-8" : NULL;
+    const char *original_zdotdir = getenv("MICA_ORIGINAL_ZDOTDIR");
+    if (!original_zdotdir || !original_zdotdir[0]) original_zdotdir = getenv("ZDOTDIR");
+    if (!original_zdotdir || !original_zdotdir[0]) original_zdotdir = getenv("HOME");
+    if (!original_zdotdir || !original_zdotdir[0]) original_zdotdir = ".";
+    bool use_wrapper = session->startup_dir != NULL;
+    // GUI launchers can inherit NO_COLOR from an unrelated parent shell.
+    // Mica advertises a color-capable xterm-256color terminal.
+    EnvOverride overrides[] = {
+        { "LANG", locale_hint }, { "TERM", "xterm-256color" }, { "COLORTERM", "truecolor" },
+        { "TERM_PROGRAM", "Mica" }, { "TERM_PROGRAM_VERSION", MICA_VERSION },
+        { "TERM_PROGRAM_REVISION", MICA_REVISION }, { "CLICOLOR", "1" }, { "NO_COLOR", NULL },
+        { "MICA_ORIGINAL_ZDOTDIR", use_wrapper ? original_zdotdir : NULL },
+        { "MICA_ZSH_WRAPPER", use_wrapper ? session->startup_dir : NULL },
+        { "ZDOTDIR", use_wrapper ? session->startup_dir : NULL },
+        { "MICA_INITIAL_COMMAND", (use_wrapper && prefilled && command) ? command : NULL },
+    };
+    size_t override_count = sizeof(overrides) / sizeof(overrides[0]);
+    char **child_environment = NULL;
+    {
+        EnvOverride active[sizeof(overrides) / sizeof(overrides[0])];
+        size_t active_count = 0;
+        for (size_t i = 0; i < override_count; i++) {
+            bool unsets = strcmp(overrides[i].key, "NO_COLOR") == 0;
+            if (overrides[i].value || unsets) active[active_count++] = overrides[i];
+        }
+        child_environment = build_child_environment(active, active_count);
+    }
+    if (!child_environment) goto fail;
+    const char *test_mode = getenv("MICA_TEST_NO_STARTUP");
+    bool skip_user_startup = test_mode && strcmp(test_mode, "1") == 0;
+    // Some UI tests need Mica's temporary ZDOTDIR wrapper to install a
+    // ZLE probe, while still suppressing every user startup file.
+    bool test_zle_probe = skip_user_startup && getenv("MICA_TEST_ZLE_DIR") != NULL;
+    bool prefilled_shell = use_wrapper && prefilled && command;
+
     struct winsize window_size = { .ws_row = (unsigned short)rows, .ws_col = (unsigned short)cols };
     int master = -1;
     pid_t pid = forkpty(&master, NULL, NULL, &window_size);
-    if (pid < 0) goto fail;
+    if (pid < 0) { free_environment(child_environment); goto fail; }
     if (pid == 0) {
         struct termios terminal_settings;
         if (tcgetattr(STDIN_FILENO, &terminal_settings) == 0) {
@@ -1140,35 +1217,10 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
         sigemptyset(&no_signals);
         sigprocmask(SIG_SETMASK, &no_signals, NULL);
         if (!change_to_requested_directory(cwd)) _exit(126);
-        // Finder-launched apps have no locale; without one zsh mishandles UTF-8.
-        if (!getenv("LANG") && !getenv("LC_ALL") && !getenv("LC_CTYPE")) setenv("LANG", "en_US.UTF-8", 1);
-        setenv("TERM", "xterm-256color", 1);
-        setenv("COLORTERM", "truecolor", 1);
-        setenv("TERM_PROGRAM", "Mica", 1);
-        setenv("TERM_PROGRAM_VERSION", MICA_VERSION, 1);
-        setenv("TERM_PROGRAM_REVISION", MICA_REVISION, 1);
-        setenv("CLICOLOR", "1", 1);
-        // GUI launchers can inherit NO_COLOR from an unrelated parent shell.
-        // Mica advertises a color-capable xterm-256color terminal.
-        unsetenv("NO_COLOR");
-        if (session->startup_dir) {
-            const char *original_zdotdir = getenv("MICA_ORIGINAL_ZDOTDIR");
-            if (!original_zdotdir || !original_zdotdir[0]) original_zdotdir = getenv("ZDOTDIR");
-            if (!original_zdotdir || !original_zdotdir[0]) original_zdotdir = getenv("HOME");
-            if (!original_zdotdir || !original_zdotdir[0]) original_zdotdir = ".";
-            setenv("MICA_ORIGINAL_ZDOTDIR", original_zdotdir, 1);
-            setenv("MICA_ZSH_WRAPPER", session->startup_dir, 1);
-            setenv("ZDOTDIR", session->startup_dir, 1);
-            if (prefilled && command) {
-                setenv("MICA_INITIAL_COMMAND", command, 1);
-                execl("/bin/zsh", "zsh", "-l", "-i", (char *)NULL);
-            }
+        environ = child_environment;
+        if (prefilled_shell) {
+            execl("/bin/zsh", "zsh", "-l", "-i", (char *)NULL);
         }
-        const char *test_mode = getenv("MICA_TEST_NO_STARTUP");
-        bool skip_user_startup = test_mode && strcmp(test_mode, "1") == 0;
-        // Some UI tests need Mica's temporary ZDOTDIR wrapper to install a
-        // ZLE probe, while still suppressing every user startup file.
-        bool test_zle_probe = skip_user_startup && getenv("MICA_TEST_ZLE_DIR") != NULL;
         if (command) {
             if (skip_user_startup && !test_zle_probe) {
                 execl("/bin/zsh", "zsh", "-f", "-i", "-c",
@@ -1186,6 +1238,7 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
         dprintf(STDERR_FILENO, "mica: cannot start zsh: %s\r\n", strerror(errno));
         _exit(127);
     }
+    free_environment(child_environment);
     session->master_fd = master;
     session->child_pid = pid;
     session->terminal_device = terminal_device_for_master(master);
