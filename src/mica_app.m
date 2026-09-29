@@ -571,7 +571,9 @@ static NSURL *MicaSafeHyperlinkURL(NSString *rawURL) {
 
 static NSString *MicaStandardizedWorkingDirectory(NSString *requestedPath) {
     if (requestedPath.length) return requestedPath.stringByStandardizingPath;
-    return NSFileManager.defaultManager.currentDirectoryPath;
+    // A Finder or Dock launch starts in "/"; a home folder is a friendlier first shell.
+    NSString *current = NSFileManager.defaultManager.currentDirectoryPath;
+    return [current isEqualToString:@"/"] ? NSHomeDirectory() : current;
 }
 
 static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *attributes) {
@@ -1928,7 +1930,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         int exitStatus = mica_session_exit_status(tab.session);
         NSString *exitMessage = exitStatus == 0 ? @"Shell exited" : [NSString stringWithFormat:@"Shell exited with status %d", exitStatus];
         NSRect exitRect = NSMakeRect(0, kStatusHeight, [self terminalRect].size.width, 28);
-        NSDictionary *exitAttrs = @{ NSFontAttributeName: [NSFont systemFontOfSize:12], NSForegroundColorAttributeName: [MicaForegroundColor() colorWithAlphaComponent:0.6] };
+        NSDictionary *exitAttrs = @{ NSFontAttributeName: [NSFont systemFontOfSize:12], NSForegroundColorAttributeName: [MicaForegroundColor() colorWithAlphaComponent:0.8] };
         if (NSIntersectsRect(exitRect, dirtyRect))
             [exitMessage drawAtPoint:NSMakePoint(12, kStatusHeight + 4) withAttributes:exitAttrs];
     }
@@ -3130,6 +3132,8 @@ static NSDictionary *MicaScalarDictionary(id object) {
     NSMenu *helpMenu = [[NSMenu alloc] initWithTitle:@"Help"];
     AddMenuItem(helpMenu, @"Keyboard Shortcuts…", @selector(showKeyboardShortcuts:), @"/",
                 NSEventModifierFlagCommand).target = self;
+    AddMenuItem(helpMenu, @"Releases and Updates", @selector(openReleasesPage:), @"", 0).target = self;
+    AddMenuItem(helpMenu, @"Report an Issue", @selector(openIssuesPage:), @"", 0).target = self;
     [helpMenu addItem:NSMenuItem.separatorItem];
     AddMenuItem(helpMenu, @"Open Diagnostic Logs", @selector(openDiagnosticLogs:), @"", 0).target = self;
     helpRoot.submenu = helpMenu;
@@ -3156,6 +3160,7 @@ static NSDictionary *MicaScalarDictionary(id object) {
         @"⌘F / ⌘G / ⇧⌘G  Find in scrollback, next, previous",
         @"⌘K  Clear scrollback",
         @"⌥⌘L  Toggle the light terminal theme",
+        @"⌥⌘F  Fold selected lines",
         @"⌘-click  Open an OSC 8 web link",
         @"Hold left ⌥  Dictate; release to finish",
         @"Esc  Cancel dictation or return to live terminal"
@@ -3164,11 +3169,26 @@ static NSDictionary *MicaScalarDictionary(id object) {
     [alert beginSheetModalForWindow:self.window completionHandler:nil];
 }
 
+- (void)openReleasesPage:(id)sender {
+    (void)sender;
+    [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@"https://github.com/megasoft1978/mica-terminal/releases"]];
+}
+
+- (void)openIssuesPage:(id)sender {
+    (void)sender;
+    [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@"https://github.com/megasoft1978/mica-terminal/issues"]];
+}
+
 - (void)openDiagnosticLogs:(id)sender {
     (void)sender;
     NSURL *directory = MicaDiagnosticsLogDirectory();
     if (!directory) {
         MicaDiagnosticsLog(@"diagnostics", @"could not locate the diagnostic log folder");
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"Couldn't find the log folder";
+        alert.informativeText = @"Mica writes diagnostic logs to ~/Library/Logs/Mica. The folder hasn't been created yet.";
+        [alert addButtonWithTitle:@"OK"];
+        [alert beginSheetModalForWindow:self.window completionHandler:nil];
         return;
     }
     [[NSWorkspace sharedWorkspace] openURL:directory];
@@ -3178,8 +3198,8 @@ static NSDictionary *MicaScalarDictionary(id object) {
     (void)sender;
     if (!self.projectLayoutPath.length) {
         NSAlert *alert = [[NSAlert alloc] init];
-        alert.messageText = @"This window has no project layout";
-        alert.informativeText = @"Open Mica with a project .mica layout to edit its startup tabs.";
+        alert.messageText = @"This window isn't tied to a project";
+        alert.informativeText = @"Open Mica from a project launcher (see “Create a project launcher” in the README) to give it saved tabs and folders you can edit here.";
         [alert addButtonWithTitle:@"OK"];
         [alert beginSheetModalForWindow:self.window completionHandler:nil];
         return;
@@ -3261,8 +3281,8 @@ static NSDictionary *MicaScalarDictionary(id object) {
         MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"session start failed tab=%@ folder=%@",
             tab.name, tab.cwd]);
         NSAlert *alert = [[NSAlert alloc] init];
-        alert.messageText = @"Mica could not create a terminal session";
-        alert.informativeText = [NSString stringWithFormat:@"Could not open %@", tab.cwd];
+        alert.messageText = @"Couldn't start a shell";
+        alert.informativeText = [NSString stringWithFormat:@"Mica couldn't start a terminal session in %@. Check that the folder exists and Mica may access it (System Settings › Privacy & Security › Files and Folders).", tab.cwd];
         [alert runModal];
         return;
     }

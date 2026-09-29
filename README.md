@@ -24,6 +24,8 @@ make app
 open build/Mica.app
 ```
 
+A locally signed build (`make dist`) is ad-hoc signed, so on another Mac macOS may say it can’t be opened. Control-click the app and choose Open once.
+
 The first dictation use downloads the local speech model (about 630 MB). Mica requests microphone access only when you start dictation.
 
 ## Why Mica
@@ -53,6 +55,8 @@ The first dictation use downloads the local speech model (about 630 MB). Mica re
 | Find in scrollback / next / previous | `⌘F` / `⌘G` / `⇧⌘G` |
 | Clear scrollback | `⌘K` |
 | Light / dark terminal theme | `⌥⌘L` |
+
+### Create a project launcher
 
 Run `make new-instance` to create a project launcher. Use **Project → Settings…** to edit its name and tabs. A `.mica` layout can also define named tabs, folders, and optional commands.
 
