@@ -1585,6 +1585,21 @@ static int MicaRunUISelfTest(void) {
             MicaUITestSendKey(delegate, @"0", NSEventModifierFlagCommand, 29);
             MicaUITestRecord(report, &allPassed, grewTwice && delegate.terminalView.terminalFont.pointSize == 16.0,
                              @"Command-zero resets the font size to the default");
+            [delegate openPreferences:nil];
+            NSWindow *preferences = delegate.preferencesWindow;
+            NSPopUpButton *themePopUp = nil;
+            for (NSView *view in preferences.contentView.subviews)
+                if ([view isKindOfClass:NSPopUpButton.class] && !themePopUp) themePopUp = (NSPopUpButton *)view;
+            BOOL preferencesOffer = preferences != nil && themePopUp.numberOfItems == 2;
+            [themePopUp selectItemAtIndex:1];
+            [delegate prefThemeChanged:themePopUp];
+            BOOL lightApplied = [delegate.window.appearance.name isEqualToString:NSAppearanceNameAqua];
+            [themePopUp selectItemAtIndex:0];
+            [delegate prefThemeChanged:themePopUp];
+            MicaUITestRecord(report, &allPassed, preferencesOffer && lightApplied &&
+                [delegate.window.appearance.name isEqualToString:NSAppearanceNameDarkAqua],
+                @"the settings window switches the terminal between dark and light themes");
+            [preferences close];
 
             [delegate selectTabAtIndex:0];
             [delegate.terminalView setNeedsDisplay:YES];

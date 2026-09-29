@@ -457,6 +457,9 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)wakePollTimer;
 - (void)setLightTheme:(BOOL)light;
 - (void)setCursorStyle:(id)sender;
+- (void)openPreferences:(id)sender;
+- (void)prefThemeChanged:(NSPopUpButton *)sender;
+@property(nonatomic, strong) NSWindow *preferencesWindow;
 - (void)toggleLightTheme:(id)sender;
 - (void)handleClipboardWrite:(NSString *)text fromTab:(MicaTab *)tab;
 - (void)loadLaunchConfiguration;
@@ -3170,7 +3173,7 @@ static NSDictionary *MicaScalarDictionary(id object) {
                 NSEventModifierFlagCommand).target = self;
     AddMenuItem(appMenu, @"New Project Launcher…", @selector(newProjectLauncher:), @"", 0).target = self;
     [appMenu addItem:NSMenuItem.separatorItem];
-    // Standard macOS place for Settings (⌘,): project settings when this window has a layout, timer settings otherwise.
+    // Standard macOS place for Settings (⌘,): appearance, plus links to the project and timer settings.
     AddMenuItem(appMenu, @"Settings…", @selector(openSettings:), @",", NSEventModifierFlagCommand).target = self;
     [appMenu addItem:NSMenuItem.separatorItem];
     AddMenuItem(appMenu, @"Hide Mica", @selector(hide:), @"h", NSEventModifierFlagCommand);
@@ -3301,8 +3304,7 @@ static NSDictionary *MicaScalarDictionary(id object) {
 }
 
 - (void)openSettings:(id)sender {
-    if (self.projectLayoutPath.length) [self openProjectSettings:sender];
-    else [self openPomodoroSettings:sender];
+    [self openPreferences:sender];
 }
 
 - (void)openReleasesPage:(id)sender {
@@ -3745,13 +3747,78 @@ static NSDictionary *MicaScalarDictionary(id object) {
     item.state = light ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
-- (void)setCursorStyle:(id)sender {
-    NSMenuItem *item = [sender isKindOfClass:NSMenuItem.class] ? sender : nil;
-    gMicaCursorStyle = item ? item.tag : 0;
+- (void)applyCursorStyle:(NSInteger)style {
+    gMicaCursorStyle = MIN(MAX(style, 0), 2);
     if (!getenv("MICA_TEST_NO_STARTUP")) [NSUserDefaults.standardUserDefaults setInteger:gMicaCursorStyle forKey:@"MicaCursorStyle"];
-    for (NSMenuItem *entry in item.menu.itemArray) entry.state = entry.tag == gMicaCursorStyle ? NSControlStateValueOn : NSControlStateValueOff;
+    NSMenu *viewMenu = [NSApp.mainMenu itemWithTitle:@"View"].submenu;
+    for (NSMenuItem *entry in viewMenu.itemArray)
+        if (entry.action == @selector(setCursorStyle:)) entry.state = entry.tag == gMicaCursorStyle ? NSControlStateValueOn : NSControlStateValueOff;
     [self.terminalView setNeedsDisplay:YES];
 }
+
+- (void)setCursorStyle:(id)sender {
+    if ([sender isKindOfClass:NSMenuItem.class]) [self applyCursorStyle:((NSMenuItem *)sender).tag];
+}
+
+// One place for the look of the terminal: theme, cursor and text size, plus the project and timer settings.
+- (void)prefThemeChanged:(NSPopUpButton *)sender {
+    BOOL light = sender.indexOfSelectedItem == 1;
+    if (light == gMicaLightTheme) return;
+    [self setLightTheme:light];
+    if (!getenv("MICA_TEST_NO_STARTUP")) [NSUserDefaults.standardUserDefaults setBool:light forKey:@"MicaLightTheme"];
+}
+- (void)prefCursorChanged:(NSPopUpButton *)sender { [self applyCursorStyle:sender.indexOfSelectedItem]; }
+- (void)prefFontSizeChanged:(NSStepper *)sender {
+    self.terminalView.terminalFont = MicaTerminalFont(sender.doubleValue);
+    [self resizeActiveSession];
+}
+
+- (void)openPreferences:(id)sender {
+    (void)sender;
+    if (self.preferencesWindow) { [self.preferencesWindow makeKeyAndOrderFront:nil]; return; }
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 420, 232)
+        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
+    window.title = @"Mica Settings";
+    window.releasedWhenClosed = NO;
+    NSView *content = window.contentView;
+    NSArray<NSString *> *labels = @[@"Theme", @"Cursor", @"Text size"];
+    for (NSUInteger i = 0; i < labels.count; i++) {
+        NSTextField *caption = [NSTextField labelWithString:labels[i]];
+        caption.alignment = NSTextAlignmentRight;
+        caption.frame = NSMakeRect(20, 186 - 40 * i, 90, 20);
+        [content addSubview:caption];
+    }
+    NSPopUpButton *theme = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 182 - 0, 200, 26) pullsDown:NO];
+    [theme addItemsWithTitles:@[@"Dark", @"Light"]];
+    [theme selectItemAtIndex:gMicaLightTheme ? 1 : 0];
+    theme.target = self; theme.action = @selector(prefThemeChanged:);
+    [content addSubview:theme];
+    NSPopUpButton *cursor = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 142, 200, 26) pullsDown:NO];
+    [cursor addItemsWithTitles:@[@"Block", @"Bar", @"Underline"]];
+    [cursor selectItemAtIndex:gMicaCursorStyle];
+    cursor.target = self; cursor.action = @selector(prefCursorChanged:);
+    [content addSubview:cursor];
+    NSStepper *stepper = [[NSStepper alloc] initWithFrame:NSMakeRect(122, 102, 19, 27)];
+    stepper.minValue = 8; stepper.maxValue = 28; stepper.increment = 1;
+    stepper.doubleValue = self.terminalView.terminalFont.pointSize;
+    stepper.target = self; stepper.action = @selector(prefFontSizeChanged:);
+    [content addSubview:stepper];
+    NSTextField *sizeLabel = [NSTextField labelWithString:@"Use the stepper, or ⌘+ ⌘− ⌘0 in a terminal."];
+    sizeLabel.textColor = NSColor.secondaryLabelColor;
+    sizeLabel.frame = NSMakeRect(148, 105, 260, 18);
+    [content addSubview:sizeLabel];
+    NSButton *project = [NSButton buttonWithTitle:@"Project Settings…" target:self action:@selector(openProjectSettings:)];
+    project.frame = NSMakeRect(20, 30, 170, 30);
+    project.enabled = self.projectLayoutPath.length > 0;
+    NSButton *timer = [NSButton buttonWithTitle:@"Timer Settings…" target:self action:@selector(openPomodoroSettings:)];
+    timer.frame = NSMakeRect(200, 30, 170, 30);
+    [content addSubview:project];
+    [content addSubview:timer];
+    [window center];
+    self.preferencesWindow = window;
+    [window makeKeyAndOrderFront:nil];
+}
+
 
 - (void)toggleLightTheme:(id)sender {
     (void)sender;
