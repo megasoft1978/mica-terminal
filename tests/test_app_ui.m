@@ -882,11 +882,9 @@ static int MicaRunUISelfTest(void) {
         programmaticFrame.size.width += MAX(1, ceil(cellWidth));
         resizeView.frame = programmaticFrame;
         [resizeView scheduleGridResize];
-        MicaUITestRunLoopFor(0.05);
         programmaticFrame.size.width += MAX(1, ceil(cellWidth));
         resizeView.frame = programmaticFrame;
         [resizeView scheduleGridResize];
-        MicaUITestRunLoopFor(0.05);
         BOOL programmaticResizeDeferred = MicaUITestCountText(resizeTab.session,
             @"MICA-RESIZE-PIXELS-UPDATED") == updatesBeforeAXResize;
         MicaUITestRunLoopFor(0.2);

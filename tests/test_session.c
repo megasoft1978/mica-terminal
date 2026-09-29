@@ -731,7 +731,7 @@ color_checked:
     mica_session_destroy(sync_session);
     // A begin marker split across two reads is still recognized.
     MicaSession *split_session = mica_session_create("/tmp",
-        "printf 'BEFORE\\033[?20'; sleep 0.05; printf '26hSPLIT-FRAME'; sleep 2", 6, 80);
+        "printf 'BEFORE\\033[?20'; sleep 0.001; printf '26hSPLIT-FRAME'; sleep 2", 6, 80);
     assert(split_session != NULL);
     for (int i = 0; i < 300 && !screen_contains(split_session, "BEFORE"); i++)
         mica_session_poll(split_session, 10);
