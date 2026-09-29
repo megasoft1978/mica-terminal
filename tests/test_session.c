@@ -612,6 +612,8 @@ color_checked:
     assert(mica_session_history_lines(history_session) > 0);
     // Once scrollback is full the monotonic counter keeps growing while the stored count stays capped.
     assert(mica_session_scrolled_lines(history_session) > mica_session_history_lines(history_session));
+    mica_session_clear_scrollback(history_session);
+    assert(mica_session_history_lines(history_session) == 0);
     mica_session_resize(history_session, 8, 160);
     history_bytes = mica_session_history_lines(history_session) * 160u * sizeof(VTermScreenCell);
     assert(history_bytes <= MICA_HISTORY_LIMIT_BYTES);

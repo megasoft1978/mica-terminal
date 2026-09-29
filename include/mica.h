@@ -54,6 +54,8 @@ void mica_session_resize(MicaSession *session, int rows, int cols);
 void mica_session_resize_pixels(MicaSession *session, int rows, int cols, int pixel_width, int pixel_height);
 void mica_session_scroll(MicaSession *session, int lines);
 void mica_session_scroll_to_bottom(MicaSession *session);
+// Drops all scrolled-off history (Cmd+K); the visible screen is left alone.
+void mica_session_clear_scrollback(MicaSession *session);
 int mica_session_rows(const MicaSession *session);
 int mica_session_cols(const MicaSession *session);
 int mica_session_view_offset(const MicaSession *session);

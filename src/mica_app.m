@@ -1952,6 +1952,8 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         if ((flags & NSEventModifierFlagShift) && event.keyCode == 30) { [self.owner selectRelativeTab:1]; return; }
         if ((flags & NSEventModifierFlagShift) && event.keyCode == 33) { [self.owner selectRelativeTab:-1]; return; }
         if ([keyString isEqualToString:@"+"] || [keyString isEqualToString:@"="]) { self.terminalFont = MicaTerminalFont(MIN(28, self.terminalFont.pointSize + 1)); [self.owner resizeActiveSession]; return; }
+        if ([keyString isEqualToString:@"0"]) { self.terminalFont = MicaTerminalFont(kFontSizeDefault); [self.owner resizeActiveSession]; return; }
+        if ([keyString isEqualToString:@"k"]) { if (tab.session) { mica_session_clear_scrollback(tab.session); [self clearSelection]; [self setNeedsDisplay:YES]; } return; }
         if ([keyString isEqualToString:@"-"]) { self.terminalFont = MicaTerminalFont(MAX(8, self.terminalFont.pointSize - 1)); [self.owner resizeActiveSession]; return; }
         return;
     }
@@ -2188,6 +2190,15 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     CGFloat low = MIN(MIN(oldEndY, point.y), _selectionStart.y) - _lineHeight;
     CGFloat high = MAX(MAX(oldEndY, point.y), _selectionStart.y) + _lineHeight;
     [self setNeedsDisplayInRect:NSMakeRect(0, low, self.bounds.size.width, high - low)];
+}
+
+- (void)clearScrollbackMenu:(id)sender {
+    (void)sender;
+    MicaSession *session = self.owner.activeTab.session;
+    if (!session) return;
+    mica_session_clear_scrollback(session);
+    [self clearSelection];
+    [self setNeedsDisplay:YES];
 }
 
 - (void)clearSelection {
@@ -2956,6 +2967,7 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
     AddMenuItem(editMenu, @"Copy", @selector(copy:), @"c", NSEventModifierFlagCommand);
     AddMenuItem(editMenu, @"Paste", @selector(paste:), @"v", NSEventModifierFlagCommand);
+    AddMenuItem(editMenu, @"Clear Scrollback", @selector(clearScrollbackMenu:), @"k", NSEventModifierFlagCommand).target = self.terminalView;
     AddMenuItem(editMenu, @"Fold Selected Lines", @selector(foldSelectedLines:), @"f",
                 NSEventModifierFlagCommand | NSEventModifierFlagOption).target = self.terminalView;
     editRoot.submenu = editMenu;

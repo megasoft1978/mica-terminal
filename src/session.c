@@ -1569,6 +1569,12 @@ void mica_session_scroll(MicaSession *session, int lines) {
     }
 }
 
+void mica_session_clear_scrollback(MicaSession *session) {
+    if (!session) return;
+    history_clear(session);
+    session->revision++;
+}
+
 void mica_session_scroll_to_bottom(MicaSession *session) { if (session) session->view_offset = 0; }
 int mica_session_rows(const MicaSession *session) { return session ? session->rows : 0; }
 int mica_session_cols(const MicaSession *session) { return session ? session->cols : 0; }
