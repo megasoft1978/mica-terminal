@@ -218,6 +218,9 @@ static void MicaUITestInsertComposedText(MicaAppDelegate *delegate, NSString *te
     [delegate.terminalView insertText:text replacementRange:NSMakeRange(NSNotFound, 0)];
 }
 
+static int shortcutEnableCalls, shortcutDisableCalls;
+static BOOL MicaUITestCountingRegistrar(BOOL enable) { if (enable) shortcutEnableCalls++; else shortcutDisableCalls++; return YES; }
+
 static void MicaUITestSendFlags(MicaAppDelegate *delegate, NSEventModifierFlags modifiers,
                                unsigned short keyCode) {
     NSEvent *event = [NSEvent keyEventWithType:NSEventTypeFlagsChanged location:NSZeroPoint
@@ -1818,6 +1821,28 @@ static int MicaRunUISelfTest(void) {
             MicaUITestRecord(report, &allPassed, lightSurvives && systemSurvives && darkSurvives,
                 [NSString stringWithFormat:@"Dark, Light and System theme settings load in a fresh delegate from an isolated defaults suite (light=%d system=%d dark=%d mode=%@)",
                     lightSurvives, systemSurvives, darkSurvives, [isolatedDefaults stringForKey:@"MicaThemeMode"]]);
+            // Global shortcut: off by default, persists, and registering/unregistering goes through the injected hook.
+            shortcutEnableCalls = shortcutDisableCalls = 0;
+            NSString *shortcutSuite = [NSString stringWithFormat:@"mica-shortcut-%d", getpid()];
+            NSUserDefaults *shortcutDefaults = [[NSUserDefaults alloc] initWithSuiteName:shortcutSuite];
+            [shortcutDefaults removePersistentDomainForName:shortcutSuite];
+            gMicaDefaultsOverride = shortcutDefaults;
+            gMicaHotKeyRegistrar = MicaUITestCountingRegistrar;
+            MicaAppDelegate *shortcutDelegate = [MicaAppDelegate new];
+            [shortcutDelegate applyStoredShortcutPreference];
+            BOOL offByDefault = shortcutEnableCalls == 0 && shortcutDisableCalls == 1 && ![shortcutDefaults boolForKey:@"MicaGlobalShortcut"];
+            NSButton *shortcutBox = [NSButton checkboxWithTitle:@"x" target:nil action:nil];
+            shortcutBox.state = NSControlStateValueOn; [shortcutDelegate prefShortcutChanged:shortcutBox];
+            BOOL enabledPersists = shortcutEnableCalls == 1 && [shortcutDefaults boolForKey:@"MicaGlobalShortcut"];
+            [shortcutDelegate applyStoredShortcutPreference];
+            BOOL relaunchRegisters = shortcutEnableCalls == 2;
+            shortcutBox.state = NSControlStateValueOff; [shortcutDelegate prefShortcutChanged:shortcutBox];
+            BOOL disableUnregisters = shortcutDisableCalls == 2 && ![shortcutDefaults boolForKey:@"MicaGlobalShortcut"];
+            gMicaHotKeyRegistrar = NULL; gMicaDefaultsOverride = nil;
+            [shortcutDefaults removePersistentDomainForName:shortcutSuite];
+            MicaUITestRecord(report, &allPassed, offByDefault && enabledPersists && relaunchRegisters && disableUnregisters,
+                [NSString stringWithFormat:@"the global shortcut is off by default, persists, re-registers on launch and unregisters when disabled (default=%d on=%d relaunch=%d off=%d)",
+                    offByDefault, enabledPersists, relaunchRegisters, disableUnregisters]);
             BOOL oldContrast = gMicaTestIncreaseContrast;
             gMicaTestIncreaseContrast = YES;
             double darkContrast = MicaContrastRatio(MicaSecondaryLabelColor(1), MicaBackgroundColor());

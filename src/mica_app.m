@@ -4,6 +4,7 @@
 #import "mica_voice_controller.h"
 #import "mica_pomodoro.h"
 #import <UserNotifications/UserNotifications.h>
+#import <Carbon/Carbon.h>
 
 #import <CommonCrypto/CommonDigest.h>
 #import <fcntl.h>
@@ -159,6 +160,47 @@ static BOOL gMicaLightTheme = NO;
 static BOOL gMicaFollowSystemTheme = NO;
 static BOOL gMicaTestIncreaseContrast = NO;
 static NSUserDefaults *gMicaDefaultsOverride;
+
+// Optional global shortcut (Control-Option-Space) that brings Mica forward. Carbon hot keys need no
+// Accessibility permission. Registration goes through a replaceable function so tests never touch the system.
+static EventHotKeyRef gMicaHotKey;
+static EventHandlerRef gMicaHotKeyHandler;
+static BOOL gMicaShortcutRegistered;
+static BOOL (*gMicaHotKeyRegistrar)(BOOL enable);
+
+static OSStatus MicaHotKeyPressed(EventHandlerCallRef next, EventRef event, void *context) {
+    (void)next; (void)event; (void)context;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSApp activateIgnoringOtherApps:YES];
+        NSWindow *target = NSApp.keyWindow ?: NSApp.mainWindow;
+        for (NSWindow *window in NSApp.windows) if (!target && window.isVisible) target = window;
+        if (!target) for (NSWindow *window in NSApp.windows) if (window.canBecomeMainWindow) { target = window; break; }
+        if (target.isMiniaturized) [target deminiaturize:nil];
+        [target makeKeyAndOrderFront:nil];
+    });
+    return noErr;
+}
+
+static BOOL MicaRegisterSystemHotKey(BOOL enable) {
+    if (enable == (gMicaHotKey != NULL)) return YES;
+    if (!enable) {
+        UnregisterEventHotKey(gMicaHotKey);
+        gMicaHotKey = NULL;
+        return YES;
+    }
+    if (!gMicaHotKeyHandler) {
+        EventTypeSpec type = { kEventClassKeyboard, kEventHotKeyPressed };
+        if (InstallApplicationEventHandler(&MicaHotKeyPressed, 1, &type, NULL, &gMicaHotKeyHandler) != noErr) return NO;
+    }
+    EventHotKeyID hotKeyID = { 'mica', 1 };
+    return RegisterEventHotKey(kVK_Space, controlKey | optionKey, hotKeyID, GetApplicationEventTarget(), 0, &gMicaHotKey) == noErr;
+}
+
+static BOOL MicaSetGlobalShortcutEnabled(BOOL enable) {
+    BOOL ok = (gMicaHotKeyRegistrar ?: MicaRegisterSystemHotKey)(enable);
+    gMicaShortcutRegistered = ok ? enable : gMicaShortcutRegistered;
+    return ok;
+}
 static NSURL *gMicaSessionStateURLOverride;
 static BOOL MicaIncreaseContrastEnabled(void) {
     return gMicaTestIncreaseContrast || NSWorkspace.sharedWorkspace.accessibilityDisplayShouldIncreaseContrast;
@@ -515,6 +557,8 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)applySystemAppearanceIfNeeded;
 - (void)setCursorStyle:(id)sender;
 - (void)openPreferences:(id)sender;
+- (void)prefShortcutChanged:(NSButton *)sender;
+- (void)applyStoredShortcutPreference;
 - (void)refreshPreferencesSizeLabel;
 - (void)newWorktreeTab:(id)sender;
 - (void)postAgentNotification:(NSString *)words forTab:(MicaTab *)tab;
@@ -3626,6 +3670,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     }
     if (!getenv("MICA_TEST_NO_STARTUP")) {
         [self loadStoredThemePreference];
+        [self applyStoredShortcutPreference];
         [NSApp addObserver:self forKeyPath:@"effectiveAppearance" options:NSKeyValueObservingOptionNew context:NULL];
         self.observesSystemAppearance = YES;
     } else {
@@ -4536,6 +4581,19 @@ static BOOL MicaValidBranchName(NSString *name) {
     value.stringValue = [NSString stringWithFormat:@"%.0f pt", self.terminalView.terminalFont.pointSize];
 }
 
+- (void)applyStoredShortcutPreference {
+    MicaSetGlobalShortcutEnabled([[self micaDefaults] boolForKey:@"MicaGlobalShortcut"]);
+}
+
+- (void)prefShortcutChanged:(NSButton *)sender {
+    BOOL enable = sender.state == NSControlStateValueOn;
+    if (MicaSetGlobalShortcutEnabled(enable)) {
+        [[self micaDefaults] setBool:enable forKey:@"MicaGlobalShortcut"];
+    } else {
+        sender.state = enable ? NSControlStateValueOff : NSControlStateValueOn;   // the system refused; stay as before
+    }
+}
+
 - (void)openPreferences:(id)sender {
     (void)sender;
     if (self.preferencesWindow) {
@@ -4544,11 +4602,13 @@ static BOOL MicaValidBranchName(NSString *name) {
             selectItemAtIndex:gMicaFollowSystemTheme ? 2 : (gMicaLightTheme ? 1 : 0)];
         [(NSPopUpButton *)[self.preferencesWindow.contentView viewWithTag:103] selectItemAtIndex:gMicaCursorStyle];
         ((NSStepper *)[self.preferencesWindow.contentView viewWithTag:101]).doubleValue = self.terminalView.terminalFont.pointSize;
+        ((NSButton *)[self.preferencesWindow.contentView viewWithTag:105]).state =
+            [[self micaDefaults] boolForKey:@"MicaGlobalShortcut"] ? NSControlStateValueOn : NSControlStateValueOff;
         [self refreshPreferencesSizeLabel];
         [self.preferencesWindow makeKeyAndOrderFront:nil];
         return;
     }
-    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 460, 248)
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 460, 292)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
     window.title = @"Mica Settings";
     window.releasedWhenClosed = NO;
@@ -4557,16 +4617,16 @@ static BOOL MicaValidBranchName(NSString *name) {
     for (NSUInteger i = 0; i < labels.count; i++) {
         NSTextField *caption = [NSTextField labelWithString:labels[i]];
         caption.alignment = NSTextAlignmentRight;
-        caption.frame = NSMakeRect(20, 202 - 40 * i, 90, 18);
+        caption.frame = NSMakeRect(20, 246 - 40 * i, 90, 18);
         [content addSubview:caption];
     }
-    NSPopUpButton *theme = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 197, 200, 26) pullsDown:NO];
+    NSPopUpButton *theme = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 241, 200, 26) pullsDown:NO];
     [theme addItemsWithTitles:@[@"Dark", @"Light", @"System"]];
     [theme selectItemAtIndex:gMicaFollowSystemTheme ? 2 : (gMicaLightTheme ? 1 : 0)];
     theme.tag = 102;
     theme.target = self; theme.action = @selector(prefThemeChanged:);
     [content addSubview:theme];
-    NSPopUpButton *cursor = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 157, 200, 26) pullsDown:NO];
+    NSPopUpButton *cursor = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 201, 200, 26) pullsDown:NO];
     [cursor addItemsWithTitles:@[@"Block", @"Bar", @"Underline"]];
     [cursor selectItemAtIndex:gMicaCursorStyle];
     cursor.tag = 103;
@@ -4575,9 +4635,9 @@ static BOOL MicaValidBranchName(NSString *name) {
     NSTextField *sizeValue = [NSTextField labelWithString:@""];
     sizeValue.tag = 104;
     sizeValue.font = [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightRegular];
-    sizeValue.frame = NSMakeRect(122, 122, 44, 18);
+    sizeValue.frame = NSMakeRect(122, 166, 44, 18);
     [content addSubview:sizeValue];
-    NSStepper *stepper = [[NSStepper alloc] initWithFrame:NSMakeRect(168, 117, 19, 27)];
+    NSStepper *stepper = [[NSStepper alloc] initWithFrame:NSMakeRect(168, 161, 19, 27)];
     stepper.minValue = 8; stepper.maxValue = 28; stepper.increment = 1;
     stepper.doubleValue = self.terminalView.terminalFont.pointSize;
     stepper.tag = 101;
@@ -4586,8 +4646,14 @@ static BOOL MicaValidBranchName(NSString *name) {
     NSTextField *sizeHint = [NSTextField labelWithString:@"Also ⌘+  ⌘−  ⌘0 in a terminal."];
     sizeHint.textColor = MicaSecondaryLabelColor(1.0);
     sizeHint.font = [NSFont systemFontOfSize:11];
-    sizeHint.frame = NSMakeRect(122, 98, 320, 14);
+    sizeHint.frame = NSMakeRect(122, 142, 320, 14);
     [content addSubview:sizeHint];
+    NSButton *shortcut = [NSButton checkboxWithTitle:@"Show Mica with a global shortcut (⌃⌥Space)" target:self
+                                              action:@selector(prefShortcutChanged:)];
+    shortcut.frame = NSMakeRect(120, 100, 320, 20);
+    shortcut.tag = 105;
+    shortcut.state = [[self micaDefaults] boolForKey:@"MicaGlobalShortcut"] ? NSControlStateValueOn : NSControlStateValueOff;
+    [content addSubview:shortcut];
     NSBox *rule = [[NSBox alloc] initWithFrame:NSMakeRect(20, 74, 420, 1)];
     rule.boxType = NSBoxSeparator;
     [content addSubview:rule];
