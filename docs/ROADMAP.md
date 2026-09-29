@@ -22,7 +22,7 @@ A verified list of what would make Mica better at its job (one light app for the
 | --- | --- | --- | --- |
 | 1 | Notarized build and an update path | No Developer ID certificate on the development Mac, so `make notarize` has never run end to end; no releases, no updater | Needs your certificate |
 | 2 | Status sidebar with per-tab branch, agent state and last notification | Data exists (branch, activity, notification text); no UI | Medium |
-| 3 | Scrollback is short for agent output | 2 MiB cap over 40-byte cells is about 650 lines at 80 columns and 260 at 200 columns | Medium (compact cell storage) |
+| 3 | Scrollback is short for agent output | 2 MiB cap over 40-byte cells is about 650 lines at 80 columns and 260 at 200 columns; see the staged design in PERFORMANCE.md | High (measure, trim blank cells, then encode attributes) |
 | 4 | zsh only | The shell is `/bin/zsh -l -i` and `$SHELL` is ignored; the shell hooks are zsh | Medium |
 | 5 | Split panes | Layout, focus and resize code assume one grid per tab | Large |
 | 6 | Quick terminal on a global hotkey | Not present | Medium |
@@ -33,5 +33,5 @@ A verified list of what would make Mica better at its job (one light app for the
 - The first build needs network access (the speech package) and a Swift 6 toolchain.
 - Agent activity on a tab is inferred by reading the visible screen for words such as "running" or "(y/n)", so it can misfire on ordinary output.
 - One Dock icon serves every window, and it shows the mark of the project in front.
-- Wrapped URLs that break across two lines are not opened as one address.
+- Bare URLs are assembled across visible soft-wrapped rows for Command-click; hard newlines remain separate. Underline rendering and full wrapped-URL click coverage remain open.
 - All timing and memory figures are from one Apple silicon Mac; see MEMORY-BASELINE.md for the method.

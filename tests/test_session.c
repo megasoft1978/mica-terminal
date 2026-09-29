@@ -555,6 +555,23 @@ color_checked:
     assert(clickable_link_found && plain_text_unlinked);
     mica_session_destroy(link_session);
 
+    MicaSession *wrap_session = mica_session_create("/tmp",
+        "printf 'https://example.test/abcdefghijklmnopqrstuvwxyz0123456789\\nHARD-NEWLINE\\n'; sleep 1", 6, 24);
+    assert(wrap_session != NULL);
+    for (int i = 0; i < 300 && !screen_contains(wrap_session, "HARD-NEWLINE"); i++)
+        mica_session_poll(wrap_session, 10);
+    bool saw_soft_wrap = false, hard_line_stays_separate = true;
+    for (int row = 1; row < mica_session_rows(wrap_session); row++) {
+        if (mica_session_row_continues(wrap_session, row)) saw_soft_wrap = true;
+        if (screen_contains(wrap_session, "HARD-NEWLINE") && mica_session_row_continues(wrap_session, row)) {
+            MicaCell first;
+            if (mica_session_get_cell(wrap_session, row, 0, &first) && first.chars[0] == 'H')
+                hard_line_stays_separate = false;
+        }
+    }
+    assert(saw_soft_wrap && hard_line_stays_separate);
+    mica_session_destroy(wrap_session);
+
     MicaSession *scroll_link_session = mica_session_create("/tmp",
         "printf '\\033]8;;https://example.test/scroll\\033\\\\SCROLLED-LINK\\033]8;;\\033\\\\\\n'; "
         "i=1; while [ $i -le 12 ]; do printf 'AFTER-LINK-%02d\\n' $i; i=$((i+1)); done; sleep 1",

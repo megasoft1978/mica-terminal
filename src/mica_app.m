@@ -2596,16 +2596,26 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
             return;
         }
         // No OSC 8 link here: open a plain http(s) address if one is under the pointer.
-        NSMutableString *line = [NSMutableString string];
-        NSUInteger clickedIndex = 0;
         MicaSession *clickSession = self.owner.activeTab.session;
-        for (int col = 0; col < mica_session_cols(clickSession); col++) {
-            MicaCell probe;
-            if (!mica_session_get_cell(clickSession, (int)cell.y, col, &probe) || CellIsContinuation(probe)) continue;
-            if (col <= (int)cell.x) clickedIndex = line.length;
-            uint32_t codepoint = probe.chars[0] ? probe.chars[0] : ' ';
-            NSString *glyph = [[NSString alloc] initWithBytes:&codepoint length:4 encoding:NSUTF32LittleEndianStringEncoding];
-            [line appendString:glyph ?: @" "];
+        NSMutableString *line = [NSMutableString string];
+        int firstRow = (int)cell.y, lastRow = (int)cell.y;
+        while (mica_session_row_continues(clickSession, firstRow)) firstRow--;
+        while (lastRow + 1 < mica_session_rows(clickSession) &&
+               mica_session_row_continues(clickSession, lastRow + 1)) lastRow++;
+        NSUInteger clickedIndex = 0;
+        for (int row = firstRow; row <= lastRow; row++) {
+            if (row > firstRow) {
+                while (line.length && [line characterAtIndex:line.length - 1] == ' ')
+                    [line deleteCharactersInRange:NSMakeRange(line.length - 1, 1)];
+            }
+            for (int col = 0; col < mica_session_cols(clickSession); col++) {
+                MicaCell probe;
+                if (!mica_session_get_cell(clickSession, row, col, &probe) || CellIsContinuation(probe)) continue;
+                if (row == (int)cell.y && col <= (int)cell.x) clickedIndex = line.length;
+                uint32_t codepoint = probe.chars[0] ? probe.chars[0] : ' ';
+                NSString *glyph = [[NSString alloc] initWithBytes:&codepoint length:4 encoding:NSUTF32LittleEndianStringEncoding];
+                [line appendString:glyph ?: @" "];
+            }
         }
         NSURL *bare = MicaBareURLInLine(line, clickedIndex);
         if (bare) {

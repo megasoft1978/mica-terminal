@@ -2106,6 +2106,12 @@ bool mica_session_get_cell(const MicaSession *session, int row, int col, MicaCel
     return true;
 }
 
+bool mica_session_row_continues(const MicaSession *session, int row) {
+    if (!session || row <= 0 || row >= session->rows || session->view_offset != 0) return false;
+    const VTermLineInfo *info = vterm_state_get_lineinfo(session->state, row);
+    return info && info->continuation;
+}
+
 const char *mica_session_hyperlink_uri(const MicaSession *session, uint32_t hyperlink_id) {
     if (!session || hyperlink_id == 0 || hyperlink_id > session->hyperlink_count) return NULL;
     return session->hyperlink_uris[hyperlink_id - 1];

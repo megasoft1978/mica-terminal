@@ -82,6 +82,8 @@ bool mica_session_fold_visible_rows(MicaSession *session, int start_row, int end
 bool mica_session_toggle_fold_at_view_row(MicaSession *session, int row);
 bool mica_session_fold_info_at_view_row(const MicaSession *session, int row, size_t *hidden_rows);
 bool mica_session_get_cell(const MicaSession *session, int row, int col, MicaCell *cell);
+// Whether this displayed row is a soft-wrap continuation of the preceding row.
+bool mica_session_row_continues(const MicaSession *session, int row);
 const char *mica_session_hyperlink_uri(const MicaSession *session, uint32_t hyperlink_id);
 bool mica_session_is_running(const MicaSession *session);
 int mica_session_exit_status(const MicaSession *session);
