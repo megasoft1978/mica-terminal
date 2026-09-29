@@ -26,3 +26,5 @@ Setup (2026-09-29, macOS 26.6, Apple Silicon, Zellij 0.43.1, one window, three e
 | Zellij server + client alone (no host terminal) | About 37 MiB | About 23 MiB |
 
 In this single idle sample Mica used about as much memory as Terminal.app plus Zellij, and slightly more by physical footprint. Mica does not reduce memory compared with that combination; its advantage is one integrated app (tabs, agent status, dictation, timer) rather than lower memory. Results vary with the host terminal, window size, and workload, so treat this as a snapshot, not a benchmark.
+
+Note: the 2026-09-29 Mica figures above are higher than the 2026-09-26 samples for the same three-tab case. The cause was not investigated (different build and session state), so compare numbers only within one table. `make memory` counts the Mica app process only; the speech helper (`Contents/Helpers/mica-voice`) is not included and holds the recognition model while dictation is active.

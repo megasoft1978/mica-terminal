@@ -23,6 +23,7 @@
 @property(nonatomic, strong) NSPipe *audioPipe;
 @property(nonatomic, strong) NSFileHandle *audioWriter;
 @property(nonatomic, strong) AVAudioEngine *audioEngine;
+@property(nonatomic, strong) id audioConfigObserver;
 @property(nonatomic, strong) AVAudioConverter *audioConverter;
 @property(nonatomic, strong) AVAudioFormat *audioTargetFormat;
 @property(nonatomic, strong) NSMutableData *outputBuffer;
@@ -127,11 +128,6 @@
 - (void)beginForWorkingDirectory:(NSString *)workingDirectory {
     NSUInteger generation = ++self.recordingGeneration;
     atomic_store(&_audioGeneration, (unsigned)generation);
-    if (NSProcessInfo.processInfo.operatingSystemVersion.majorVersion < 14) {
-        [self failWithMessage:@"Dictation requires macOS 14 or later. Mica's terminal works on macOS 13 and later."];
-        return;
-    }
-
     self.isPushToTalk = YES;
     [self.helperExitTimer invalidate];
     self.helperExitTimer = nil;
@@ -478,6 +474,16 @@
     }
 
     self.audioEngine = engine;
+    // Plugging in AirPods or switching input stops the engine silently; tell the user instead of hanging on "Listening".
+    __weak typeof(self) configWeakSelf = self;
+    self.audioConfigObserver = [NSNotificationCenter.defaultCenter
+        addObserverForName:AVAudioEngineConfigurationChangeNotification object:engine queue:NSOperationQueue.mainQueue
+        usingBlock:^(__unused NSNotification *note) {
+            MicaVoiceController *strongSelf = configWeakSelf;
+            if (strongSelf && strongSelf.audioEngine == engine &&
+                (strongSelf.state == MicaVoiceControllerStateListening || strongSelf.state == MicaVoiceControllerStatePreparing))
+                [strongSelf failWithMessage:@"The microphone changed. Hold ⌥ to try again."];
+        }];
     self.audioConverter = converter;
     self.audioTargetFormat = targetFormat;
     atomic_store(&_acceptAudio, true);
@@ -681,6 +687,10 @@
 - (void)stopAudioCaptureSendingCancel:(BOOL)cancel {
     atomic_store(&_acceptAudio, false);
     if (cancel) atomic_store(&_discardQueuedAudio, true);
+    if (self.audioConfigObserver) {
+        [NSNotificationCenter.defaultCenter removeObserver:self.audioConfigObserver];
+        self.audioConfigObserver = nil;
+    }
     AVAudioEngine *engine = self.audioEngine;
     if (engine) {
         [engine.inputNode removeTapOnBus:0];

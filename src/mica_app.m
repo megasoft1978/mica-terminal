@@ -1944,6 +1944,13 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         return;
     }
     [self.owner wakePollTimer];
+    if ([self hasMarkedText]) {
+        // While an input method is composing, it owns Enter, Backspace, Esc and the arrows.
+        _imeTab = tab;
+        [self interpretKeyEvents:@[event]];
+        _imeTab = nil;
+        return;
+    }
     VTermModifier modifiers = VTERM_MOD_NONE;
     if (flags & NSEventModifierFlagShift) modifiers |= VTERM_MOD_SHIFT;
     if (option) modifiers |= VTERM_MOD_ALT;
@@ -3594,7 +3601,9 @@ int main(int argc, const char *argv[]) {
             @MICA_VERSION, @MICA_REVISION, getpid(), getppid(), NSBundle.mainBundle.bundleIdentifier ?: @"unknown",
             NSBundle.mainBundle.bundleURL.path ?: @"unknown",
             NSFileManager.defaultManager.currentDirectoryPath ?: @"unknown"]);
-        NSApplication *app = NSApplication.sharedApplication;
+        // A dead speech helper must surface as a write error, not kill every terminal with SIGPIPE.
+signal(SIGPIPE, SIG_IGN);
+NSApplication *app = NSApplication.sharedApplication;
         app.activationPolicy = NSApplicationActivationPolicyRegular;
         MicaAppDelegate *delegate = [[MicaAppDelegate alloc] init];
         app.delegate = delegate;

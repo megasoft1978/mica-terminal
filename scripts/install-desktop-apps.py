@@ -159,9 +159,9 @@ def install_bundle(
     target.parent.mkdir(parents=True, exist_ok=True)
     binary = base_app / "Contents/MacOS/Mica"
     icon = base_app / "Contents/Resources/Mica.icns"
-    base_info = read_plist(base_app / "Contents/Info.plist")
     if not binary.is_file() or not icon.is_file() or not project_icon_tool.is_file():
         raise RuntimeError(f"build the shared Mica.app before installing project launchers: {base_app}")
+    base_info = read_plist(base_app / "Contents/Info.plist")
 
     current_info = None
     if target.is_symlink():

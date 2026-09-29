@@ -34,7 +34,7 @@ for iteration in $(seq 1 "$ITERATIONS"); do
     cat "$PROMPT_FILE"
     if [ -s "$LOG_FILE" ]; then
       printf '\nPrevious full validation output follows. Fix every failure and keep passing coverage:\n'
-      cat "$LOG_FILE"
+      tail -n 400 "$LOG_FILE"
     fi
     if [ -s "$ROOT/build/ui-smoke-report.txt" ]; then
       printf '\nAppKit UI smoke report follows:\n'
