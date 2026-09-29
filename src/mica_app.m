@@ -1277,6 +1277,9 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
                 [activity isEqualToString:@"Ready"])
                 return MicaTabActivityStateIdle;
         }
+        // Full-screen programs (lazygit, yazi, vim) redraw constantly; that is not work in progress.
+        if (!MicaAgentNameForTab(tab) && tab.session && mica_session_alt_screen(tab.session))
+            return MicaTabActivityStateIdle;
         NSTimeInterval lastOutputAt = tab.lastOutputReadAt;
         if (lastOutputAt <= 0 ||
             NSProcessInfo.processInfo.systemUptime - lastOutputAt > kAgentActivityQuietInterval)

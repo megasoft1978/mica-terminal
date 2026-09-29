@@ -98,6 +98,7 @@ bool clipboard_overflow;
 bool clipboard_ready;
 bool sync_output;
 bool bracketed_paste;
+    bool alt_screen;
 char mark_token[33];
 char notification_text[256];
 bool notification_ready;
@@ -573,6 +574,7 @@ static int property_callback(VTermProp prop, VTermValue *value, void *user) {
     if (!session || !value) return 1;
     if (prop == VTERM_PROP_CURSORVISIBLE) session->cursor_visible = value->boolean != 0;
     if (prop == VTERM_PROP_MOUSE) session->mouse_mode = value->number;
+    if (prop == VTERM_PROP_ALTSCREEN) session->alt_screen = value->boolean != 0;
     if (prop == VTERM_PROP_FOCUSREPORT) session->focus_report = value->boolean != 0;
     if (prop == VTERM_PROP_TITLE) {
         VTermStringFragment fragment = value->string;
@@ -1908,6 +1910,7 @@ bool mica_session_take_dirty_rows(MicaSession *session, MicaDirtyRows *rows) {
     session->dirty_rows = (MicaDirtyRows){0};
     return true;
 }
+bool mica_session_alt_screen(const MicaSession *session) { return session && session->alt_screen; }
 bool mica_session_bracketed_paste(const MicaSession *session) { return session && session->bracketed_paste; }
 bool mica_session_sync_output_active(const MicaSession *session) {
     // A stuck frame must never freeze the display: give up after a quarter second.

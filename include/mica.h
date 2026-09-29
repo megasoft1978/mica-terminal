@@ -68,6 +68,8 @@ size_t mica_session_history_lines(const MicaSession *session);
 // Monotonic count of lines that have scrolled off the top; keeps counting once scrollback is full.
 // True when the foreground program enabled bracketed paste (mode 2004), which makes pasted newlines safe.
 bool mica_session_bracketed_paste(const MicaSession *session);
+// True while a full-screen program (lazygit, vim, yazi, htop) is on the alternate screen.
+bool mica_session_alt_screen(const MicaSession *session);
 // True while a program has an unfinished synchronized-output frame (mode 2026); redraw should wait.
 bool mica_session_sync_output_active(const MicaSession *session);
 // Words a program sent with OSC 9, 99 or 777 (an agent asking for attention), or NULL. The caller frees it.

@@ -664,6 +664,17 @@ color_checked:
     mica_session_destroy(bracketed_session);
     printf("bracketed paste mode is tracked\n");
 
+    // Full-screen programs enter the alternate screen; the tab spinner keys off this.
+    MicaSession *alt_session = mica_session_create("/tmp",
+        "printf 'PLAIN'; sleep 0.3; printf '\\033[?1049hALT-ON'; sleep 2", 6, 80);
+    assert(alt_session != NULL);
+    assert(!mica_session_alt_screen(alt_session));
+    for (int i = 0; i < 300 && !screen_contains(alt_session, "ALT-ON"); i++)
+        mica_session_poll(alt_session, 10);
+    assert(mica_session_alt_screen(alt_session));
+    mica_session_destroy(alt_session);
+    printf("alternate screen is tracked\n");
+
     // Switching to the light theme repaints existing ANSI colours from the light palette.
     MicaSession *theme_session = mica_session_create("/tmp", "printf '\\033[31mRED\\033[0m'; sleep 2", 6, 80);
     assert(theme_session != NULL);
