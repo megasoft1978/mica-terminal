@@ -706,6 +706,16 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         element.pressHandler = ^BOOL{ [weakSelf.owner selectTabAtIndex:(NSInteger)index]; return YES; };
         [children addObject:element];
     }
+    // The focus timer is drawn text in the status strip; expose it as a button that starts, pauses or resumes it.
+    NSRect timerRect = [self pomodoroControlRect];
+    if (!NSIsEmptyRect(timerRect)) {
+        __weak typeof(self) weakSelf = self;
+        MicaTabAccessibilityElement *timer = [MicaTabAccessibilityElement accessibilityElementWithRole:NSAccessibilityButtonRole
+            frame:[self.window convertRectToScreen:[self convertRect:timerRect toView:nil]]
+            label:@"Focus timer" parent:self];
+        timer.pressHandler = ^BOOL{ [weakSelf.owner togglePomodoroPause:nil]; return YES; };
+        [children addObject:timer];
+    }
     return children;
 }
 - (id)accessibilityValue {
