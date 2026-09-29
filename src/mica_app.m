@@ -2238,6 +2238,7 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     NSButton *cancelButton = [NSButton buttonWithTitle:@"Cancel" target:self action:@selector(cancel:)];
     NSButton *saveButton = [NSButton buttonWithTitle:@"Save" target:self action:@selector(save:)];
     saveButton.keyEquivalent = @"\r";
+    cancelButton.keyEquivalent = @"\033";
 
     for (NSView *view in @[nameLabel, self.projectNameField, tabsLabel, scroll, addButton,
                            removeButton, cancelButton, saveButton]) {
@@ -3331,6 +3332,10 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
             }
         }
         dispatch_group_leave(self.terminationCleanupGroup);
+    });
+    // Never let a hung child teardown keep Quit waiting forever.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        [NSApp replyToApplicationShouldTerminate:YES];
     });
     return NSTerminateLater;
 }
