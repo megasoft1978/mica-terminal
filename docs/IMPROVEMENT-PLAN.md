@@ -40,3 +40,14 @@ Tabs and folders surviving quit; scrollback capacity (compact cell storage); per
 4. **Docs.** Update `docs/ROADMAP.md` and README/site only where behaviour changed.
 
 Same report format, file `build/codex-report-2.md`.
+
+## Cycle 3 (reviewer accepted cycle 2: `make test`, `sanitize`, `stress` green; committed by the reviewer)
+
+Close the gaps your own report listed, plus one security decision:
+
+1. **Restore names and folders only, never commands.** A state file must not be able to make Mica run a command at launch. Remove commands from the state file and from restoration; a restored tab opens an ordinary shell in its folder. Write the file with mode 0600 in a 0700 directory, validate every field (string lengths, at most 9 tabs, absolute paths that exist and are directories), and add tests for a hostile file (huge strings, control characters, `../`, a symlink to a file, a command field that must be ignored).
+2. **Quit/relaunch stress action** in `tests/stress_app_ui.m` (save state, tear down the window, start a new one that restores) with the isolated state path, so `make stress` exercises it under the sanitizers.
+3. **Automated dictation-strip overlap test** across the matrix you rendered (states x 480/600/800/1600 px x dark/light): label, words and hint rectangles never overlap and the last word is inside the visible rect. Fix any failure. Finish and inspect the Light matrix renders.
+4. **Docs**: README/ROADMAP only where behaviour changed.
+
+Same rules; report in `build/codex-report-3.md`. If every item is done and every check green, say so plainly in the first line of the report.
