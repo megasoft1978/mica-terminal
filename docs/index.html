@@ -3,16 +3,26 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f4f2ee">
+  <meta name="theme-color" content="#f4f2ee" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#141613" media="(prefers-color-scheme: dark)">
+  <meta name="color-scheme" content="light dark">
+  <link rel="canonical" href="https://megasoft1978.github.io/mica-terminal/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Mica">
+  <meta property="og:title" content="Mica — A calmer home for your terminal work">
+  <meta property="og:description" content="Native macOS terminal workspace for project shells, coding agents, and the tools around them.">
+  <meta property="og:url" content="https://megasoft1978.github.io/mica-terminal/">
+  <meta property="og:image" content="https://megasoft1978.github.io/mica-terminal/assets/mica-demo-poster.png">
+  <meta name="twitter:card" content="summary_large_image">
   <meta name="description" content="Mica is a native macOS terminal workspace for project shells, coding agents, and the tools around them.">
   <title>Mica — A calmer home for your terminal work</title>
   <link rel="icon" type="image/png" href="mica-icon.png">
+  <link rel="apple-touch-icon" href="mica-icon.png">
   <style>
     :root {
-      color-scheme: light;
       --paper: #f4f2ee;
       --ink: #171916;
-      --muted: #626760;
+      --muted: #565a53;
       --green: #315f48;
       --green-dark: #244735;
       --line: #d9d8d0;
@@ -40,26 +50,9 @@
     .button { display: inline-flex; min-height: 46px; padding: 0 17px; align-items: center; justify-content: center; gap: 10px; border: 1px solid var(--green); border-radius: 7px; background: var(--green); color: white; text-decoration: none; font-size: 14px; font-weight: 590; transition: background .18s, transform .18s; }
     .button:hover { background: var(--green-dark); transform: translateY(-1px); }
     .text-link { color: var(--muted); font-size: 14px; text-decoration-thickness: 1px; text-underline-offset: 4px; }
-    .requirements { margin-top: 18px; color: #85877f; font-size: 12px; }
-    .window { position: relative; padding: 0; overflow: hidden; min-height: 385px; border: 1px solid #41443e; border-radius: 12px; background: #171a18; box-shadow: 0 24px 70px #24261f24, 0 3px 10px #24261f18; transform: perspective(1200px) rotateY(-2deg) rotateX(1deg); }
+    .requirements { margin-top: 18px; color: #6a6d65; font-size: 12px; }
     .product-video { display: block; width: 100%; height: auto; border: 1px solid #41443e; border-radius: 12px; background: #171a18; box-shadow: 0 24px 70px #24261f24, 0 3px 10px #24261f18; }
     .video-caption { margin: 12px 0 0; color: var(--muted); font-size: 12px; text-align: right; }
-    .window-bar { height: 41px; padding: 0 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #343833; background: #20231f; }
-    .traffic { display: flex; gap: 6px; }.traffic i { width: 8px; height: 8px; border-radius: 50%; background: #686c65; }.traffic i:first-child { background: #bd755e; }.traffic i:nth-child(2) { background: #c6a45e; }.traffic i:nth-child(3) { background: #719273; }
-    .window-title { color: #b6bab2; font: 11px var(--mono); }
-    .window-tabs { height: 35px; display: flex; align-items: stretch; border-bottom: 1px solid #30342f; color: #999e95; font: 11px var(--mono); }
-    .window-tabs span { min-width: 0; padding: 0 15px; display: flex; align-items: center; border-right: 1px solid #30342f; }
-    .window-tabs .selected { color: #e9eee8; background: #2a3d31; border-bottom: 2px solid #9fc5a7; }
-    .term { height: 265px; padding: 22px 25px; color: #d1d6cc; font: 12px/1.9 var(--mono); }
-    .prompt { color: #a9c9a9; }.cmd { color: #e2e4dd; }.dim { color: #777e74; }
-    .agent-card { margin: 14px 0 16px; width: fit-content; max-width: 100%; padding: 11px 14px; border: 1px solid #486c51; border-radius: 7px; background: #202b22; color: #d1ddce; font: 11px/1.65 var(--mono); }
-    .agent-head { color: #a8c5a2; margin-bottom: 2px; }.cursor { display: inline-block; width: 7px; height: 14px; margin-left: 3px; vertical-align: -2px; background: #b6d1a4; }
-    .status { height: 43px; padding: 0 15px; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid #363a34; color: #9ba096; font: 10px var(--mono); }
-    .status strong { color: #bdd4b6; font-weight: 500; }
-    .hero-note { position: absolute; right: 17px; top: 93px; width: 162px; padding: 10px 12px; border: 1px solid #51735a; border-radius: 8px; background: #202b22; color: #d6e1d3; box-shadow: 0 8px 20px #0004; font: 10px/1.55 var(--mono); }
-    .hero-note b { display: block; margin-bottom: 3px; color: #a8c5a2; font-weight: 500; }
-    .wave { display: inline-flex; height: 12px; margin-right: 5px; gap: 2px; align-items: center; vertical-align: -2px; }.wave i { width: 2px; border-radius: 2px; background: #a5c89c; animation: sound .8s ease-in-out infinite alternate; }.wave i:nth-child(1) { height: 5px; }.wave i:nth-child(2) { height: 10px; animation-delay: -.3s; }.wave i:nth-child(3) { height: 7px; animation-delay: -.5s; }
-    @keyframes sound { to { transform: scaleY(.45); opacity: .6; } }
     .proof { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
     .proof-row { min-height: 72px; display: flex; gap: 10px; align-items: center; color: var(--muted); font: 12px var(--mono); }
     .proof-row span { padding-right: 22px; }.proof-row span + span { padding-left: 22px; border-left: 1px solid var(--line); }
@@ -70,22 +63,33 @@
     .section-head p { max-width: 490px; margin: 0; color: var(--muted); font-size: 15px; line-height: 1.7; }
     .features { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
     .feature { min-height: 192px; padding: 23px 23px 27px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
-    .feature-index { color: #8c9288; font: 11px var(--mono); }.feature h3 { margin: 29px 0 9px; font-size: 17px; font-weight: 610; letter-spacing: -.025em; }.feature p { max-width: 290px; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.65; }
+    .feature-index { color: #6a6f65; font: 11px var(--mono); }.feature h3 { margin: 29px 0 9px; font-size: 17px; font-weight: 610; letter-spacing: -.025em; }.feature p { max-width: 290px; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.65; }
     .install { padding: 64px; display: grid; grid-template-columns: 1fr 1fr; gap: 60px; align-items: center; border-radius: 12px; background: #e9e8e1; }
     .install h2 { max-width: 420px; }.install p { max-width: 390px; color: var(--muted); font-size: 14px; line-height: 1.7; }
     .code { padding: 20px 22px; border-radius: 8px; background: #1d211e; color: #d8dfd5; font: 12px/2 var(--mono); overflow-x: auto; }.code .hash { color: #889184; }.code .sign { color: #aaca9e; }
     .endline { padding: 83px 0 74px; display: flex; align-items: end; justify-content: space-between; gap: 20px; }.endline h2 { max-width: 550px; }.endline p { margin: 13px 0 0; color: var(--muted); font-size: 14px; }
     .credits { padding: 45px 0 55px; border-top: 1px solid var(--line); }.credits p { max-width: 790px; color: var(--muted); line-height: 1.7; }.credits a { color: var(--ink); text-underline-offset: 3px; }
-    footer { min-height: 77px; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--line); color: #777c73; font-size: 12px; }
+    footer { min-height: 77px; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--line); color: #5f635b; font-size: 12px; }
     footer a { text-decoration: none; } .footer-links { display: flex; gap: 22px; }
-    @media (max-width: 860px) { .hero { grid-template-columns: 1fr; gap: 42px; padding-top: 65px; }.hero-copy { max-width: 590px; }.window { max-width: 700px; width: 100%; transform: none; }.section-head { grid-template-columns: 1fr; gap: 20px; }.install { padding: 40px; gap: 35px; } }
-    @media (max-width: 620px) { .wrap { width: min(100% - 36px, 500px); } header { height: 66px; } nav { gap: 16px; } nav a:not(.nav-cta) { display: none; } .hero { padding: 53px 0 52px; } h1 { font-size: 55px; }.intro { font-size: 15px; }.actions { gap: 17px; }.window { min-height: 360px; }.window-tabs span { padding: 0 10px; font-size: 10px; }.window-tabs span:nth-child(4) { display: none; }.term { padding: 19px 16px; font-size: 10px; }.hero-note { right: 9px; top: 85px; width: 145px; }.proof-row { padding: 14px 0; flex-wrap: wrap; gap: 12px 0; font-size: 10px; }.proof-row span { padding-right: 12px; }.proof-row span + span { padding-left: 12px; }.section { padding: 69px 0; }.features { grid-template-columns: 1fr; }.feature { min-height: 150px; }.feature h3 { margin-top: 21px; }.install { grid-template-columns: 1fr; padding: 27px 21px; gap: 20px; }.code { padding: 17px 14px; font-size: 10px; }.endline { padding: 65px 0; align-items: start; flex-direction: column; } footer { align-items: start; flex-direction: column; justify-content: center; gap: 14px; padding: 20px 0; }.footer-links { gap: 16px; } }
+    @media (max-width: 860px) { .hero { grid-template-columns: 1fr; gap: 42px; padding-top: 65px; }.hero-copy { max-width: 590px; }.section-head { grid-template-columns: 1fr; gap: 20px; }.install { padding: 40px; gap: 35px; } }
+    @media (max-width: 620px) { .wrap { width: min(100% - 36px, 500px); } header { height: 66px; } nav { gap: 16px; } nav a:not(.nav-cta) { display: none; } .hero { padding: 53px 0 52px; } h1 { font-size: 55px; }.intro { font-size: 15px; }.actions { gap: 17px; }.proof-row { padding: 14px 0; flex-wrap: wrap; gap: 12px 0; font-size: 10px; }.proof-row span { padding-right: 12px; }.proof-row span + span { padding-left: 12px; }.section { padding: 69px 0; }.features { grid-template-columns: 1fr; }.feature { min-height: 150px; }.feature h3 { margin-top: 21px; }.install { grid-template-columns: 1fr; padding: 27px 21px; gap: 20px; }.code { padding: 17px 14px; font-size: 10px; }.endline { padding: 65px 0; align-items: start; flex-direction: column; } footer { align-items: start; flex-direction: column; justify-content: center; gap: 14px; padding: 20px 0; }.footer-links { gap: 16px; } }
+    a:focus-visible, .button:focus-visible, video:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; border-radius: 4px; }
+    .skip { position: absolute; left: 16px; top: -60px; z-index: 10; padding: 10px 14px; background: var(--green); color: #fff; border-radius: 7px; text-decoration: none; font-size: 14px; }
+    .skip:focus { top: 12px; }
+    @media (prefers-color-scheme: dark) {
+      :root { --paper: #141613; --ink: #ecede8; --muted: #a4a89e; --green: #3f7a5c; --green-dark: #4d8f6d; --line: #2b2e29; }
+      .requirements, .feature-index, footer { color: #8b9085; }
+      .section-kicker, .eyebrow { color: #8fc2a3; }
+      .install { background: #1c1f1b; }
+      .product-video { border-color: #343833; box-shadow: 0 24px 70px #0008; }
+    }
     @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
   </style>
 </head>
 <body>
+  <a class="skip" href="#main">Skip to content</a>
   <header class="wrap">
-    <a class="brand" href="#top"><img src="../assets/mica-icon.png" alt=""><span>Mica</span></a>
+    <a class="brand" href="#main" aria-label="Mica home"><img src="mica-icon.png" alt=""><span>Mica</span></a>
     <nav aria-label="Main navigation">
       <a href="#features">Why Mica</a>
       <a href="#credits">Credits</a>
@@ -93,7 +97,7 @@
       <a class="nav-cta" href="https://github.com/megasoft1978/mica-terminal/releases">Releases <span aria-hidden="true">↗</span></a>
     </nav>
   </header>
-  <main id="top">
+  <main id="main">
     <section class="hero wrap">
       <div class="hero-copy">
         <div class="eyebrow">A native macOS terminal</div>
@@ -122,7 +126,7 @@
         <article class="feature"><div class="feature-index">03 / DICTATION</div><h3>Speak, then review</h3><p>Hold left Option to dictate into the active shell. Speech recognition runs locally after the first model download.</p></article>
         <article class="feature"><div class="feature-index">04 / TERMINAL</div><h3>Your shell stays yours</h3><p>Interactive zsh, aliases, plugins, arbitrary commands, selectable output, and bounded scrollback.</p></article>
         <article class="feature"><div class="feature-index">05 / FOCUS</div><h3>A timer that follows you</h3><p>Keep a shared focus and break timer across project windows, with macOS notifications at phase changes.</p></article>
-        <article class="feature"><div class="feature-index">06 / NATIVE</div><h3>Built for the Mac</h3><p>A lightweight AppKit interface with a C session core and libvterm rendering. Project marks help distinguish windows in the Dock and app switcher.</p></article>
+        <article class="feature"><div class="feature-index">06 / NATIVE</div><h3>Built for the Mac</h3><p>A lightweight AppKit interface with a C session core and libvterm rendering. Project marks help distinguish windows in the Dock and app switcher. Three idle tabs use about 77 MiB, similar to Terminal.app running Zellij (<a href="https://github.com/megasoft1978/mica-terminal/blob/main/docs/MEMORY-BASELINE.md">measurements</a>).</p></article>
       </div>
     </section>
     <section class="credits wrap" id="credits">

@@ -178,6 +178,7 @@ static int move_link_rect(VTermRect dest, VTermRect src, void *user) {
     }
     session->pending_link_move = dest;
     session->pending_link_move_valid = true;
+    session->pending_link_move_cells = (size_t)width * (size_t)height;
     return 1;
 }
 
@@ -1129,9 +1130,18 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
         struct termios terminal_settings;
         if (tcgetattr(STDIN_FILENO, &terminal_settings) == 0) {
             terminal_settings.c_iflag &= (tcflag_t)~(IXON | IXOFF);
+            terminal_settings.c_iflag |= IUTF8;
             (void)tcsetattr(STDIN_FILENO, TCSANOW, &terminal_settings);
         }
+        // The GUI process may ignore or block signals; the shell must start clean.
+        signal(SIGPIPE, SIG_DFL); signal(SIGINT, SIG_DFL); signal(SIGQUIT, SIG_DFL);
+        signal(SIGHUP, SIG_DFL); signal(SIGTSTP, SIG_DFL); signal(SIGCHLD, SIG_DFL);
+        sigset_t no_signals;
+        sigemptyset(&no_signals);
+        sigprocmask(SIG_SETMASK, &no_signals, NULL);
         if (!change_to_requested_directory(cwd)) _exit(126);
+        // Finder-launched apps have no locale; without one zsh mishandles UTF-8.
+        if (!getenv("LANG") && !getenv("LC_ALL") && !getenv("LC_CTYPE")) setenv("LANG", "en_US.UTF-8", 1);
         setenv("TERM", "xterm-256color", 1);
         setenv("COLORTERM", "truecolor", 1);
         setenv("TERM_PROGRAM", "Mica", 1);
@@ -1344,6 +1354,9 @@ int mica_session_poll(MicaSession *session, int timeout_ms) {
         if (result == session->child_pid) {
             session->running = false;
             session->exit_status = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+        } else if (result < 0 && errno == ECHILD) {
+            session->running = false;
+            session->exit_status = 0;
         }
     }
     return 0;
@@ -1602,7 +1615,7 @@ bool mica_session_take_dirty_rows(MicaSession *session, MicaDirtyRows *rows) {
 uint64_t mica_session_attention_count(const MicaSession *session) { return session ? session->attention_count : 0; }
 pid_t mica_session_pid(const MicaSession *session) { return session ? session->child_pid : -1; }
 bool mica_session_working_directory(const MicaSession *session, char *buffer, size_t capacity) {
-    if (!session || session->child_pid <= 0 || !buffer || capacity == 0) return false;
+    if (!session || !session->running || session->child_pid <= 0 || !buffer || capacity == 0) return false;
     struct proc_vnodepathinfo paths;
     int bytes = proc_pidinfo(session->child_pid, PROC_PIDVNODEPATHINFO, 0, &paths, sizeof(paths));
     if (bytes < (int)sizeof(paths) || paths.pvi_cdir.vip_path[0] == '\0') return false;

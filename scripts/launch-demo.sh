@@ -9,14 +9,14 @@ if [ ! -x "$app_binary" ]; then
     (cd "$repo_root" && make app)
 fi
 
-demo_workspace=$(mktemp -d "/tmp/mica-demo.XXXXXX")
+demo_workspace=$(mktemp -d "${TMPDIR:-/tmp}/mica-demo.XXXXXX")
 cp -R "$fixture"/. "$demo_workspace"/
 git -C "$demo_workspace" init -q
 git -C "$demo_workspace" config user.name "Mica Demo"
 git -C "$demo_workspace" config user.email "mica-demo@example.invalid"
 git -C "$demo_workspace" add index.html styles.css app.js README.md
 git -C "$demo_workspace" commit -q -m "Add fictional Fieldnote project board"
-demo_home=$(mktemp -d "/tmp/mica-demo-home.XXXXXX")
+demo_home=$(mktemp -d "${TMPDIR:-/tmp}/mica-demo-home.XXXXXX")
 mkdir -p "$demo_home"
 cat > "$demo_home/.zshrc" <<'ZSHRC'
 PROMPT='fieldnote%# '
@@ -30,8 +30,7 @@ if [ -f "$HOME/.codex/auth.json" ]; then
     chmod 600 "$demo_codex_home/auth.json"
 fi
 
-layout=$(mktemp "$repo_root/examples/.mica-demo.XXXXXX")
-trap 'rm -f "$layout"' EXIT HUP INT TERM
+layout="$demo_home/layout.mica"
 codex_demo_command='codex -s workspace-write -a never'
 if [ "${1:-}" = "--codex" ]; then
     codex_demo_command="codex exec --ignore-user-config --approve-for-me 'In this fictional Fieldnote demo project, update only app.js so every filter button keeps its aria-pressed value synchronized with the selected filter. Preserve current filtering behavior. Do not access the network. Summarize the change.'"
@@ -48,9 +47,6 @@ open -n -a "$repo_root/build/Mica.app" \
     --env "CODEX_HOME=$demo_codex_home" --env "PATH=/opt/homebrew/bin:/usr/bin:/bin" \
     --env 'PS1=fieldnote%# ' --env 'PROMPT=fieldnote%# ' \
     --args --layout "$layout" --project-name "Mica Demo"
-sleep 2
-rm -f "$layout"
-trap - EXIT HUP INT TERM
 
 printf 'Mica Demo is running.\n'
 printf 'Temporary project: %s\n' "$demo_workspace"

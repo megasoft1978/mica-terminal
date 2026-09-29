@@ -12,10 +12,13 @@ VOICE_MODULE_CACHE := $(abspath $(BUILD)/swift-module-cache)
 VOICE_BINARY := $(BUILD)/mica-voice
 APP_VOICE_HELPER := $(APP)/Contents/Helpers/mica-voice
 APP_THIRD_PARTY_NOTICES := $(APP)/Contents/Resources/THIRD_PARTY_NOTICES.md
-VOICE_SWIFT_SOURCES := $(shell find voice/Sources -type f -name '*.swift')
+VOICE_SWIFT_SOURCES := $(shell find voice/Sources -type f -not -name '.*')
 VOICE_LICENSES := $(wildcard voice/ThirdPartyLicenses/*)
 VTERM_CFLAGS := $(shell $(PKG_CONFIG) --cflags vterm 2>/dev/null)
 VTERM_LIBS := $(shell $(PKG_CONFIG) --libs vterm 2>/dev/null)
+ifeq ($(strip $(VTERM_LIBS)),)
+$(error libvterm not found: run `brew install libvterm pkg-config`)
+endif
 CFLAGS ?= -O2
 C_WARNINGS := -Wall -Wextra -Wpedantic
 OBJC_WARNINGS := -Wall -Wextra -Wno-deprecated-declarations
@@ -72,7 +75,7 @@ $(BUILD)/test-session: tests/test_session.c $(CORE) include/mica.h
 
 $(BUILD)/test-pomodoro: tests/test_pomodoro.c $(POMODORO) include/mica_pomodoro.h
 	@mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) $(C_WARNINGS) $(CPPFLAGS) $(POMODORO) tests/test_pomodoro.c -lm -o $@
+	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(C_WARNINGS) $(CPPFLAGS) $(POMODORO) tests/test_pomodoro.c -lm -o $@
 
 $(BUILD)/test-ui: tests/test_app_ui.m src/mica_app.m src/mica_voice_controller.m src/mica_voice_controller.h src/mica_diagnostics.m src/mica_diagnostics.h $(CORE) $(POMODORO) include/mica.h include/mica_pomodoro.h
 	@mkdir -p $(BUILD)

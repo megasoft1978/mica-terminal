@@ -406,6 +406,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, assign) NSUInteger activityAnimationFrame;
 @property(nonatomic, strong) MicaVoiceController *voiceController;
 @property(nonatomic, strong) MicaTab *voiceTargetTab;
+@property(nonatomic) NSInteger lastVoiceState;
 @property(nonatomic, assign) NSInteger attentionRequest;
 @property(nonatomic, assign) NSInteger focusDurationMinutes;
 @property(nonatomic, assign) NSInteger breakDurationMinutes;
@@ -607,6 +608,35 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     BOOL _leftOptionIsDown;
     BOOL _leftOptionUsedWithAnotherKey;
     BOOL _leftOptionStartedDictation;
+}
+
+- (BOOL)isAccessibilityElement { return YES; }
+- (NSAccessibilityRole)accessibilityRole { return NSAccessibilityTextAreaRole; }
+- (NSString *)accessibilityLabel {
+    NSString *project = self.owner.projectName;
+    return project.length ? [NSString stringWithFormat:@"Terminal, %@", project] : @"Terminal";
+}
+- (id)accessibilityValue {
+    // Expose the visible screen text so VoiceOver can read terminal output.
+    MicaSession *session = self.owner.activeTab.session;
+    if (!session) return @"";
+    NSMutableString *text = [NSMutableString string];
+    int rows = mica_session_rows(session), cols = mica_session_cols(session);
+    for (int row = 0; row < rows; row++) {
+        NSMutableString *line = [NSMutableString string];
+        for (int col = 0; col < cols; col++) {
+            MicaCell cell;
+            if (!mica_session_get_cell(session, row, col, &cell) || cell.width == 0) continue;
+            uint32_t ch = cell.chars[0];
+            if (ch == 0) { [line appendString:@" "]; continue; }
+            NSString *glyph = [[NSString alloc] initWithBytes:&ch length:4 encoding:NSUTF32LittleEndianStringEncoding];
+            [line appendString:glyph ?: @" "];
+        }
+        NSRange end = [line rangeOfCharacterFromSet:NSCharacterSet.whitespaceCharacterSet.invertedSet options:NSBackwardsSearch];
+        [text appendString:end.location == NSNotFound ? @"" : [line substringToIndex:NSMaxRange(end)]];
+        [text appendString:@"\n"];
+    }
+    return text;
 }
 
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -1055,18 +1085,14 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 }
 
 - (NSInteger)tabIndexAtPoint:(NSPoint)point {
-    NSUInteger count = self.owner.tabs.count;
-    CGFloat width = self.bounds.size.width;
-    NSRect header = NSMakeRect(0, NSMaxY(self.bounds) - kHeaderHeight, width, kHeaderHeight);
-    if (count == 0 || width <= 0 || !NSPointInRect(point, header)) return NSNotFound;
+    // Hit-test against the exact rects used for drawing so clicks and tabs never disagree.
+    if (self.owner.tabs.count == 0 || self.bounds.size.width <= 0) return NSNotFound;
     if (NSPointInRect(point, [self tabOverflowRect])) return NSNotFound;
     NSRange visible = [self visibleTabRange];
-    BOOL hasOverflow = [self hasTabOverflow];
-    CGFloat tabsWidth = hasOverflow ? MAX(0, width - kTabOverflowWidth) :
-        MIN(width, (CGFloat)count * kTabMaximumWidth);
-    if (tabsWidth <= 0 || visible.length == 0 || point.x >= tabsWidth) return NSNotFound;
-    NSUInteger visibleIndex = MIN((NSUInteger)(point.x / tabsWidth * (CGFloat)visible.length), visible.length - 1);
-    return (NSInteger)(visible.location + visibleIndex);
+    for (NSUInteger index = visible.location; index < NSMaxRange(visible); index++) {
+        if (NSPointInRect(point, [self tabRectAtIndex:index])) return (NSInteger)index;
+    }
+    return NSNotFound;
 }
 
 - (void)updateTabToolTip {
@@ -1884,7 +1910,8 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 - (void)scrollWheel:(NSEvent *)event {
     MicaTab *tab = self.owner.activeTab;
     if (!tab.session) return;
-    _scrollRemainder += event.scrollingDeltaY;
+    // Notched mouse wheels report line deltas (about 1 per notch), trackpads report pixels.
+    _scrollRemainder += event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.scrollingDeltaY * 24.0;
     NSInteger lines = (NSInteger)(_scrollRemainder / 24.0);
     if (lines == 0) return;
     _scrollRemainder -= lines * 24.0;
@@ -2072,7 +2099,9 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     NSArray<NSPasteboardType> *imageTypes = @[
         NSPasteboardTypePNG, NSPasteboardTypeTIFF, @"public.jpeg"
     ];
-    for (NSPasteboardType imageType in imageTypes) {
+    // Apps such as browsers put both text and an image on the pasteboard; text wins.
+    BOOL hasText = [pasteboard.types containsObject:NSPasteboardTypeString];
+    for (NSPasteboardType imageType in hasText ? @[] : imageTypes) {
         if ([pasteboard.types containsObject:imageType]) {
             // Claude Code and other agent TUIs read image data from the OS
             // clipboard when they receive Ctrl+V. Cmd+V is Mica's native paste key.
@@ -2964,8 +2993,14 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
 }
 
 - (void)voiceControllerDidUpdate:(MicaVoiceController *)controller {
-    (void)controller;
-    [self.terminalView setNeedsDisplay:YES];
+    // Progress ticks repaint only the status strip; a state change may alter layout.
+    NSInteger state = (NSInteger)controller.state;
+    if (state != self.lastVoiceState) {
+        self.lastVoiceState = state;
+        [self.terminalView setNeedsDisplay:YES];
+    } else {
+        [self.terminalView setNeedsDisplayInRect:[self.terminalView dictationStatusRect]];
+    }
 }
 
 - (BOOL)voiceController:(MicaVoiceController *)controller

@@ -35,6 +35,7 @@ The first dictation use downloads the local speech model (about 630 MB). Mica re
 - **Speak a command.** Hold left Option, dictate, then review or edit the inserted text before pressing Return. Recognition runs locally after the initial model download.
 - **Keep dictation out of your way.** The live transcript and listening state appear in the bottom status strip, so they never cover terminal output or the cursor.
 - **Open terminal links.** Command-click OSC 8 `http` and `https` links. Ordinary clicks still go to terminal apps that capture the mouse.
+- **Know what it costs.** Three idle tabs use about 77 MiB of physical footprint, roughly on par with Terminal.app running Zellij (about 64 MiB); Mica is an integrated app, not a memory saver. [Details](docs/MEMORY-BASELINE.md)
 - **Keep a little focus.** A shared focus timer follows you across Mica windows and can notify you when a focus or break period ends.
 
 ## A few shortcuts
@@ -62,4 +63,4 @@ make test      # run the PTY, UI, launcher, and fixture checks
 make validate  # run tests, build, and check the app bundle
 ```
 
-Tests use local fixtures and never send prompts to agent CLIs. See [memory notes](docs/MEMORY-BASELINE.md), [agent notifications](docs/AGENT-NOTIFICATIONS.md), and [all workflows](https://github.com/megasoft1978/mica-terminal/actions).
+Tests use local fixtures and never send prompts to agent CLIs. See [memory notes and a Zellij comparison](docs/MEMORY-BASELINE.md), [agent notifications](docs/AGENT-NOTIFICATIONS.md), and [all workflows](https://github.com/megasoft1978/mica-terminal/actions).

@@ -2,5 +2,11 @@
 *.mica
 *.core
 .DS_Store
+.build/
+.swiftpm/
+*.dSYM/
+*.dmg
+*.zip
+*.log
 __pycache__/
 *.py[cod]
