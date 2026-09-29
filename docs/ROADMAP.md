@@ -22,7 +22,7 @@ A verified list of what would make Mica better at its job (one light app for the
 | --- | --- | --- | --- |
 | 1 | Notarized build and an update path | No Developer ID certificate on the development Mac, so `make notarize` has never run end to end; no releases, no updater | Needs your certificate |
 | 2 | Status sidebar with per-tab branch, agent state and last notification | Data exists (branch, activity, notification text); no UI | Medium |
-| 3 | Scrollback is short for agent output | 2 MiB cap over 40-byte cells is about 650 lines at 80 columns and 260 at 200 columns; see the staged design in PERFORMANCE.md | High (measure, trim blank cells, then encode attributes) |
+| 3 | Scrollback is short for agent output | Settings now offers 2,000 to 20,000 lines at about 16 to 162 MB per busy tab (measured in PERFORMANCE.md); the default stays near 650 lines to protect memory. Compact storage would give several times the lines at the same cost | Medium |
 | 4 | zsh only | The shell is `/bin/zsh -l -i` and `$SHELL` is ignored; the shell hooks are zsh | Medium |
 | 5 | Split panes | Layout, focus and resize code assume one grid per tab | Large |
 | 6 | Quick terminal that drops down from the top of the screen | Settings has an opt-in global shortcut (⌃⌥Space) that brings Mica forward; no drop-down window yet | Medium |
