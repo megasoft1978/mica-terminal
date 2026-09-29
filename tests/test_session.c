@@ -654,6 +654,16 @@ color_checked:
     mica_session_destroy(forge_session);
     printf("forged command markers are ignored\n");
 
+    // Bracketed paste (mode 2004) is tracked so multi-line pastes can be confirmed when it is off.
+    MicaSession *bracketed_session = mica_session_create("/tmp",
+        "printf '\\033[?2004hPASTE-ON'; sleep 2", 6, 80);
+    assert(bracketed_session != NULL);
+    for (int i = 0; i < 300 && !screen_contains(bracketed_session, "PASTE-ON"); i++)
+        mica_session_poll(bracketed_session, 10);
+    assert(mica_session_bracketed_paste(bracketed_session));
+    mica_session_destroy(bracketed_session);
+    printf("bracketed paste mode is tracked\n");
+
     // A missing start folder falls back to the nearest existing parent, decided before fork.
     MicaSession *missing_folder_session = mica_session_create("/tmp/mica-no-such-folder-xyz/sub", "pwd; sleep 1", 6, 100);
     assert(missing_folder_session != NULL);

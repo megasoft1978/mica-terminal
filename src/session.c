@@ -89,6 +89,7 @@ size_t clipboard_capacity;
 bool clipboard_overflow;
 bool clipboard_ready;
 bool sync_output;
+bool bracketed_paste;
 char mark_token[33];
 char sync_tail[8];
 size_t sync_tail_length;
@@ -1176,6 +1177,8 @@ static void scan_synchronized_output_chunk(MicaSession *session, const char *byt
     const size_t sequence_length = sizeof(begin) - 1;
     for (size_t i = 0; i < first_start_limit && i + sequence_length <= length; i++) {
         if (bytes[i] != '\x1b') continue;
+        if (memcmp(bytes + i, "\x1b[?2004h", sequence_length) == 0) { session->bracketed_paste = true; continue; }
+        if (memcmp(bytes + i, "\x1b[?2004l", sequence_length) == 0) { session->bracketed_paste = false; continue; }
         if (memcmp(bytes + i, begin, sequence_length) == 0) { session->sync_output = true; session->sync_output_started = monotonic_seconds(); }
         else if (memcmp(bytes + i, end, sequence_length) == 0) { session->sync_output = false; session->revision++; }
     }
@@ -1860,6 +1863,7 @@ bool mica_session_take_dirty_rows(MicaSession *session, MicaDirtyRows *rows) {
     session->dirty_rows = (MicaDirtyRows){0};
     return true;
 }
+bool mica_session_bracketed_paste(const MicaSession *session) { return session && session->bracketed_paste; }
 bool mica_session_sync_output_active(const MicaSession *session) {
     // A stuck frame must never freeze the display: give up after a quarter second.
     if (!session || !session->sync_output) return false;

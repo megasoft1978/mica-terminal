@@ -2404,6 +2404,17 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     }
     NSString *text = [pasteboard stringForType:NSPasteboardTypeString];
     if (!text) return;
+    // Without bracketed paste every pasted newline runs as if Return were pressed; confirm multi-line pastes.
+    NSString *trimmed = [text stringByTrimmingCharactersInSet:NSCharacterSet.newlineCharacterSet];
+    if (!mica_session_bracketed_paste(tab.session) && !getenv("MICA_TEST_NO_STARTUP") &&
+        ([trimmed containsString:@"\n"] || [trimmed containsString:@"\r"])) {
+        NSAlert *alert = [NSAlert new];
+        alert.messageText = @"Paste multiple lines?";
+        alert.informativeText = @"This program isn't expecting a paste, so each line will run as soon as it is pasted.";
+        [alert addButtonWithTitle:@"Cancel"];
+        [alert addButtonWithTitle:@"Paste"];
+        if ([alert runModal] != NSAlertSecondButtonReturn) return;
+    }
     NSData *bytes = [text dataUsingEncoding:NSUTF8StringEncoding];
     mica_session_paste(tab.session, bytes.bytes, bytes.length);
     [self setNeedsDisplay:YES];

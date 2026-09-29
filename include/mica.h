@@ -64,6 +64,8 @@ int mica_session_cols(const MicaSession *session);
 int mica_session_view_offset(const MicaSession *session);
 size_t mica_session_history_lines(const MicaSession *session);
 // Monotonic count of lines that have scrolled off the top; keeps counting once scrollback is full.
+// True when the foreground program enabled bracketed paste (mode 2004), which makes pasted newlines safe.
+bool mica_session_bracketed_paste(const MicaSession *session);
 // True while a program has an unfinished synchronized-output frame (mode 2026); redraw should wait.
 bool mica_session_sync_output_active(const MicaSession *session);
 // Text a program set through OSC 52, or NULL. The caller frees it.

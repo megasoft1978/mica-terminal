@@ -63,7 +63,12 @@ void MicaDiagnosticsInitialize(void) {
             includingPropertiesForKeys:@[NSURLContentModificationDateKey] options:0 error:nil]) {
         NSDate *modified = nil;
         [old getResourceValue:&modified forKey:NSURLContentModificationDateKey error:nil];
-        if ([old.pathExtension isEqualToString:@"log"] && modified && [modified compare:cutoff] == NSOrderedAscending)
+        // Only delete Mica's own "<bundle>-<pid>.log" files, never other files or symlinks.
+        NSNumber *isRegular = nil;
+        [old getResourceValue:&isRegular forKey:NSURLIsRegularFileKey error:nil];
+        NSString *name = old.lastPathComponent;
+        BOOL ownName = [name rangeOfString:@"^.+-[0-9]+\\.log$" options:NSRegularExpressionSearch].location != NSNotFound;
+        if (ownName && isRegular.boolValue && modified && [modified compare:cutoff] == NSOrderedAscending)
             [NSFileManager.defaultManager removeItemAtURL:old error:nil];
     }
 
@@ -79,7 +84,7 @@ void MicaDiagnosticsInitialize(void) {
     NSString *filename = [NSString stringWithFormat:@"%@-%d.log", safeIdentifier, getpid()];
     NSURL *fileURL = [directory URLByAppendingPathComponent:filename isDirectory:NO];
     MicaDiagnosticsFD = open(fileURL.fileSystemRepresentation,
-        O_CREAT | O_WRONLY | O_APPEND | O_CLOEXEC, S_IRUSR | S_IWUSR);
+        O_CREAT | O_WRONLY | O_APPEND | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
     if (MicaDiagnosticsFD >= 0) {
         ftruncate(MicaDiagnosticsFD, 0);
         MicaDiagnosticsDirectoryURL = directory;
