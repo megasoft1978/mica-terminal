@@ -713,23 +713,41 @@ color_checked:
     mica_session_destroy(missing_folder_session);
     printf("a missing start folder falls back to the nearest parent\n");
 
-    // Synchronized output (mode 2026) is tracked so the app can hold redraws mid-frame.
+    // Synchronized output (mode 2026): a frame is held back until it ends, so it is never seen half drawn.
     MicaSession *sync_session = mica_session_create("/tmp",
-        "printf '\\033[?2026hFRAME-PART'; sleep 2", 6, 80);
+        "printf 'OLD-FRAME\\033[?2026h\\033[2J\\033[HFRAME-PART'; sleep 0.6; printf '-DONE\\033[?2026l'; sleep 2", 6, 80);
     assert(sync_session != NULL);
-    for (int i = 0; i < 300 && !screen_contains(sync_session, "FRAME-PART"); i++)
+    for (int i = 0; i < 300 && !screen_contains(sync_session, "OLD-FRAME"); i++)
         mica_session_poll(sync_session, 10);
+    for (int i = 0; i < 20; i++) mica_session_poll(sync_session, 10);
     assert(mica_session_sync_output_active(sync_session));
+    assert(screen_contains(sync_session, "OLD-FRAME"));   // still the previous frame
+    assert(!screen_contains(sync_session, "FRAME-PART"));
+    for (int i = 0; i < 300 && !screen_contains(sync_session, "FRAME-PART-DONE"); i++)
+        mica_session_poll(sync_session, 10);
+    assert(screen_contains(sync_session, "FRAME-PART-DONE"));
+    assert(!screen_contains(sync_session, "OLD-FRAME"));
+    assert(!mica_session_sync_output_active(sync_session));
     mica_session_destroy(sync_session);
     // A begin marker split across two reads is still recognized.
     MicaSession *split_session = mica_session_create("/tmp",
-        "printf '\\033[?20'; sleep 0.4; printf '26hSPLIT-FRAME'; sleep 2", 6, 80);
+        "printf 'BEFORE\\033[?20'; sleep 0.05; printf '26hSPLIT-FRAME'; sleep 2", 6, 80);
     assert(split_session != NULL);
-    for (int i = 0; i < 300 && !screen_contains(split_session, "SPLIT-FRAME"); i++)
+    for (int i = 0; i < 300 && !screen_contains(split_session, "BEFORE"); i++)
         mica_session_poll(split_session, 10);
+    for (int i = 0; i < 80; i++) mica_session_poll(split_session, 10);
     assert(mica_session_sync_output_active(split_session));
+    assert(!screen_contains(split_session, "SPLIT-FRAME"));
     mica_session_destroy(split_session);
-    printf("synchronized output frames are tracked\n");
+    // A frame that never ends is released after a second instead of freezing the screen.
+    MicaSession *stuck_session = mica_session_create("/tmp",
+        "printf '\\033[?2026hSTUCK-FRAME'; sleep 3", 6, 80);
+    assert(stuck_session != NULL);
+    for (int i = 0; i < 300 && !screen_contains(stuck_session, "STUCK-FRAME"); i++)
+        mica_session_poll(stuck_session, 10);
+    assert(screen_contains(stuck_session, "STUCK-FRAME"));
+    mica_session_destroy(stuck_session);
+    printf("synchronized output frames are held until they end\n");
 
     // OSC 52 writes surface as clipboard text; queries never answer.
     MicaSession *clip_session = mica_session_create("/tmp",

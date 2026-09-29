@@ -105,6 +105,12 @@ bool notification_ready;
 char sync_tail[8];
 size_t sync_tail_length;
 double sync_output_started;
+    char *sync_hold;
+    size_t sync_hold_length;
+    size_t sync_hold_capacity;
+    char sync_carry[8];
+    size_t sync_carry_length;
+    double sync_carry_at;
 char selection_buffer[4096];
     char *title;
     char *startup_dir;
@@ -1021,6 +1027,7 @@ static int history_push(int cols, const VTermScreenCell *cells, void *user) {
                        session->history_cols * sizeof(*grown));
             }
             free(session->history);
+    free(session->sync_hold);
             session->history = grown;
             session->history_capacity = next_capacity;
             session->history_start = 0;
@@ -1214,14 +1221,11 @@ static double monotonic_seconds(void) {
 }
 // libvterm consumes unknown DEC modes silently, so watch the raw byte stream for the toggles.
 static void scan_synchronized_output_chunk(MicaSession *session, const char *bytes, size_t length, size_t first_start_limit) {
-    static const char begin[] = "\x1b[?2026h", end[] = "\x1b[?2026l";
-    const size_t sequence_length = sizeof(begin) - 1;
+    const size_t sequence_length = 8;
     for (size_t i = 0; i < first_start_limit && i + sequence_length <= length; i++) {
         if (bytes[i] != '\x1b') continue;
         if (memcmp(bytes + i, "\x1b[?2004h", sequence_length) == 0) { session->bracketed_paste = true; continue; }
         if (memcmp(bytes + i, "\x1b[?2004l", sequence_length) == 0) { session->bracketed_paste = false; continue; }
-        if (memcmp(bytes + i, begin, sequence_length) == 0) { session->sync_output = true; session->sync_output_started = monotonic_seconds(); }
-        else if (memcmp(bytes + i, end, sequence_length) == 0) { session->sync_output = false; session->revision++; }
     }
 }
 
@@ -1248,6 +1252,103 @@ static void scan_synchronized_output(MicaSession *session, const char *bytes, si
     }
     memcpy(session->sync_tail, bytes + length - keep, keep);
     session->sync_tail_length = keep;
+}
+
+
+// A frame bracketed by CSI ? 2026 h ... CSI ? 2026 l is held back as bytes and handed to the terminal
+// emulator only when the frame ends, so no repaint (timer tick, animation, resize) can ever show it half
+// drawn. A frame that never ends is released after a second.
+#define MICA_SYNC_HOLD_LIMIT (4u * 1024u * 1024u)
+#define MICA_SYNC_TIMEOUT 1.0
+
+static void release_sync_hold(MicaSession *session) {
+    if (session->sync_hold_length) vterm_input_write(session->vt, session->sync_hold, session->sync_hold_length);
+    session->sync_hold_length = 0;
+    session->sync_output = false;
+    session->revision++;
+}
+
+static void hold_sync_bytes(MicaSession *session, const char *bytes, size_t length) {
+    if (!length) return;
+    if (session->sync_hold_length + length > MICA_SYNC_HOLD_LIMIT) {
+        release_sync_hold(session);
+        vterm_input_write(session->vt, bytes, length);
+        return;
+    }
+    if (session->sync_hold_length + length > session->sync_hold_capacity) {
+        size_t capacity = session->sync_hold_capacity ? session->sync_hold_capacity : 16384;
+        while (capacity < session->sync_hold_length + length) capacity *= 2;
+        char *grown = realloc(session->sync_hold, capacity);
+        if (!grown) { vterm_input_write(session->vt, bytes, length); return; }
+        session->sync_hold = grown;
+        session->sync_hold_capacity = capacity;
+    }
+    memcpy(session->sync_hold + session->sync_hold_length, bytes, length);
+    session->sync_hold_length += length;
+}
+
+static void feed_terminal_output_whole(MicaSession *session, const char *bytes, size_t length) {
+    static const char prefix[] = "\x1b[?2026";
+    const size_t prefix_length = sizeof(prefix) - 1;
+    size_t position = 0;
+    for (size_t i = 0; i + prefix_length < length; i++) {
+        if (bytes[i] != '\x1b' || memcmp(bytes + i, prefix, prefix_length) != 0) continue;
+        char mode = bytes[i + prefix_length];
+        if (mode != 'h' && mode != 'l') continue;
+        size_t end = i + prefix_length + 1;
+        if (mode == 'h' && !session->sync_output) {
+            vterm_input_write(session->vt, bytes + position, end - position);
+            session->sync_output = true;
+            session->sync_output_started = monotonic_seconds();
+        } else if (mode == 'l' && session->sync_output) {
+            hold_sync_bytes(session, bytes + position, end - position);
+            release_sync_hold(session);
+        } else {
+            continue;
+        }
+        position = end;
+        i = end - 1;
+    }
+    if (position >= length) return;
+    if (session->sync_output) hold_sync_bytes(session, bytes + position, length - position);
+    else vterm_input_write(session->vt, bytes + position, length - position);
+}
+
+// A mode-2026 marker can straddle two reads; keep a possible partial marker at the end of a read until
+// the next one (or 100 ms, whichever comes first) so it is recognized.
+static void feed_terminal_output(MicaSession *session, const char *bytes, size_t length) {
+    static const char full[] = "\x1b[?2026";
+    char *joined = NULL;
+    if (session->sync_carry_length) {
+        joined = malloc(session->sync_carry_length + length);
+        if (joined) {
+            memcpy(joined, session->sync_carry, session->sync_carry_length);
+            memcpy(joined + session->sync_carry_length, bytes, length);
+            bytes = joined;
+            length += session->sync_carry_length;
+        }
+        session->sync_carry_length = 0;
+    }
+    size_t keep = 0;
+    for (size_t k = (length < sizeof(full) - 1 ? length : sizeof(full) - 1); k > 0; k--) {
+        if (memcmp(bytes + length - k, full, k) == 0) { keep = k; break; }
+    }
+    if (keep) {
+        memcpy(session->sync_carry, bytes + length - keep, keep);
+        session->sync_carry_length = keep;
+        session->sync_carry_at = monotonic_seconds();
+        length -= keep;
+    }
+    if (length) feed_terminal_output_whole(session, bytes, length);
+    free(joined);
+}
+
+static void flush_sync_carry(MicaSession *session) {
+    size_t length = session->sync_carry_length;
+    session->sync_carry_length = 0;
+    char copy[8];
+    memcpy(copy, session->sync_carry, length);
+    if (length) feed_terminal_output_whole(session, copy, length);
 }
 
 static const VTermStateFallbacks screen_fallbacks = { .osc = notification_osc };
@@ -1532,6 +1633,14 @@ void mica_session_destroy(MicaSession *session) {
 
 int mica_session_poll(MicaSession *session, int timeout_ms) {
     if (!session) return -1;
+    if (session->sync_carry_length && monotonic_seconds() - session->sync_carry_at > 0.1) {
+        flush_sync_carry(session);
+        vterm_screen_flush_damage(session->screen);
+    }
+    if (session->sync_output && monotonic_seconds() - session->sync_output_started > MICA_SYNC_TIMEOUT) {
+        release_sync_hold(session);
+        vterm_screen_flush_damage(session->screen);
+    }
     if (session->master_fd >= 0) {
         short events = POLLIN | POLLHUP | POLLERR;
         if (session->pending_input_length > session->pending_input_offset) events |= POLLOUT;
@@ -1548,7 +1657,7 @@ int mica_session_poll(MicaSession *session, int timeout_ms) {
                     struct timespec parse_started, parse_finished;
                     clock_gettime(CLOCK_MONOTONIC, &parse_started);
                     scan_synchronized_output(session, buffer, (size_t)n);
-                    vterm_input_write(session->vt, buffer, (size_t)n);
+                    feed_terminal_output(session, buffer, (size_t)n);
                     clock_gettime(CLOCK_MONOTONIC, &parse_finished);
                     double parse_ms = (parse_finished.tv_sec - parse_started.tv_sec) * 1000.0 +
                         (parse_finished.tv_nsec - parse_started.tv_nsec) / 1000000.0;
@@ -1913,9 +2022,7 @@ bool mica_session_take_dirty_rows(MicaSession *session, MicaDirtyRows *rows) {
 bool mica_session_alt_screen(const MicaSession *session) { return session && session->alt_screen; }
 bool mica_session_bracketed_paste(const MicaSession *session) { return session && session->bracketed_paste; }
 bool mica_session_sync_output_active(const MicaSession *session) {
-    // A stuck frame must never freeze the display: give up after a quarter second.
-    if (!session || !session->sync_output) return false;
-    return monotonic_seconds() - session->sync_output_started < 0.25;
+    return session && session->sync_output && monotonic_seconds() - session->sync_output_started < MICA_SYNC_TIMEOUT;
 }
 char *mica_session_take_notification(MicaSession *session) {
     if (!session || !session->notification_ready) return NULL;
