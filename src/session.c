@@ -340,6 +340,12 @@ static char *copy_title(VTermStringFragment fragment) {
     for (size_t i = 0; i < length; i++) {
         unsigned char byte = (unsigned char)fragment.str[i];
         if (byte < 0x20 || byte == 0x7f) continue;
+        // Drop bidi/format controls that can disguise text (U+200B-200F, U+202A-202E, U+2066-2069, C1).
+        if (byte == 0xC2 && i + 1 < length && (unsigned char)fragment.str[i + 1] >= 0x80 && (unsigned char)fragment.str[i + 1] <= 0x9F) { i++; continue; }
+        if (byte == 0xE2 && i + 2 < length) {
+            unsigned char b1 = (unsigned char)fragment.str[i + 1], b2 = (unsigned char)fragment.str[i + 2];
+            if ((b1 == 0x80 && ((b2 >= 0x8B && b2 <= 0x8F) || (b2 >= 0xAA && b2 <= 0xAE))) || (b1 == 0x81 && b2 >= 0xA6 && b2 <= 0xA9)) { i += 2; continue; }
+        }
         title[copied++] = (char)byte;
     }
     title[copied] = '\0';
@@ -1552,7 +1558,12 @@ void mica_session_paste(MicaSession *session, const char *utf8, size_t length) {
     if (!safe) return;
     size_t safe_length = 0;
     for (size_t index = 0; index < length; index++)
-        if ((unsigned char)utf8[index] != 0x1b) safe[safe_length++] = utf8[index];
+{
+            unsigned char byte = (unsigned char)utf8[index];
+            // Keep tab, newline and carriage return; drop ESC and other C0 controls that could act as input.
+            if (byte == 0x1b || byte == 0x7f || (byte < 0x20 && byte != '\t' && byte != '\n' && byte != '\r')) continue;
+            safe[safe_length++] = utf8[index];
+        }
     if (!reserve_pending_input(session, safe_length + 12)) {
         free(safe);
         return;

@@ -418,6 +418,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, strong) MicaTab *voiceTargetTab;
 @property(nonatomic) NSInteger lastVoiceState;
 @property(nonatomic) BOOL clipboardPromptShowing;
+@property(nonatomic) NSTimeInterval clipboardCooldownUntil;
 @property(nonatomic) NSUInteger idlePollTicks;
 @property(nonatomic) BOOL pollSawOutput;
 @property(nonatomic) BOOL pollIsSlow;
@@ -886,6 +887,27 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 #if defined(MICA_APP_NO_MAIN)
     if (self.testOpenURLHandler) { self.testOpenURLHandler(url); return; }
 #endif
+    // Link text and target are independent in OSC 8. If the visible text looks like a different address, confirm first.
+    NSMutableString *visible = [NSMutableString string];
+    for (int row = 0; row < mica_session_rows(tab.session); row++) {
+        for (int col = 0; col < mica_session_cols(tab.session); col++) {
+            MicaCell cell;
+            if (!mica_session_get_cell(tab.session, row, col, &cell) || cell.hyperlink_id != hyperlinkID || !cell.chars[0]) continue;
+            NSString *glyph = [[NSString alloc] initWithBytes:&cell.chars[0] length:4 encoding:NSUTF32LittleEndianStringEncoding];
+            if (glyph) [visible appendString:glyph];
+        }
+    }
+    NSString *shownText = [visible.lowercaseString stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+    NSString *host = url.host.lowercaseString ?: @"";
+    if ([shownText containsString:@"."] && ![shownText containsString:@" "] && host.length && ![shownText containsString:host]) {
+        NSAlert *alert = [NSAlert new];
+        alert.messageText = [NSString stringWithFormat:@"Open a link to %@?", host];
+        alert.informativeText = [NSString stringWithFormat:@"The link text reads “%@”, but it points to:\n\n%@",
+            shownText.length > 120 ? [[shownText substringToIndex:120] stringByAppendingString:@"…"] : shownText, url.absoluteString];
+        [alert addButtonWithTitle:@"Cancel"];
+        [alert addButtonWithTitle:@"Open"];
+        if ([alert runModal] != NSAlertSecondButtonReturn) return;
+    }
     [NSWorkspace.sharedWorkspace openURL:url];
 }
 
@@ -2669,7 +2691,7 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     NSURL *directory = [self.pomodoroLockURL URLByDeletingLastPathComponent];
     if (![NSFileManager.defaultManager createDirectoryAtURL:directory
         withIntermediateDirectories:YES attributes:nil error:&error]) return NO;
-    int fd = open(self.pomodoroLockURL.fileSystemRepresentation, O_CREAT | O_RDWR, 0600);
+    int fd = open(self.pomodoroLockURL.fileSystemRepresentation, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (fd < 0) return NO;
     // Never block the main thread on another (possibly stopped) Mica instance.
     BOOL locked = NO;
@@ -2692,10 +2714,23 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     self.pomodoroOwnsLock = NO;
 }
 
+// Shared timer files are plain JSON another process could damage; keep only string and number values so
+// a bad file can never raise an unrecognized-selector exception at launch.
+static NSDictionary *MicaScalarDictionary(id object) {
+    if (![object isKindOfClass:NSDictionary.class]) return nil;
+    NSMutableDictionary *clean = [NSMutableDictionary dictionary];
+    [(NSDictionary *)object enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL *stop) {
+        (void)stop;
+        if ([key isKindOfClass:NSString.class] && ([value isKindOfClass:NSNumber.class] || [value isKindOfClass:NSString.class]))
+            clean[key] = value;
+    }];
+    return clean;
+}
+
 - (void)loadPomodoroSettingsFromDisk {
-    NSDictionary *settings = [NSJSONSerialization JSONObjectWithData:
+    NSDictionary *settings = MicaScalarDictionary([NSJSONSerialization JSONObjectWithData:
         [NSData dataWithContentsOfURL:self.pomodoroSettingsURL] ?: NSData.data
-        options:0 error:nil];
+        options:0 error:nil]);
     NSInteger focus = [settings[@"focusMinutes"] integerValue];
     NSInteger pause = [settings[@"breakMinutes"] integerValue];
     self.focusDurationMinutes = focus >= 1 && focus <= kMaximumFocusMinutes ? focus : kDefaultFocusMinutes;
@@ -2742,8 +2777,8 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
 - (void)loadPomodoroStateFromDisk {
     [self loadPomodoroSettingsFromDisk];
     NSData *data = [NSData dataWithContentsOfURL:self.pomodoroStateURL];
-    NSDictionary *saved = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-    if (![saved isKindOfClass:NSDictionary.class]) { mica_pomodoro_reset(&_pomodoro); return; }
+    NSDictionary *saved = data ? MicaScalarDictionary([NSJSONSerialization JSONObjectWithData:data options:0 error:nil]) : nil;
+    if (!saved) { mica_pomodoro_reset(&_pomodoro); return; }
     NSInteger cycleFocus = [saved[@"cycleFocusMinutes"] integerValue];
     NSInteger cycleBreak = [saved[@"cycleBreakMinutes"] integerValue];
     self.pomodoroCycleFocusMinutes = cycleFocus >= 1 ? cycleFocus : self.focusDurationMinutes;
@@ -3391,6 +3426,7 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
 // OSC 52: a program asked to set the clipboard. Ask once per tab; never read the clipboard back.
 - (void)handleClipboardWrite:(NSString *)text fromTab:(MicaTab *)tab {
     if (!text.length || tab.clipboardDecision == 2) return;
+    if (tab.clipboardDecision == 0 && NSProcessInfo.processInfo.systemUptime < self.clipboardCooldownUntil) return;
     if (tab.clipboardDecision == 1) {
         [NSPasteboard.generalPasteboard clearContents];
         [NSPasteboard.generalPasteboard setString:text forType:NSPasteboardTypeString];
@@ -3401,11 +3437,20 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     self.clipboardPromptShowing = YES;
     NSAlert *alert = [NSAlert new];
     alert.messageText = @"Allow this program to copy to your clipboard?";
-    alert.informativeText = [NSString stringWithFormat:@"“%@” asked to place %lu characters on the clipboard.",
-        tab.currentCommand.length ? tab.currentCommand : (tab.name ?: @"A terminal program"), (unsigned long)text.length];
-    [alert addButtonWithTitle:@"Copy Once"];
-    [alert addButtonWithTitle:@"Always Allow in This Tab"];
-    [alert addButtonWithTitle:@"Deny"];
+    // Output can forge the command name, so the prompt never trusts it; show what would be copied instead.
+    NSMutableString *preview = [NSMutableString string];
+    for (NSUInteger i = 0; i < text.length && preview.length < 200; i++) {
+        unichar c = [text characterAtIndex:i];
+        [preview appendString:(c < 0x20 && c != '\t') || c == 0x7f ? @"·" : [NSString stringWithCharacters:&c length:1]];
+    }
+    alert.informativeText = [NSString stringWithFormat:@"A program in this terminal wants to place %lu characters on the clipboard, starting with:\n\n%@%@",
+        (unsigned long)text.length, preview, text.length > preview.length ? @"…" : @""];
+    NSButton *deny = [alert addButtonWithTitle:@"Deny"];      // Default, so a stray Return never grants access.
+    NSButton *once = [alert addButtonWithTitle:@"Copy Once"];
+    NSButton *always = [alert addButtonWithTitle:@"Always Allow in This Tab"];
+    once.keyEquivalent = @"";
+    always.keyEquivalent = @"";
+    (void)deny;
     __weak typeof(self) weakSelf = self;
     [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
         MicaAppDelegate *strongSelf = weakSelf;
@@ -3413,8 +3458,10 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
         strongSelf.clipboardPromptShowing = NO;
         NSString *pending = tab.pendingClipboardText;
         tab.pendingClipboardText = nil;
-        if (response == NSAlertThirdButtonReturn) { tab.clipboardDecision = 2; return; }
-        if (response == NSAlertSecondButtonReturn) tab.clipboardDecision = 1;
+        // Ignore further requests for a few seconds so a loop cannot spam prompts.
+        strongSelf.clipboardCooldownUntil = NSProcessInfo.processInfo.systemUptime + 5.0;
+        if (response == NSAlertFirstButtonReturn) return;
+        if (response == NSAlertThirdButtonReturn) tab.clipboardDecision = 1;
         if (pending.length) {
             [NSPasteboard.generalPasteboard clearContents];
             [NSPasteboard.generalPasteboard setString:pending forType:NSPasteboardTypeString];
