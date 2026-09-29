@@ -27,3 +27,12 @@ For each item: status (done / partial / blocked), what changed (files), evidence
 ## Later cycles (reviewer decides after cycle 1)
 
 Tabs and folders surviving quit; scrollback capacity (compact cell storage); per-tab status sidebar; a global-hotkey quick terminal; Intel/universal build; split panes.
+
+## Cycle 2 (reviewer accepted cycle 1: all checks green, committed by the reviewer because the worker cannot write `.git`; do not try to commit, leave changes in the working tree and list them)
+
+1. **Prove the two unverified cycle-1 claims.** (a) Theme mode (Dark/Light/System) survives a relaunch: test through a fresh delegate reading an isolated `NSUserDefaults` suite. (b) Increase Contrast: render the audit with the accessibility flag simulated (inject it through a testable hook rather than toggling the OS) and check separators and secondary text meet at least 4.5:1 against the background in both themes; assert the contrast numbers in a test.
+2. **Tabs and folders survive quitting.** On quit (and on window close), write each window's tab names, working folders and configured startup commands (not running processes or scrollback) to a small JSON file under `~/Library/Application Support/Mica/` (path overridable in tests). On launch without an explicit layout, reopen the tabs in their folders. Project windows launched with `mica://open?layout=` keep using their layout file and must not be affected. Corrupt, missing or oversized state files must be ignored safely. Never restore into a folder that no longer exists (fall back to home). Add tests, including a corrupt-file case and a stress action that quits and relaunches repeatedly.
+3. **Dictation strip at every width.** Render and layout-test the dictation strip (preparing, listening with 0/3/40 words, failed, denied microphone) at 480, 600, 800 and 1600 px in both themes: label, words and hint rectangles never overlap, the last words stay visible, and the hint drops first. Fix any overlap.
+4. **Docs.** Update `docs/ROADMAP.md` and README/site only where behaviour changed.
+
+Same report format, file `build/codex-report-2.md`.
