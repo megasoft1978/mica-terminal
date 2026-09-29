@@ -51,3 +51,10 @@ Close the gaps your own report listed, plus one security decision:
 4. **Docs**: README/ROADMAP only where behaviour changed.
 
 Same rules; report in `build/codex-report-3.md`. If every item is done and every check green, say so plainly in the first line of the report.
+
+## Cycle 4 (alpha 7 released; Intel/universal builds are explicitly out of scope; never launch `build/Mica.app` or any GUI bundle from the sandbox, use the offscreen test/render binaries only)
+
+1. **Scrollback that fits agent output.** Today a 2 MiB history cap is about 650 lines at 80 columns (see `docs/ROADMAP.md`). Measure current per-line cost, then raise capacity to at least 10,000 lines at 80 columns **without raising idle memory**: store history cells compactly (for example a run-length or attribute-table encoding) or store only the used width of each line. Acceptance: a test that pushes 20,000 lines and can still search and scroll to line 1; `scripts/measure-footprint.sh`-style measurement (or a test-side proxy) showing idle footprint unchanged and worst-case history memory reported in `docs/PERFORMANCE.md`; fuzz and stress green.
+2. **Wrapped URLs.** A URL broken across two terminal lines by soft wrap opens as one address on Command-click (and underlines as one). Tests for wrapped, unwrapped, adjacent-URL and non-URL cases.
+3. **Quick terminal hotkey (opt-in).** Settings gets a checkbox "Show Mica with a global shortcut (⌃⌥Space)"; off by default. Use Carbon `RegisterEventHotKey` (no Accessibility permission). Pressing it brings the frontmost Mica window forward, or opens a new window if none. Tests for enable/disable/persistence (isolated defaults) and that disabling unregisters.
+4. **Docs and roadmap** updated for what changed. Report in `build/codex-report-4.md`, same format, first line states whether every item is done and every check green.
