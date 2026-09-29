@@ -13,6 +13,7 @@
 	<key>CFBundleVersion</key><string>23</string>
 	<key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
 	<key>LSMinimumSystemVersion</key><string>14.0</string>
+	<key>NSHumanReadableCopyright</key><string>© 2026 Mica Terminal</string>
 	<key>NSHighResolutionCapable</key><true/>
 	<key>NSMicrophoneUsageDescription</key><string>Mica uses the microphone only when you start dictation, so it can show and insert a live transcript.</string>
 	<key>NSDesktopFolderUsageDescription</key><string>Mica needs access to the project folder you opened so its terminal sessions and development tools can read and update project files.</string>
