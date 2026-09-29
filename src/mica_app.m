@@ -2383,8 +2383,10 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     // Spanish), send that character as typed instead of an ESC-prefixed Meta key.
     if (option && !control && characters.length == 1) {
         unichar composed = [characters characterAtIndex:0];
+        BOOL punctuation = composed >= 0x21 && composed <= 0x7e && !isalnum((int)composed);
         if (composed >= 0x21 && composed <= 0x7e &&
-            ![characters isEqualToString:event.charactersIgnoringModifiers]) modifiers &= ~VTERM_MOD_ALT;
+            (punctuation || ![characters isEqualToString:event.charactersIgnoringModifiers]))
+            modifiers &= ~VTERM_MOD_ALT;
     }
     for (NSUInteger i = 0; i < characters.length; i++) {
         unichar first = [characters characterAtIndex:i];

@@ -187,6 +187,14 @@ static void MicaUITestSendKey(MicaAppDelegate *delegate, NSString *characters,
     if (event) [delegate.terminalView keyDown:event];
 }
 
+static void MicaUITestSendComposedKey(MicaAppDelegate *delegate, NSString *characters, NSString *base,
+                                      NSEventModifierFlags modifiers, unsigned short keyCode) {
+    NSEvent *event = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+        modifierFlags:modifiers timestamp:0 windowNumber:delegate.window.windowNumber context:nil
+        characters:characters charactersIgnoringModifiers:base isARepeat:NO keyCode:keyCode];
+    if (event) [delegate.terminalView keyDown:event];
+}
+
 static void MicaUITestSendFlags(MicaAppDelegate *delegate, NSEventModifierFlags modifiers,
                                unsigned short keyCode) {
     NSEvent *event = [NSEvent keyEventWithType:NSEventTypeFlagsChanged location:NSZeroPoint
@@ -581,6 +589,24 @@ static int MicaRunUISelfTest(void) {
             pushToTalkProbe.pushToTalkFinishes == 2;
         MicaUITestRecord(report, &allPassed, focusLossFinishesHold,
             @"losing app focus finalizes an active hold-to-talk capture exactly once");
+
+        // "@" must be typeable: Shift+2 on US layouts, Option+ò on Italian, Option+L on German.
+        [voiceDelegate selectTabAtIndex:0];
+        MicaUITestSendComposedKey(voiceDelegate, @"@", @"2", NSEventModifierFlagShift, 19);
+        MicaUITestSendFlags(voiceDelegate, NSEventModifierFlagOption, 58);
+        MicaUITestSendComposedKey(voiceDelegate, @"#", @"\u00e0", NSEventModifierFlagOption, 39);
+        MicaUITestSendComposedKey(voiceDelegate, @"@", @"\u00f2", NSEventModifierFlagOption, 41);
+        MicaUITestSendComposedKey(voiceDelegate, @"@", @"@", NSEventModifierFlagOption, 41);
+        MicaUITestSendFlags(voiceDelegate, 0, 58);
+        BOOL atTyped = NO;
+        for (int attempt = 0; attempt < 200 && !atTyped; attempt++) {
+            mica_session_poll(voiceTargetTab.session, 0);
+            atTyped = MicaUITestFindText(voiceTargetTab.session, @"@#@@", NULL, NULL);
+            if (!atTyped) usleep(10000);
+        }
+        MicaUITestRecord(report, &allPassed, atTyped,
+            [NSString stringWithFormat:@"@ and # can be typed with Shift and with left Option composing (screen=%@)",
+                MicaUITestScreenTail(voiceTargetTab.session)]);
 
         char rawHelperTemplate[] = "/tmp/mica-voice-raw-XXXXXX";
         char rawCallsTemplate[] = "/tmp/mica-voice-raw-calls-XXXXXX";
