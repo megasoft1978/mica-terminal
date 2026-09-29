@@ -602,7 +602,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     BOOL _selectionPending;
     NSPoint _selectionStart;
     NSPoint _selectionEnd;
-    size_t _selectionHistoryLines;
+    uint64_t _selectionHistoryLines;
     MicaTab *_imeTab;
     NSFont *_styledFontBase;
     NSFont *__strong _styledFonts[4];
@@ -2116,7 +2116,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     _selectionStart = point;
     _selectionEnd = point;
     _selectionSession = self.owner.activeTab.session;
-    _selectionHistoryLines = _selectionSession ? mica_session_history_lines(_selectionSession) : 0;
+    _selectionHistoryLines = _selectionSession ? mica_session_scrolled_lines(_selectionSession) : 0;
 }
 
 // New output scrolls lines into history; move the selection up with its text.
@@ -2124,7 +2124,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     if (!_selecting && !_selectionPending) return;
     MicaSession *session = self.owner.activeTab.session;
     if (!session || session != _selectionSession) { [self clearSelection]; return; }
-    size_t current = mica_session_history_lines(session);
+    uint64_t current = mica_session_scrolled_lines(session);
     if (current == _selectionHistoryLines) return;
     if (mica_session_view_offset(session) == 0 && current > _selectionHistoryLines) {
         CGFloat shift = (CGFloat)(current - _selectionHistoryLines) * _lineHeight;
@@ -2372,11 +2372,12 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     self.tableView = [[NSTableView alloc] initWithFrame:NSZeroRect];
     self.tableView.usesAlternatingRowBackgroundColors = YES;
     self.tableView.gridStyleMask = NSTableViewSolidHorizontalGridLineMask | NSTableViewSolidVerticalGridLineMask;
+    self.tableView.columnAutoresizingStyle = NSTableViewLastColumnOnlyAutoresizingMask;
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     NSArray<NSString *> *titles = @[@"Tab name", @"Working folder", @"Startup command (optional)"];
     NSArray<NSString *> *identifiers = @[@"name", @"folder", @"command"];
-    NSArray<NSNumber *> *widths = @[@145, @310, @285];
+    NSArray<NSNumber *> *widths = @[@140, @300, @260];
     for (NSUInteger index = 0; index < identifiers.count; index++) {
         NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:identifiers[index]];
         column.title = titles[index];

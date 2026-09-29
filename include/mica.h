@@ -58,6 +58,8 @@ int mica_session_rows(const MicaSession *session);
 int mica_session_cols(const MicaSession *session);
 int mica_session_view_offset(const MicaSession *session);
 size_t mica_session_history_lines(const MicaSession *session);
+// Monotonic count of lines that have scrolled off the top; keeps counting once scrollback is full.
+uint64_t mica_session_scrolled_lines(const MicaSession *session);
 size_t mica_session_display_history_lines(const MicaSession *session);
 bool mica_session_fold_visible_rows(MicaSession *session, int start_row, int end_row);
 bool mica_session_toggle_fold_at_view_row(MicaSession *session, int row);

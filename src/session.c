@@ -69,6 +69,7 @@ struct MicaSession {
     size_t history_capacity;
     size_t history_start;
     size_t history_count;
+uint64_t scrolled_total;
     size_t view_offset;
     MicaFold *folds;
     size_t fold_count;
@@ -930,6 +931,7 @@ static void output_callback(const char *bytes, size_t length, void *user) {
 static int history_push(int cols, const VTermScreenCell *cells, void *user) {
     MicaSession *session = user;
     if (!session || cols <= 0 || (size_t)cols != (size_t)session->cols) return 1;
+    session->scrolled_total++;
     size_t old_display_count = display_history_count(session);
     if (session->history_cols == 0) session->history_cols = (size_t)session->cols;
     size_t limit = history_limit_lines((int)session->history_cols);
@@ -1008,6 +1010,7 @@ static int history_pop(int cols, VTermScreenCell *cells, void *user) {
     memcpy(cells, session->history + slot * session->history_cols,
            (size_t)session->cols * sizeof(*cells));
     session->history_count--;
+    if (session->scrolled_total > 0) session->scrolled_total--;
     adjust_folds_after_history_pop(session);
     if (session->history_count == 0) session->history_start = 0;
     size_t display_count = display_history_count(session);
@@ -1027,6 +1030,7 @@ static int history_clear(void *user) {
     session->history_cols = 0;
     session->history_start = 0;
     session->history_count = 0;
+    session->scrolled_total = 0;
     session->view_offset = 0;
     if (session->screen_link_ids)
         memset(session->screen_link_ids, 0, (size_t)session->rows * session->cols * sizeof(*session->screen_link_ids));
@@ -1665,6 +1669,7 @@ bool mica_session_take_dirty_rows(MicaSession *session, MicaDirtyRows *rows) {
     session->dirty_rows = (MicaDirtyRows){0};
     return true;
 }
+uint64_t mica_session_scrolled_lines(const MicaSession *session) { return session ? session->scrolled_total : 0; }
 uint64_t mica_session_attention_count(const MicaSession *session) { return session ? session->attention_count : 0; }
 pid_t mica_session_pid(const MicaSession *session) { return session ? session->child_pid : -1; }
 bool mica_session_working_directory(const MicaSession *session, char *buffer, size_t capacity) {
