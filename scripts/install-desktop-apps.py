@@ -29,6 +29,30 @@ DEFAULT_MANIFEST = HOME / ".config/mica/desktop-apps.json"
 DEFAULT_BACKUPS = HOME / ".local/share/mica/launcher-backups"
 
 
+def launch_command(base_app: Path, layout_path: str, display_name: str) -> str:
+    """The shell line a project launcher runs.
+
+    Layouts in ~/.config/mica/layouts open as another window of the already running Mica (one process for all
+    projects, which saves about 55 MB per extra window) through a mica:// URL that the app validates. Layouts
+    kept elsewhere are not accepted by the app's URL handler, so they keep the older one-process-per-window path.
+    """
+    from urllib.parse import quote
+
+    layout = Path(layout_path)
+    try:
+        inside_default = layout.resolve().is_relative_to(DEFAULT_LAYOUTS.resolve())
+    except OSError:
+        inside_default = False
+    if inside_default:
+        url = f"mica://open?layout={quote(str(layout.resolve()), safe='')}&name={quote(display_name, safe='')}"
+        return f"exec /usr/bin/open -a {shlex.quote(str(base_app))} {shlex.quote(url)}"
+    return (
+        f"exec /usr/bin/open -n {shlex.quote(str(base_app))} --args "
+        f"--layout {shlex.quote(layout_path)} "
+        f"--project-name {shlex.quote(display_name)}"
+    )
+
+
 def read_plist(path: Path) -> dict:
     with path.open("rb") as stream:
         return plistlib.load(stream)
@@ -202,12 +226,7 @@ def install_bundle(
         # The project bundle remains a Finder-friendly icon and keeps its own
         # identity, but its tiny executable delegates to the one built app.
         # This avoids hardlink/copy snapshots that stay stale after `make app`.
-        launcher = (
-            "#!/bin/sh\nset -eu\n\n"
-            f"exec /usr/bin/open -n {shlex.quote(str(base_app.resolve()))} --args "
-            f"--layout {shlex.quote(project['layout_path'])} "
-            f"--project-name {shlex.quote(display_name)}\n"
-        )
+        launcher = "#!/bin/sh\nset -eu\n\n" + launch_command(base_app.resolve(), project["layout_path"], display_name) + "\n"
         executable = contents / "MacOS/Mica"
         executable.write_text(launcher, encoding="utf-8")
         executable.chmod(0o755)
@@ -269,11 +288,7 @@ def migrate_launch_script(
     display_name = project["display_name"]
     if not isinstance(display_name, str) or any(char in display_name for char in "\0\r\n"):
         raise RuntimeError(f"invalid project display name for {project['app_name']}")
-    expected = (
-        f"exec /usr/bin/open -n {shlex.quote(str(base_app))} --args "
-        f"--layout {shlex.quote(project['layout_path'])} "
-        f"--project-name {shlex.quote(project['display_name'])}"
-    )
+    expected = launch_command(base_app, project["layout_path"], project["display_name"])
     if not install:
         print(f"would route {script_path} to {project['app_name']}")
         return

@@ -208,6 +208,14 @@ def main() -> None:
         assert "--layout" in new_script and "--project-name 'Alpha Project'" in new_script
         assert (backups / "launch-alpha.sh").read_text(encoding="utf-8") == original_launcher
 
+    # Layouts in the default folder open as a window of the running app through a mica:// URL; others keep open -n.
+    default_layout = INSTALLER.DEFAULT_LAYOUTS / "my project.mica"
+    url_command = INSTALLER.launch_command(Path("/Applications/Mica.app"), str(default_layout), "My Project & Co")
+    assert url_command.startswith("exec /usr/bin/open -a /Applications/Mica.app 'mica://open?layout=")
+    assert "%20project.mica" in url_command and "name=My%20Project%20%26%20Co" in url_command and "--args" not in url_command
+    legacy_command = INSTALLER.launch_command(Path("/Applications/Mica.app"), "/tmp/elsewhere.mica", "Elsewhere")
+    assert "open -n" in legacy_command and "--layout /tmp/elsewhere.mica" in legacy_command
+
     with tempfile.TemporaryDirectory(prefix="mica-new-instance-") as temporary:
         root = Path(temporary)
         base_app = root / "Mica.app"

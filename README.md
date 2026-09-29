@@ -38,7 +38,7 @@ Most people run a terminal, a voice-typing app and a timer as separate programs,
 | iTerm2 | terminal | 126 MB |
 | Wispr Flow | dictation | 645 MB |
 
-iTerm2 plus Wispr Flow is about 770 MB before you add a timer. Dictation adds a helper of about 35 MB only while you talk (about 95 MB in total), then it exits. Mica also shows its own memory live, bottom right. Method, caveats and the places Mica does not win (very large windows, one process per project window) are in [docs/MEMORY-BASELINE.md](docs/MEMORY-BASELINE.md).
+iTerm2 plus Wispr Flow is about 770 MB before you add a timer. Dictation adds a helper of about 35 MB only while you talk (about 95 MB in total), then it exits. Mica also shows its own memory live, bottom right. Project windows share one process, so extra windows cost about 25 MB each rather than a whole app. Method, caveats and the places Mica does not win (very large windows) are in [docs/MEMORY-BASELINE.md](docs/MEMORY-BASELINE.md).
 
 ## What you get
 

@@ -29,10 +29,12 @@ static void Mouse(MicaAppDelegate *delegate, NSEventType type, NSPoint point, NS
     else if (type == NSEventTypeLeftMouseUp) [delegate.terminalView mouseUp:event];
 }
 
+static NSMutableArray<MicaAppDelegate *> *gWindows;
+
 static void Act(MicaAppDelegate *delegate) {
     MicaTerminalView *view = delegate.terminalView;
     NSSize size = view.bounds.size;
-    int chosen = Between(0, 24);
+    int chosen = Between(0, 26);
     const char *only = getenv("STRESS_ONLY");
     if (only && chosen != atoi(only)) return;
     switch (chosen) {
@@ -85,6 +87,22 @@ static void Act(MicaAppDelegate *delegate) {
     case 22: [delegate openPreferences:nil]; [delegate.preferencesWindow close]; break;
     case 23: [delegate updateWindowTitle]; break;
     case 24: [delegate pollSessions:nil]; break;
+    case 25:   // open another project window in this process
+        if (gWindows.count < 4) {
+            MicaAppDelegate *another = [[MicaAppDelegate alloc] init];
+            [another startWindowWithArguments:@[@"mica", @"--new-window"]];
+            [gWindows addObject:another];
+        }
+        break;
+    case 26:   // close one of the windows the way a user would
+        if (gWindows.count > 1) {
+            MicaAppDelegate *closing = gWindows[(NSUInteger)Between(0, (int)gWindows.count - 1)];
+            [closing windowWillClose:nil];
+            [closing.window close];
+            [gWindows removeObject:closing];
+            for (MicaAppDelegate *other in gWindows) [other takeMenuOwnership];
+        }
+        break;
     }
 }
 
@@ -96,30 +114,19 @@ int main(int argc, const char *argv[]) {
         printf("stress seed %u, %d steps\n", seed, steps);
         setenv("MICA_TEST_NO_STARTUP", "1", 1);
         [NSApplication sharedApplication];
-        MicaAppDelegate *delegate = [[MicaAppDelegate alloc] init];
-        delegate.tabs = [NSMutableArray array];
-        delegate.activeIndex = 0;
-        delegate.uiMode = MicaUIModeNormal;
-        delegate.projectName = @"Stress";
-        delegate.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 900, 600)
-            styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
-            backing:NSBackingStoreBuffered defer:NO];
-        delegate.window.releasedWhenClosed = NO;
-        delegate.terminalView = [[MicaTerminalView alloc] initWithFrame:delegate.window.contentView.bounds];
-        delegate.terminalView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-        delegate.terminalView.owner = delegate;
-        delegate.terminalView.terminalFont = MicaTerminalFont(15);
-        [delegate.window setContentView:delegate.terminalView];
-        delegate.window.delegate = delegate;
-        [delegate installMenus];
-        [delegate newTabWithName:@"Shell" command:@"perl -e 'for(1..4000){print \"stress line $_ \\e[3\".($_%8).\"mcolor\\e[0m\\n\"}'; sleep 5"];
-        [delegate newTabWithName:@"Shell" command:nil];
+        gWindows = [NSMutableArray array];
+        MicaAppDelegate *first = [[MicaAppDelegate alloc] init];
+        [first startWindowWithArguments:@[@"mica", @"--new-window"]];
+        [gWindows addObject:first];
+        [first newTabWithName:@"Shell" command:@"perl -e 'for(1..4000){print \"stress line $_ \\e[3\".($_%8).\"mcolor\\e[0m\\n\"}'; sleep 5"];
         for (int step = 0; step < steps; step++) {
+            MicaAppDelegate *delegate = gWindows[(NSUInteger)Between(0, (int)gWindows.count - 1)];
             Act(delegate);
-            if (step % 5 == 0) { [delegate pollSessions:nil]; [delegate.terminalView displayIfNeeded]; }
+            if (step % 5 == 0) for (MicaAppDelegate *each in gWindows) { [each pollSessions:nil]; [each.terminalView displayIfNeeded]; }
             if (step % 50 == 0) RunLoopFor(0.02);
         }
-        for (MicaTab *tab in delegate.tabs) if (tab.session) { mica_session_destroy(tab.session); tab.session = NULL; }
+        for (MicaAppDelegate *each in gWindows)
+            for (NSValue *value in [each detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
         printf("stress ok (seed %u)\n", seed);
     }
     return 0;

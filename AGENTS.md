@@ -8,3 +8,4 @@
 - Test through the PTY harness before changing the public workflow. Preserve Claude Code, Codex, arbitrary command, and interactive shell sessions.
 - Keep layout fixtures local to `examples/`; do not overwrite user configuration or shell startup files.
 - Do not add external network calls or send prompts to agent CLIs from tests.
+- One Mica process hosts every project window: each window is a `MicaAppDelegate` acting as a window controller (registry `MicaControllers()`), the first is also the NSApplication delegate, and the single menu bar retargets to the key window. Do not add state to globals that should be per window.

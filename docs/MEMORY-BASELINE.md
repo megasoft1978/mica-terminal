@@ -34,6 +34,12 @@ The status bar shows Mica's own number live at bottom right ("58 MB", or "58 + 3
 
 The one time memory is higher is the first dictation after an app update, when Core ML rebuilds its compiled model cache (peak resident size near 600 MB for about half a minute). Mica does that in the background shortly after launch.
 
+## Several project windows
+
+Project launchers and **New Window** now open another window inside the process that is already running, through a `mica://open?layout=…` URL that only accepts layouts from `~/.config/mica/layouts`. Opening the same project twice focuses the existing window.
+
+Measured 2026-09-29 with three project windows (1100 × 700 each) opened by URL into one fresh process: **109 MB in total**, against roughly 165–180 MB for three separate processes (each about 55–60 MB before its window buffers). Each extra window costs about 25 MB, mostly its drawing buffers, instead of repeating the whole base.
+
 ## What makes the difference
 
 - One process, no web view. Mica is AppKit and a C session core; there is no Chromium and no Node.
@@ -45,7 +51,7 @@ The one time memory is higher is the first dictation after an app update, when C
 ## Where Mica does not win yet
 
 - **Window size dominates.** Every app pays roughly 2–3 times the window's pixel area, four bytes per pixel, for its drawing buffers. A maximized window on a 5160 × 2160 display costs about 120 MB in any terminal. Mica processes running maximized on that display measure 140–190 MB each.
-- **One process per project window.** A project launcher starts its own Mica process, so each extra window repeats the roughly 55 MB base that iTerm2 pays once. With several windows open, iTerm2 plus its windows can be smaller than several Mica processes. Sharing one process between project windows is the largest remaining memory saving.
+- **Older launchers use one process per window.** Launchers created before 2026-09-29, and layouts kept outside `~/.config/mica/layouts`, still start a separate Mica process per window, repeating the roughly 55 MB base. Re-run the launcher installer (or create the launcher again) to switch to shared windows.
 - **First dictation after an update.** Core ML rebuilds its compiled model cache once per app build; that step peaks near 600 MB (resident size) for about half a minute. Mica now does it in the background shortly after launch instead of on the first key press.
 - **Terminal-only apps are close.** Alacritty and kitty are within 15–25 MB of Mica and do not include dictation or a timer.
 

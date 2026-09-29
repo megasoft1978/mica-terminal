@@ -1628,6 +1628,62 @@ static int MicaRunUISelfTest(void) {
             MicaUITestRecord(report, &allPassed, branchNamesValidated,
                 @"worktree branch names reject options and shell-looking text, and the repository root is found");
             [fileManager removeItemAtPath:gitRoot error:nil];
+
+            // mica:// project URLs: only layouts inside the layouts folder are accepted.
+            NSString *layoutsRoot = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                [NSString stringWithFormat:@"mica-layouts-%d", getpid()]];
+            [fileManager createDirectoryAtPath:layoutsRoot withIntermediateDirectories:YES attributes:nil error:nil];
+            NSString *goodLayout = [layoutsRoot stringByAppendingPathComponent:@"alpha.mica"];
+            NSString *secondLayout = [layoutsRoot stringByAppendingPathComponent:@"beta.mica"];
+            [@"# Mica layout v1\n# Mica project: Alpha\nShell\t/tmp\t\n" writeToFile:goodLayout atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            [@"# Mica layout v1\n# Mica project: Beta\nShell\t/tmp\t\n" writeToFile:secondLayout atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            NSString *outside = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                [NSString stringWithFormat:@"outside-%d.mica", getpid()]];
+            [@"x" writeToFile:outside atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            NSString *escapeLink = [layoutsRoot stringByAppendingPathComponent:@"escape.mica"];
+            [fileManager createSymbolicLinkAtPath:escapeLink withDestinationPath:outside error:nil];
+            NSString *(^enc)(NSString *) = ^NSString *(NSString *v) {
+                return [v stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet]; };
+            NSArray<NSString *> *good = MicaArgumentsForOpenURL(
+                [NSURL URLWithString:[NSString stringWithFormat:@"mica://open?layout=%@&name=%@", enc(goodLayout), enc(@"Alpha Project")]], layoutsRoot);
+            BOOL urlsValidated = good.count == 5 && [good[1] isEqualToString:@"--layout"] && [good[3] isEqualToString:@"--project-name"] &&
+                [good[4] isEqualToString:@"Alpha Project"] &&
+                MicaArgumentsForOpenURL([NSURL URLWithString:[NSString stringWithFormat:@"mica://open?layout=%@", enc(outside)]], layoutsRoot) == nil &&
+                MicaArgumentsForOpenURL([NSURL URLWithString:[NSString stringWithFormat:@"mica://open?layout=%@", enc(escapeLink)]], layoutsRoot) == nil &&
+                MicaArgumentsForOpenURL([NSURL URLWithString:[NSString stringWithFormat:@"mica://open?layout=%@/../x.mica", enc(layoutsRoot)]], layoutsRoot) == nil &&
+                MicaArgumentsForOpenURL([NSURL URLWithString:@"https://open?layout=/etc/passwd"], layoutsRoot) == nil &&
+                MicaArgumentsForOpenURL([NSURL URLWithString:@"mica://run?layout=/etc/passwd"], layoutsRoot) == nil &&
+                MicaArgumentsForOpenURL([NSURL URLWithString:@"mica://open"], layoutsRoot) == nil;
+            MicaUITestRecord(report, &allPassed, urlsValidated,
+                @"mica:// URLs open only layouts from the layouts folder, and refuse other paths, symlinks and schemes");
+
+            // Several project windows in one process: separate controllers, one menu bar that follows the key window,
+            // duplicates focus the existing window, and closing one leaves the others running.
+            setenv("MICA_TEST_NO_STARTUP", "1", 1);
+            MicaAppDelegate *windowA = [[MicaAppDelegate alloc] init];
+            MicaAppDelegate *windowB = [[MicaAppDelegate alloc] init];
+            [windowA startWindowWithArguments:@[@"mica", @"--layout", goodLayout, @"--project-name", @"Alpha"]];
+            [windowB startWindowWithArguments:@[@"mica", @"--layout", secondLayout, @"--project-name", @"Beta"]];
+            BOOL twoWindows = MicaControllers().count == 2 && windowA.tabs.count == 1 && windowB.tabs.count == 1 &&
+                [windowA.projectName isEqualToString:@"Alpha"] && [windowB.projectName isEqualToString:@"Beta"];
+            [windowA takeMenuOwnership];
+            NSMenuItem *newTabItem = [[NSApp.mainMenu itemWithTitle:@"Session"].submenu itemWithTitle:@"New Shell Tab"];
+            BOOL menuAtA = newTabItem.target == windowA;
+            [windowB takeMenuOwnership];
+            BOOL menuAtB = newTabItem.target == windowB;
+            [windowA openProjectWindowWithArguments:@[@"mica", @"--layout", goodLayout]];   // already open: no third window
+            BOOL noDuplicate = MicaControllers().count == 2;
+            NSUInteger tabsBeforeClose = windowA.tabs.count;
+            [windowB windowWillClose:nil];
+            BOOL closedCleanly = MicaControllers().count == 1 && MicaControllers().firstObject == windowA &&
+                windowA.tabs.count == tabsBeforeClose && windowA.activeTab.session != NULL;
+            MicaUITestRecord(report, &allPassed, twoWindows && menuAtA && menuAtB && noDuplicate && closedCleanly,
+                [NSString stringWithFormat:@"one process hosts several project windows (two=%d menuA=%d menuB=%d nodup=%d closed=%d)",
+                    twoWindows, menuAtA, menuAtB, noDuplicate, closedCleanly]);
+            for (NSValue *leftover in [windowA detachSessionsForTermination]) mica_session_destroy(leftover.pointerValue);
+            [MicaControllers() removeAllObjects];
+            [fileManager removeItemAtPath:layoutsRoot error:nil];
+            unlink(outside.fileSystemRepresentation);
             MicaUITestRecord(report, &allPassed, gitBranchesDetected,
                 @"the git branch is read for a repo, a linked worktree and a detached HEAD, and is absent outside a repo");
 

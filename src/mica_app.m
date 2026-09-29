@@ -467,6 +467,12 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)setCursorStyle:(id)sender;
 - (void)openPreferences:(id)sender;
 - (void)newWorktreeTab:(id)sender;
+- (void)startWindowWithArguments:(NSArray<NSString *> *)arguments;
+- (void)openProjectWindowWithArguments:(NSArray<NSString *> *)arguments;
+- (void)takeMenuOwnership;
+- (void)buildMenus;
+- (void)teardownWindow;
+- (NSArray<NSValue *> *)detachSessionsForTermination;
 - (void)prefThemeChanged:(NSPopUpButton *)sender;
 @property(nonatomic, strong) NSWindow *preferencesWindow;
 - (void)toggleLightTheme:(id)sender;
@@ -503,6 +509,55 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (instancetype)initWithOwner:(MicaAppDelegate *)owner;
 - (void)save:(id)sender;
 @end
+
+// One process can host many project windows. Each window has its own MicaAppDelegate acting as a window
+// controller; the first one is also the NSApplication delegate. Sharing one process avoids repeating the
+// roughly 55 MB base cost for every project window.
+static NSMutableArray<MicaAppDelegate *> *MicaControllers(void) {
+    static NSMutableArray<MicaAppDelegate *> *controllers;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ controllers = [NSMutableArray array]; });
+    return controllers;
+}
+
+static NSMutableArray<NSURL *> *MicaPendingOpenURLs(void) {
+    static NSMutableArray<NSURL *> *pending;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ pending = [NSMutableArray array]; });
+    return pending;
+}
+
+// mica://open?layout=<path to a .mica file>&name=<project name>  ->  launch-style arguments, or nil.
+// Only layouts inside ~/.config/mica/layouts are accepted, so a web page cannot point Mica at an arbitrary file.
+static NSArray<NSString *> *MicaArgumentsForOpenURL(NSURL *url, NSString *layoutsDirectory) {
+    if (![url.scheme.lowercaseString isEqualToString:@"mica"] || ![url.host.lowercaseString isEqualToString:@"open"]) return nil;
+    NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+    NSString *layout = nil, *name = nil;
+    for (NSURLQueryItem *item in components.queryItems) {
+        if ([item.name isEqualToString:@"layout"]) layout = item.value;
+        else if ([item.name isEqualToString:@"name"]) name = item.value;
+    }
+    if (!layout.length) return nil;
+    NSString *resolved = [layout stringByResolvingSymlinksInPath];
+    NSString *root = [layoutsDirectory stringByResolvingSymlinksInPath];
+    if (!resolved.isAbsolutePath || ![resolved.pathExtension isEqualToString:@"mica"] ||
+        ![resolved hasPrefix:[root stringByAppendingString:@"/"]]) return nil;
+    NSMutableArray<NSString *> *arguments = [NSMutableArray arrayWithObjects:@"mica", @"--layout", resolved, nil];
+    NSString *cleanName = [name stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (cleanName.length && cleanName.length <= 100 &&
+        [cleanName rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location == NSNotFound)
+        [arguments addObjectsFromArray:@[@"--project-name", cleanName]];
+    return arguments;
+}
+
+static NSString *MicaDefaultLayoutsDirectory(void) {
+    return [NSHomeDirectory() stringByAppendingPathComponent:@".config/mica/layouts"];
+}
+
+static NSMutableArray<NSMenuItem *> *gControllerMenuItems;   // menu items whose target is the key window's controller
+static NSMutableArray<NSMenuItem *> *gViewMenuItems;         // ... and those whose target is its terminal view
+static BOOL gMenuBuilt;
+static NSString *gAppliedIconProject;
 
 // Apple's physical footprint for a process: the same number Activity Monitor calls Memory.
 static uint64_t MicaFootprintBytes(pid_t pid) {
@@ -3168,8 +3223,8 @@ static NSDictionary *MicaScalarDictionary(id object) {
     if (!self.baseApplicationIcon)
         self.baseApplicationIcon = [NSImage imageNamed:NSImageNameApplicationIcon];
     // Rebuilding the Dock icon on every tab change allocates and flickers; only redo it when the project changes.
-    if (!self.appliedIconProjectName || ![self.appliedIconProjectName isEqualToString:self.projectName ?: @""]) {
-        self.appliedIconProjectName = self.projectName ?: @"";
+    if (!gAppliedIconProject || ![gAppliedIconProject isEqualToString:self.projectName ?: @""]) {
+        gAppliedIconProject = self.projectName ?: @"";
         NSApp.applicationIconImage = MicaProjectApplicationIcon(self.baseApplicationIcon, self.projectName);
     }
     // Each project window remembers where it was last placed.
@@ -3183,12 +3238,29 @@ static NSDictionary *MicaScalarDictionary(id object) {
     MicaDiagnosticsLog(@"launch", [NSString stringWithFormat:@"opened app=%@ bundle=%@ pid=%d",
         NSBundle.mainBundle.infoDictionary[@"CFBundleDisplayName"] ?: @"Mica",
         NSBundle.mainBundle.bundleIdentifier ?: @"unknown", getpid()]);
+    UNUserNotificationCenter.currentNotificationCenter.delegate = self;   // the app delegate outlives every window
+    // Launched through a project launcher (mica:// URL)? Those URLs arrived before launch finished.
+    NSMutableArray<NSURL *> *pending = MicaPendingOpenURLs();
+    NSMutableArray<NSArray<NSString *> *> *pendingArguments = [NSMutableArray array];
+    for (NSURL *url in pending) {
+        NSArray<NSString *> *arguments = MicaArgumentsForOpenURL(url, MicaDefaultLayoutsDirectory());
+        if (arguments) [pendingArguments addObject:arguments];
+    }
+    [pending removeAllObjects];
+    [self startWindowWithArguments:pendingArguments.firstObject];
+    for (NSUInteger index = 1; index < pendingArguments.count; index++)
+        [self openProjectWindowWithArguments:pendingArguments[index]];
+}
+
+// Builds this controller's window, tabs, voice controller and timers. `arguments` are launch-style
+// (--layout, --project-name); nil means the process's own command line.
+- (void)startWindowWithArguments:(NSArray<NSString *> *)arguments {
+    if (![MicaControllers() containsObject:self]) [MicaControllers() addObject:self];
     self.tabs = [NSMutableArray array];
     self.activeIndex = 0;
     self.pomodoroLockFD = -1;
     self.focusDurationMinutes = kDefaultFocusMinutes;
     self.breakDurationMinutes = kDefaultBreakMinutes;
-    UNUserNotificationCenter.currentNotificationCenter.delegate = self;
     self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(120, 120, 1100, 700)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
         backing:NSBackingStoreBuffered defer:NO];
@@ -3213,13 +3285,17 @@ static NSDictionary *MicaScalarDictionary(id object) {
     self.voiceController = [[MicaVoiceController alloc] initWithHelperURL:voiceHelperURL];
     self.voiceController.delegate = self;
     // Rebuild Core ML's compiled model cache in the background after an update so the first dictation is fast.
-    if (!getenv("MICA_TEST_NO_STARTUP"))
+    static BOOL prewarmScheduled;
+    if (!getenv("MICA_TEST_NO_STARTUP") && !prewarmScheduled) {
+        prewarmScheduled = YES;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 4 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
             [self.voiceController prewarmSpeechModelIfNeeded];
         });
+    }
     [self installMenus];
     self.uiMode = MicaUIModeNormal;
-    [self loadLaunchConfiguration];
+    if (arguments) [self loadLaunchConfigurationFromArguments:arguments bundleInfo:NSBundle.mainBundle.infoDictionary];
+    else [self loadLaunchConfiguration];
     if (!getenv("MICA_TEST_NO_STARTUP")) {
         gMicaCursorStyle = [NSUserDefaults.standardUserDefaults integerForKey:@"MicaCursorStyle"];
         NSMenu *viewMenu = [NSApp.mainMenu itemWithTitle:@"View"].submenu;
@@ -3229,8 +3305,15 @@ static NSDictionary *MicaScalarDictionary(id object) {
     if (!getenv("MICA_TEST_NO_STARTUP") && [NSUserDefaults.standardUserDefaults boolForKey:@"MicaLightTheme"])
         [self setLightTheme:YES];
     else self.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+    // A second window opened on top of another gets the classic cascade offset instead of hiding it.
+    for (MicaAppDelegate *other in MicaControllers()) {
+        if (other == self || !other.window) continue;
+        NSRect a = other.window.frame, b = self.window.frame;
+        if (fabs(a.origin.x - b.origin.x) < 2 && fabs(a.origin.y - b.origin.y) < 2)
+            [self.window setFrameOrigin:NSMakePoint(b.origin.x + 28, b.origin.y - 28)];
+    }
     // Show the window only after the project name restored its saved frame, so it never jumps.
-    [self.window makeKeyAndOrderFront:nil];
+    if (!getenv("MICA_TEST_NO_STARTUP")) [self.window makeKeyAndOrderFront:nil];   // tests keep windows off screen
     [self.window makeFirstResponder:self.terminalView];
     [self restartPollTimerWithInterval:0.015];
     // Measurement aid: MICA_DEBUG_DICTATE="<start-after-seconds> <hold-seconds>" runs one real dictation hold
@@ -3251,6 +3334,32 @@ static NSDictionary *MicaScalarDictionary(id object) {
 }
 
 - (void)installMenus {
+    if (!gMenuBuilt || !NSApp.mainMenu) {
+        [self buildMenus];
+        gControllerMenuItems = [NSMutableArray array];
+        gViewMenuItems = [NSMutableArray array];
+        __block __weak void (^collect)(NSMenu *) = nil;
+        void (^collector)(NSMenu *) = ^(NSMenu *menu) {
+            for (NSMenuItem *item in menu.itemArray) {
+                if (item.target == self) [gControllerMenuItems addObject:item];
+                else if (self.terminalView && item.target == self.terminalView) [gViewMenuItems addObject:item];
+                if (item.submenu) collect(item.submenu);
+            }
+        };
+        collect = collector;
+        collector(NSApp.mainMenu);
+        gMenuBuilt = YES;
+    }
+    [self takeMenuOwnership];
+}
+
+// One menu bar serves every window: its window-specific items act on whichever window is key.
+- (void)takeMenuOwnership {
+    for (NSMenuItem *item in gControllerMenuItems) item.target = self;
+    for (NSMenuItem *item in gViewMenuItems) item.target = self.terminalView;
+}
+
+- (void)buildMenus {
     NSMenu *main = [[NSMenu alloc] initWithTitle:@"Mica"];
     NSMenuItem *appRoot = [[NSMenuItem alloc] initWithTitle:@"Mica" action:nil keyEquivalent:@""];
     NSMenu *appMenu = [[NSMenu alloc] initWithTitle:@"Mica"];
@@ -3719,22 +3828,40 @@ static BOOL MicaValidBranchName(NSString *name) {
     }
 }
 
+// New Window: another shell window inside this same process (no second copy of the app in memory).
 - (void)newInstance:(id)sender {
     (void)sender;
-    NSTask *task = [[NSTask alloc] init];
-    task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/open"];
-    task.arguments = @[@"-n", NSBundle.mainBundle.bundleURL.path];
-    task.terminationHandler = ^(NSTask *finishedTask) {
-        MicaDiagnosticsLog(@"launch", [NSString stringWithFormat:
-            @"new-instance open exited status=%d reason=%@",
-            finishedTask.terminationStatus,
-            finishedTask.terminationReason == NSTaskTerminationReasonExit ? @"exit" : @"signal"]);
-    };
-    NSError *error = nil;
-    if (![task launchAndReturnError:&error]) {
-        MicaDiagnosticsLog(@"launch", [NSString stringWithFormat:@"new instance failed: %@", error.localizedDescription]);
-    } else {
-        MicaDiagnosticsLog(@"launch", @"requested new app instance with open -n");
+    [self openProjectWindowWithArguments:@[@"mica", @"--new-window"]];
+}
+
+// Opens a project window inside this process. A window already showing the same layout is brought to the
+// front instead of being duplicated.
+- (void)openProjectWindowWithArguments:(NSArray<NSString *> *)arguments {
+    NSUInteger layoutIndex = [arguments indexOfObject:@"--layout"];
+    NSString *layout = layoutIndex != NSNotFound && layoutIndex + 1 < arguments.count ? arguments[layoutIndex + 1] : nil;
+    if (layout.length) {
+        for (MicaAppDelegate *controller in MicaControllers()) {
+            if ([controller.projectLayoutPath isEqualToString:layout] && controller.window) {
+                [controller.window makeKeyAndOrderFront:nil];
+                [NSApp activateIgnoringOtherApps:YES];
+                return;
+            }
+        }
+    }
+    MicaAppDelegate *controller = [[MicaAppDelegate alloc] init];
+    [controller startWindowWithArguments:arguments];
+    [NSApp activateIgnoringOtherApps:YES];
+    MicaDiagnosticsLog(@"launch", [NSString stringWithFormat:@"opened another window in this process (windows=%lu)",
+        (unsigned long)MicaControllers().count]);
+}
+
+- (void)application:(NSApplication *)application openURLs:(NSArray<NSURL *> *)urls {
+    (void)application;
+    for (NSURL *url in urls) {
+        if (!MicaControllers().count) { [MicaPendingOpenURLs() addObject:url]; continue; }   // still launching
+        NSArray<NSString *> *arguments = MicaArgumentsForOpenURL(url, MicaDefaultLayoutsDirectory());
+        if (arguments) [self openProjectWindowWithArguments:arguments];
+        else MicaDiagnosticsLog(@"launch", @"ignored a mica:// URL that is not a layout inside the layouts folder");
     }
 }
 
@@ -3914,11 +4041,15 @@ static BOOL MicaValidBranchName(NSString *name) {
 
 - (void)setLightTheme:(BOOL)light {
     gMicaLightTheme = light;
-    for (MicaTab *tab in self.tabs)
-        if (tab.session) mica_session_set_light_theme(tab.session, light);
-    // Chrome text uses system colors, so pin the window to the appearance that matches the terminal surface.
-    self.window.appearance = [NSAppearance appearanceNamed:light ? NSAppearanceNameAqua : NSAppearanceNameDarkAqua];
-    [self.terminalView setNeedsDisplay:YES];
+    NSMutableArray<MicaAppDelegate *> *windows = [MicaControllers() mutableCopy];
+    if (![windows containsObject:self]) [windows addObject:self];
+    for (MicaAppDelegate *controller in windows) {
+        for (MicaTab *tab in controller.tabs)
+            if (tab.session) mica_session_set_light_theme(tab.session, light);
+        // Chrome text uses system colors, so pin the window to the appearance that matches the terminal surface.
+        controller.window.appearance = [NSAppearance appearanceNamed:light ? NSAppearanceNameAqua : NSAppearanceNameDarkAqua];
+        [controller.terminalView setNeedsDisplay:YES];
+    }
     NSMenuItem *item = [[NSApp.mainMenu itemWithTitle:@"View"].submenu itemWithTitle:@"Light Terminal Theme"];
     item.state = light ? NSControlStateValueOn : NSControlStateValueOff;
 }
@@ -4289,11 +4420,15 @@ static BOOL MicaValidBranchName(NSString *name) {
 - (BOOL)confirmEndingRunningCommandsFor:(NSString *)action {
     if (getenv("MICA_TEST_NO_STARTUP")) return YES;
     NSMutableArray<NSString *> *running = [NSMutableArray array];
-    for (MicaTab *tab in self.tabs) {
-        // An exited shell can leave a stale command label behind; only live sessions count.
-        if (!tab.currentCommand.length || !tab.session || !mica_session_is_running(tab.session)) continue;
-        [running addObject:tab.currentCommand.lastPathComponent.length
-            ? tab.currentCommand.lastPathComponent : tab.currentCommand];
+    // Closing a window asks about its own tabs; quitting asks about every window in the process.
+    NSArray<MicaAppDelegate *> *scope = ([action hasPrefix:@"Quit"] && MicaControllers().count) ? [MicaControllers() copy] : @[self];
+    for (MicaAppDelegate *controller in scope) {
+        for (MicaTab *tab in controller.tabs) {
+            // An exited shell can leave a stale command label behind; only live sessions count.
+            if (!tab.currentCommand.length || !tab.session || !mica_session_is_running(tab.session)) continue;
+            [running addObject:tab.currentCommand.lastPathComponent.length
+                ? tab.currentCommand.lastPathComponent : tab.currentCommand];
+        }
     }
     if (!running.count) return YES;
     NSAlert *alert = [NSAlert new];
@@ -4318,17 +4453,9 @@ static BOOL MicaValidBranchName(NSString *name) {
     if (![self confirmEndingRunningCommandsFor:@"Quit Mica"]) return NSTerminateCancel;
     self.terminationCleanupStarted = YES;
     MicaDiagnosticsLog(@"app", @"application termination requested");
-    [self.pollTimer invalidate];
-    self.pollTimer = nil;
-    [self.voiceController cancel];
-    NSMutableArray<NSValue *> *sessions = [NSMutableArray arrayWithCapacity:self.tabs.count];
-    for (MicaTab *tab in self.tabs) {
-        if (!tab.session) continue;
-        MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"queued session cleanup tab=%@ pid=%d",
-            tab.name ?: @"Terminal", mica_session_pid(tab.session)]);
-        [sessions addObject:[NSValue valueWithPointer:tab.session]];
-        tab.session = NULL;
-    }
+    NSMutableArray<NSValue *> *sessions = [NSMutableArray array];
+    NSArray<MicaAppDelegate *> *windows = MicaControllers().count ? [MicaControllers() copy] : @[self];
+    for (MicaAppDelegate *controller in windows) [sessions addObjectsFromArray:[controller detachSessionsForTermination]];
     MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"queued all sessions count=%lu",
         (unsigned long)sessions.count]);
     self.terminationCleanupGroup = dispatch_group_create();
@@ -4354,29 +4481,74 @@ static BOOL MicaValidBranchName(NSString *name) {
     });
     return NSTerminateLater;
 }
+// Stops this window's timers and voice controller and hands back its sessions for destruction.
+- (NSArray<NSValue *> *)detachSessionsForTermination {
+    [self.pollTimer invalidate];
+    self.pollTimer = nil;
+    [self.voiceController cancel];
+    NSMutableArray<NSValue *> *sessions = [NSMutableArray arrayWithCapacity:self.tabs.count];
+    for (MicaTab *tab in self.tabs) {
+        if (!tab.session) continue;
+        MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"queued session cleanup tab=%@ pid=%d",
+            tab.name ?: @"Terminal", mica_session_pid(tab.session)]);
+        [sessions addObject:[NSValue valueWithPointer:tab.session]];
+        tab.session = NULL;
+    }
+    return sessions;
+}
+
+// A window closed while others stay open: release its shells and timers now.
+- (void)teardownWindow {
+    NSArray<NSValue *> *sessions = [self detachSessionsForTermination];
+    self.window.delegate = nil;
+    [self.terminalView setOwner:nil];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        @autoreleasepool {
+            for (NSValue *value in sessions) mica_session_destroy(value.pointerValue);
+        }
+    });
+}
+
+- (void)windowWillClose:(NSNotification *)notification {
+    (void)notification;
+    NSMutableArray<MicaAppDelegate *> *controllers = MicaControllers();
+    if (![controllers containsObject:self] || controllers.count <= 1) return;   // last window: quitting cleans up
+    [self teardownWindow];
+    [controllers removeObject:self];
+    for (MicaAppDelegate *other in controllers) if (other.window) { [other takeMenuOwnership]; break; }
+    MicaDiagnosticsLog(@"launch", [NSString stringWithFormat:@"closed a window (windows left=%lu)", (unsigned long)controllers.count]);
+}
+
 - (void)applicationWillTerminate:(NSNotification *)notification {
     (void)notification;
     MicaDiagnosticsLog(@"app", @"application is terminating");
 }
 - (void)applicationWillResignActive:(NSNotification *)notification {
     (void)notification;
-    [self.terminalView cancelLeftOptionTracking];
-    MicaTab *tab = self.activeTab;
-    if (tab.session) mica_session_focus(tab.session, false);
+    for (MicaAppDelegate *controller in MicaControllers().count ? [MicaControllers() copy] : @[self]) {
+        [controller.terminalView cancelLeftOptionTracking];
+        MicaTab *tab = controller.activeTab;
+        if (tab.session) mica_session_focus(tab.session, false);
+    }
 }
 - (void)applicationDidBecomeActive:(NSNotification *)notification {
     (void)notification;
-    if (self.attentionRequest != 0) {
-        [NSApp cancelUserAttentionRequest:self.attentionRequest];
-        self.attentionRequest = 0;
+    for (MicaAppDelegate *controller in MicaControllers().count ? [MicaControllers() copy] : @[self]) {
+        if (controller.attentionRequest != 0) {
+            [NSApp cancelUserAttentionRequest:controller.attentionRequest];
+            controller.attentionRequest = 0;
+        }
+        // Only the key window's shell reports focus; the others stay "unfocused" until they are selected.
+        MicaTab *tab = controller.activeTab;
+        if (tab.session && (controller.window.isKeyWindow || MicaControllers().count <= 1)) mica_session_focus(tab.session, true);
+        if (controller.window.isKeyWindow || MicaControllers().count <= 1) tab.needsAttention = NO;
+        [controller.terminalView setNeedsDisplay:YES];
     }
-    MicaTab *tab = self.activeTab;
-    if (tab.session) mica_session_focus(tab.session, true);
-    tab.needsAttention = NO;
-    [self.terminalView setNeedsDisplay:YES];
 }
 - (void)windowDidBecomeKey:(NSNotification *)notification {
     (void)notification;
+    [self takeMenuOwnership];
+    [self updateWindowTitle];   // the Dock icon follows the key window's project
     [self.terminalView setNeedsDisplay:YES];
 }
 
