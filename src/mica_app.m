@@ -2372,7 +2372,7 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     self.tableView = [[NSTableView alloc] initWithFrame:NSZeroRect];
     self.tableView.usesAlternatingRowBackgroundColors = YES;
     self.tableView.gridStyleMask = NSTableViewSolidHorizontalGridLineMask | NSTableViewSolidVerticalGridLineMask;
-    self.tableView.columnAutoresizingStyle = NSTableViewLastColumnOnlyAutoresizingMask;
+    self.tableView.columnAutoresizingStyle = NSTableViewLastColumnOnlyAutoresizingStyle;
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     NSArray<NSString *> *titles = @[@"Tab name", @"Working folder", @"Startup command (optional)"];
