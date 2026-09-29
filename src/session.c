@@ -59,6 +59,8 @@ struct MicaSession {
     MicaDirtyRows dirty_rows;
     bool has_dirty_rows;
     uint64_t attention_count;
+double last_attention_at;
+int last_attention_kind;
     uint64_t command_completion_count;
     MicaSessionOutputMetrics output_metrics;
     bool focus_report;
@@ -592,9 +594,21 @@ static int property_callback(VTermProp prop, VTermValue *value, void *user) {
     return 1;
 }
 
+// Output can ring the bell or send notifications in a loop; count at most a couple per second.
+static void note_attention(MicaSession *session, int kind) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    double seconds = (double)now.tv_sec + (double)now.tv_nsec / 1e9;
+    // Repeats of the same kind within half a second are dropped; different kinds still count.
+    if (session->attention_count > 0 && kind == session->last_attention_kind && seconds - session->last_attention_at < 0.5) return;
+    session->last_attention_at = seconds;
+    session->last_attention_kind = kind;
+    session->attention_count++;
+}
+
 static int bell_callback(void *user) {
     MicaSession *session = user;
-    if (session) session->attention_count++;
+    if (session) note_attention(session, 1);
     return 1;
 }
 
@@ -710,7 +724,7 @@ static int notification_osc(int command, VTermStringFragment fragment, void *use
             fragment.str[0] == '4' && fragment.str[1] == ';') notification = false;
         if (command == 777 &&
             (!fragment.str || fragment.len < 7 || memcmp(fragment.str, "notify;", 7) != 0)) notification = false;
-        if (notification) session->attention_count++;
+        if (notification) note_attention(session, command);
     }
     return 1;
 }
