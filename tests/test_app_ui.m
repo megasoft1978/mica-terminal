@@ -1601,6 +1601,29 @@ static int MicaRunUISelfTest(void) {
                 @"the settings window switches the terminal between dark and light themes");
             [preferences close];
 
+            // Git branch detection reads .git/HEAD directly: plain repo, linked worktree, detached HEAD, no repo.
+            NSString *gitRoot = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                [NSString stringWithFormat:@"mica-git-%d", getpid()]];
+            NSFileManager *fileManager = NSFileManager.defaultManager;
+            [fileManager createDirectoryAtPath:[gitRoot stringByAppendingPathComponent:@"repo/.git"] withIntermediateDirectories:YES attributes:nil error:nil];
+            [fileManager createDirectoryAtPath:[gitRoot stringByAppendingPathComponent:@"repo/src/deep"] withIntermediateDirectories:YES attributes:nil error:nil];
+            [@"ref: refs/heads/feature/x\n" writeToFile:[gitRoot stringByAppendingPathComponent:@"repo/.git/HEAD"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            [fileManager createDirectoryAtPath:[gitRoot stringByAppendingPathComponent:@"linked"] withIntermediateDirectories:YES attributes:nil error:nil];
+            [fileManager createDirectoryAtPath:[gitRoot stringByAppendingPathComponent:@"gitdirs/linked"] withIntermediateDirectories:YES attributes:nil error:nil];
+            [[NSString stringWithFormat:@"gitdir: %@\n", [gitRoot stringByAppendingPathComponent:@"gitdirs/linked"]]
+                writeToFile:[gitRoot stringByAppendingPathComponent:@"linked/.git"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            [@"ref: refs/heads/agent-2\n" writeToFile:[gitRoot stringByAppendingPathComponent:@"gitdirs/linked/HEAD"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            [fileManager createDirectoryAtPath:[gitRoot stringByAppendingPathComponent:@"detached/.git"] withIntermediateDirectories:YES attributes:nil error:nil];
+            [@"3f9c1a2b8be07d4e1a4d6e95c20b83aa11223344\n" writeToFile:[gitRoot stringByAppendingPathComponent:@"detached/.git/HEAD"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            BOOL gitBranchesDetected =
+                [MicaGitBranchForDirectory([gitRoot stringByAppendingPathComponent:@"repo/src/deep"]) isEqualToString:@"feature/x"] &&
+                [MicaGitBranchForDirectory([gitRoot stringByAppendingPathComponent:@"linked"]) isEqualToString:@"agent-2"] &&
+                [MicaGitBranchForDirectory([gitRoot stringByAppendingPathComponent:@"detached"]) isEqualToString:@"3f9c1a2"] &&
+                MicaGitBranchForDirectory(@"/") == nil;
+            [fileManager removeItemAtPath:gitRoot error:nil];
+            MicaUITestRecord(report, &allPassed, gitBranchesDetected,
+                @"the git branch is read for a repo, a linked worktree and a detached HEAD, and is absent outside a repo");
+
             [delegate selectTabAtIndex:0];
             [delegate.terminalView setNeedsDisplay:YES];
             [delegate.terminalView displayIfNeeded];

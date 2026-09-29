@@ -198,6 +198,8 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 @property(nonatomic, assign) MicaSession *session;
 @property(nonatomic, assign) uint64_t revision;
 @property(nonatomic, assign) uint64_t attentionCount;
+@property(nonatomic, copy) NSString *gitBranch;
+@property(nonatomic, assign) NSTimeInterval gitBranchCheckedAt;
 @property(nonatomic, assign) NSInteger clipboardDecision;  // 0 ask, 1 always allow, 2 deny
 @property(nonatomic, copy) NSString *pendingClipboardText;
 @property(nonatomic, assign) BOOL syncHeld;
@@ -614,6 +616,31 @@ static NSURL *MicaSafeHyperlinkURL(NSString *rawURL) {
     if ((! [scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) ||
         !parts.host.length || parts.user.length || parts.password.length) return nil;
     return parts.URL;
+}
+
+// The current git branch (or short commit when detached) for a folder, read straight from .git/HEAD:
+// no process is started, and linked worktrees (where .git is a file pointing at the real directory) work too.
+static NSString *MicaGitBranchForDirectory(NSString *directory) {
+    NSFileManager *manager = NSFileManager.defaultManager;
+    NSString *current = directory.stringByStandardizingPath;
+    for (int depth = 0; depth < 40 && current.length > 1; depth++, current = current.stringByDeletingLastPathComponent) {
+        NSString *dotGit = [current stringByAppendingPathComponent:@".git"];
+        BOOL isDirectory = NO;
+        if (![manager fileExistsAtPath:dotGit isDirectory:&isDirectory]) continue;
+        NSString *gitDirectory = dotGit;
+        if (!isDirectory) {
+            NSString *pointer = [NSString stringWithContentsOfFile:dotGit encoding:NSUTF8StringEncoding error:nil];
+            if (![pointer hasPrefix:@"gitdir:"]) return nil;
+            gitDirectory = [[pointer substringFromIndex:7] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            if (!gitDirectory.isAbsolutePath) gitDirectory = [current stringByAppendingPathComponent:gitDirectory];
+        }
+        NSString *head = [[NSString stringWithContentsOfFile:[gitDirectory stringByAppendingPathComponent:@"HEAD"]
+            encoding:NSUTF8StringEncoding error:nil] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if ([head hasPrefix:@"ref: refs/heads/"]) return [head substringFromIndex:16];
+        if ([head hasPrefix:@"ref: "]) return [head.lastPathComponent copy];
+        return head.length >= 7 ? [head substringToIndex:7] : nil;
+    }
+    return nil;
 }
 
 static NSString *MicaStandardizedWorkingDirectory(NSString *requestedPath) {
@@ -1565,11 +1592,20 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     CGFloat hintX = MAX(contextX + 18, hintRight - hintWidth);
     CGFloat availableWidth = MAX(0, hintX - contextX - 18);
     if (!modeName && !tab.currentCommand.length && !tab.completedCommand && viewOffset == 0) {
+        // Branch is re-read at most every two seconds; it is a couple of tiny file reads.
+        NSTimeInterval nowForBranch = NSProcessInfo.processInfo.systemUptime;
+        if (nowForBranch - tab.gitBranchCheckedAt > 2.0) {
+            tab.gitBranchCheckedAt = nowForBranch;
+            tab.gitBranch = tab.cwd.length ? MicaGitBranchForDirectory(tab.cwd) : nil;
+        }
+        NSString *branchSuffix = tab.gitBranch.length ? [NSString stringWithFormat:@"  ·  %@", tab.gitBranch] : @"";
+        CGFloat branchWidth = [branchSuffix sizeWithAttributes:contextAttrs].width;
+        if (branchWidth > availableWidth * 0.5) { branchSuffix = @""; branchWidth = 0; }
         NSString *folderLabel = @"Ready · ";
         CGFloat labelWidth = [folderLabel sizeWithAttributes:contextAttrs].width;
-        CGFloat pathWidth = MAX(0, availableWidth - labelWidth);
-        context = [folderLabel stringByAppendingString:
-            MicaTruncatedPath(folderName, pathWidth, contextAttrs)];
+        CGFloat pathWidth = MAX(0, availableWidth - labelWidth - branchWidth);
+        context = [[folderLabel stringByAppendingString:
+            MicaTruncatedPath(folderName, pathWidth, contextAttrs)] stringByAppendingString:branchSuffix];
     }
     CGFloat contextWidth = availableWidth;
     contextWidth = MIN(contextWidth, [context sizeWithAttributes:contextAttrs].width);
