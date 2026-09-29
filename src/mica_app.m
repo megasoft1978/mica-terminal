@@ -2041,10 +2041,14 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     if (!_selectionPending && !_selecting) return;
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
     if (!_selecting && hypot(point.x - _selectionStart.x, point.y - _selectionStart.y) < 3.0) return;
+    // Repaint only the band of rows the selection can have changed, not the whole terminal.
+    CGFloat oldEndY = _selecting ? _selectionEnd.y : _selectionStart.y;
     _selecting = YES;
     _selectionPending = NO;
     _selectionEnd = point;
-    [self setNeedsDisplay:YES];
+    CGFloat low = MIN(MIN(oldEndY, point.y), _selectionStart.y) - _lineHeight;
+    CGFloat high = MAX(MAX(oldEndY, point.y), _selectionStart.y) + _lineHeight;
+    [self setNeedsDisplayInRect:NSMakeRect(0, low, self.bounds.size.width, high - low)];
 }
 
 - (void)clearSelection {
