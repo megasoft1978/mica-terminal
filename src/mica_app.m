@@ -341,7 +341,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (BOOL)accessibilityPerformPress { return self.pressHandler ? self.pressHandler() : NO; }
 @end
 
-@interface MicaTerminalView : NSView
+@interface MicaTerminalView : NSView <NSTextInputClient>
 @property(nonatomic, weak) MicaAppDelegate *owner;
 @property(nonatomic, strong) NSFont *terminalFont;
 @property(nonatomic, strong) NSTimer *gridResizeTimer;
@@ -598,6 +598,8 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     NSPoint _selectionStart;
     NSPoint _selectionEnd;
     size_t _selectionHistoryLines;
+    MicaTab *_imeTab;
+    NSString *_markedText;
     MicaSession *_selectionSession;
     CGFloat _charWidth;
     CGFloat _lineHeight;
@@ -618,6 +620,46 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     BOOL _leftOptionUsedWithAnotherKey;
     BOOL _leftOptionStartedDictation;
 }
+
+#pragma mark NSTextInputClient
+
+- (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
+    (void)replacementRange;
+    _markedText = nil;
+    NSString *text = [string isKindOfClass:NSAttributedString.class] ? [(NSAttributedString *)string string] : string;
+    MicaTab *tab = _imeTab ?: self.owner.activeTab;
+    if (!tab.session) return;
+    for (NSUInteger i = 0; i < text.length; i++) {
+        unichar first = [text characterAtIndex:i];
+        uint32_t codepoint = first;
+        if (CFStringIsSurrogateHighCharacter(first) && i + 1 < text.length) {
+            unichar second = [text characterAtIndex:i + 1];
+            if (CFStringIsSurrogateLowCharacter(second)) { codepoint = CFStringGetLongCharacterForSurrogatePair(first, second); i++; }
+        }
+        if (codepoint >= 0x20) mica_session_text(tab.session, codepoint, VTERM_MOD_NONE);
+    }
+}
+- (void)doCommandBySelector:(SEL)selector { (void)selector; }
+- (void)setMarkedText:(id)string selectedRange:(NSRange)selectedRange replacementRange:(NSRange)replacementRange {
+    (void)selectedRange; (void)replacementRange;
+    NSString *text = [string isKindOfClass:NSAttributedString.class] ? [(NSAttributedString *)string string] : string;
+    _markedText = text.length ? [text copy] : nil;
+}
+- (void)unmarkText { _markedText = nil; }
+- (NSRange)selectedRange { return NSMakeRange(NSNotFound, 0); }
+- (NSRange)markedRange { return _markedText ? NSMakeRange(0, _markedText.length) : NSMakeRange(NSNotFound, 0); }
+- (BOOL)hasMarkedText { return _markedText != nil; }
+- (NSAttributedString *)attributedSubstringForProposedRange:(NSRange)range actualRange:(NSRangePointer)actualRange {
+    (void)range; (void)actualRange; return nil;
+}
+- (NSArray<NSAttributedStringKey> *)validAttributesForMarkedText { return @[]; }
+- (NSRect)firstRectForCharacterRange:(NSRange)range actualRange:(NSRangePointer)actualRange {
+    (void)range; (void)actualRange;
+    // Place IME candidate windows at the top-left of the terminal grid; cursor tracking is not exposed here.
+    NSRect rect = NSMakeRect(NSMinX(self.bounds), NSMaxY(self.bounds) - kHeaderHeight - _lineHeight, _charWidth, _lineHeight);
+    return [self.window convertRectToScreen:[self convertRect:rect toView:nil]];
+}
+- (NSUInteger)characterIndexForPoint:(NSPoint)point { (void)point; return NSNotFound; }
 
 - (BOOL)isAccessibilityElement { return YES; }
 - (NSAccessibilityRole)accessibilityRole { return NSAccessibilityTextAreaRole; }
@@ -1914,6 +1956,15 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     }
     if (key != VTERM_KEY_NONE) {
         mica_session_key(tab.session, key, modifiers);
+        _selecting = NO;
+        _selectionPending = NO;
+        return;
+    }
+    if (!option && !control) {
+        // Plain typing goes through the text input system so dead keys and IMEs compose.
+        _imeTab = tab;
+        [self interpretKeyEvents:@[event]];
+        _imeTab = nil;
         _selecting = NO;
         _selectionPending = NO;
         return;
