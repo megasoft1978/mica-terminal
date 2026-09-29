@@ -1575,6 +1575,12 @@ static int MicaRunUISelfTest(void) {
             MicaUITestSendKey(delegate, @"-", NSEventModifierFlagCommand, 27);
             MicaUITestRecord(report, &allPassed, fontGrew && delegate.terminalView.terminalFont.pointSize == originalFontSize,
                              @"Command-plus and Command-minus adjust font size");
+            MicaUITestSendKey(delegate, @"+", NSEventModifierFlagCommand, 24);
+            MicaUITestSendKey(delegate, @"+", NSEventModifierFlagCommand, 24);
+            BOOL grewTwice = delegate.terminalView.terminalFont.pointSize == originalFontSize + 2;
+            MicaUITestSendKey(delegate, @"0", NSEventModifierFlagCommand, 29);
+            MicaUITestRecord(report, &allPassed, grewTwice && delegate.terminalView.terminalFont.pointSize == 16.0,
+                             @"Command-zero resets the font size to the default");
 
             [delegate selectTabAtIndex:0];
             [delegate.terminalView setNeedsDisplay:YES];
