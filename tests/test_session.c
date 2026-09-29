@@ -643,6 +643,16 @@ color_checked:
     mica_session_destroy(resize_history_session);
     printf("scrollback allocation stays within %u bytes per session\n", MICA_HISTORY_LIMIT_BYTES);
 
+    // A missing start folder falls back to the nearest existing parent, decided before fork.
+    MicaSession *missing_folder_session = mica_session_create("/tmp/mica-no-such-folder-xyz/sub", "pwd; sleep 1", 6, 100);
+    assert(missing_folder_session != NULL);
+    for (int i = 0; i < 300 && !screen_contains(missing_folder_session, "using /tmp"); i++)
+        mica_session_poll(missing_folder_session, 10);
+    assert(screen_contains(missing_folder_session, "cannot enter /tmp/mica-no-such-folder-xyz/sub"));
+    assert(screen_contains(missing_folder_session, "using /tmp"));
+    mica_session_destroy(missing_folder_session);
+    printf("a missing start folder falls back to the nearest parent\n");
+
     // Synchronized output (mode 2026) is tracked so the app can hold redraws mid-frame.
     MicaSession *sync_session = mica_session_create("/tmp",
         "printf '\\033[?2026hFRAME-PART'; sleep 2", 6, 80);

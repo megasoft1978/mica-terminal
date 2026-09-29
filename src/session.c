@@ -1060,49 +1060,53 @@ static const VTermScreenCallbacks screen_callbacks = {
     .sb_clear = history_clear,
 };
 
-static bool change_to_requested_directory(const char *requested) {
-    if (!requested || !requested[0] || chdir(requested) == 0) return true;
-    int original_error = errno;
-    char *candidate = strdup(requested);
-    if (!candidate) {
-        dprintf(STDERR_FILENO, "mica: could not resolve the requested folder; using the home folder\r\n");
-        candidate = strdup("");
-    }
+static bool directory_is_enterable(const char *path, int *error) {
+    struct stat info;
+    if (stat(path, &info) != 0) { *error = errno; return false; }
+    if (!S_ISDIR(info.st_mode)) { *error = ENOTDIR; return false; }
+    if (access(path, X_OK) != 0) { *error = errno; return false; }
+    return true;
+}
 
-    while (candidate && candidate[0]) {
-        size_t length;
-        length = strlen(candidate);
+// Decides in the parent which folder the shell starts in, so the forked child only needs
+// chdir() and write(). `message` explains a fallback and is empty when the folder was fine.
+static bool plan_working_directory(const char *requested, char *directory, size_t directory_size,
+                                   char *message, size_t message_size) {
+    message[0] = '\0';
+    if (!requested || !requested[0]) { directory[0] = '\0'; return true; }
+    int original_error = 0;
+    if (directory_is_enterable(requested, &original_error)) {
+        snprintf(directory, directory_size, "%s", requested);
+        return true;
+    }
+    char candidate[PATH_MAX];
+    snprintf(candidate, sizeof(candidate), "%s", requested);
+    while (candidate[0]) {
+        size_t length = strlen(candidate);
         while (length > 1 && candidate[length - 1] == '/') candidate[--length] = '\0';
         char *separator = strrchr(candidate, '/');
-        if (!separator) {
-            candidate[0] = '.';
-            candidate[1] = '\0';
-        } else if (separator == candidate) {
-            candidate[1] = '\0';
-        } else {
-            *separator = '\0';
-        }
-
-        if (chdir(candidate) == 0) {
-            char resolved[PATH_MAX];
-            const char *fallback = getcwd(resolved, sizeof(resolved)) ? resolved : candidate;
-            dprintf(STDERR_FILENO, "mica: cannot enter %s: %s; using %s\r\n",
-                    requested, strerror(original_error), fallback);
-            free(candidate);
+        if (!separator) { candidate[0] = '.'; candidate[1] = '\0'; }
+        else if (separator == candidate) candidate[1] = '\0';
+        else *separator = '\0';
+        int ignored = 0;
+        if (directory_is_enterable(candidate, &ignored)) {
+            snprintf(directory, directory_size, "%s", candidate);
+            snprintf(message, message_size, "mica: cannot enter %s: %s; using %s\r\n",
+                     requested, strerror(original_error), candidate);
             return true;
         }
         if (strcmp(candidate, ".") == 0 || strcmp(candidate, "/") == 0) break;
     }
-    free(candidate);
-
     const char *home = getenv("HOME");
-    if (home && home[0] && chdir(home) == 0) {
-        dprintf(STDERR_FILENO, "mica: cannot enter %s: %s; using %s\r\n",
-                requested, strerror(original_error), home);
+    int ignored = 0;
+    if (home && home[0] && directory_is_enterable(home, &ignored)) {
+        snprintf(directory, directory_size, "%s", home);
+        snprintf(message, message_size, "mica: cannot enter %s: %s; using %s\r\n",
+                 requested, strerror(original_error), home);
         return true;
     }
-    dprintf(STDERR_FILENO, "mica: cannot enter %s or a parent folder: %s\r\n",
-            requested, strerror(original_error));
+    snprintf(message, message_size, "mica: cannot enter %s or a parent folder: %s\r\n",
+             requested, strerror(original_error));
     return false;
 }
 
@@ -1289,6 +1293,9 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
     bool test_zle_probe = skip_user_startup && getenv("MICA_TEST_ZLE_DIR") != NULL;
     bool prefilled_shell = use_wrapper && prefilled && command;
 
+    char start_directory[PATH_MAX], start_message[PATH_MAX * 2 + 128];
+    bool start_directory_ok = plan_working_directory(cwd, start_directory, sizeof(start_directory),
+                                                     start_message, sizeof(start_message));
     struct winsize window_size = { .ws_row = (unsigned short)rows, .ws_col = (unsigned short)cols };
     int master = -1;
     pid_t pid = forkpty(&master, NULL, NULL, &window_size);
@@ -1306,7 +1313,8 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
         sigset_t no_signals;
         sigemptyset(&no_signals);
         sigprocmask(SIG_SETMASK, &no_signals, NULL);
-        if (!change_to_requested_directory(cwd)) _exit(126);
+        if (start_message[0]) { ssize_t written = write(STDERR_FILENO, start_message, strlen(start_message)); (void)written; }
+        if (!start_directory_ok || (start_directory[0] && chdir(start_directory) != 0)) _exit(126);
         environ = child_environment;
         if (prefilled_shell) {
             execl("/bin/zsh", "zsh", "-l", "-i", (char *)NULL);
@@ -1690,6 +1698,8 @@ bool mica_session_find(MicaSession *session, const char *query, bool backward, l
         lowered[query_length] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
     }
     lowered[query_length] = '\0';
+    // View offsets count display rows, which exclude folded ranges; reveal folds so the match maps exactly.
+    clear_folds(session);
     long total = (long)session->history_count + session->rows;
     long start = *cursor;
     if (start < 0 || start >= total) start = backward ? total : -1;
