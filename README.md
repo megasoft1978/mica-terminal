@@ -32,6 +32,12 @@
 
 <p align="center"><sub>The real Mica view, rendered from a sample project.</sub></p>
 
+<p align="center">
+  <img src="docs/assets/mica-demo.gif" alt="A real recording of Mica: typed commands, passing tests and an agent session, with the timer and live memory readout in the status bar" width="900">
+</p>
+
+<p align="center"><sub>A real recording (<a href="docs/assets/mica-demo.mp4">MP4</a>) in a sample project.</sub></p>
+
 ## Why it is light
 
 Most people run a terminal, a voice-typing app and a timer as separate programs, and the voice app alone is often a web browser in disguise. Mica builds them into one native process with no web view.

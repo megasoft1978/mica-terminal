@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#f3f5f8" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0b0f14" media="(prefers-color-scheme: dark)">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; font-src 'self'; style-src 'sha256-SMonXmaNnUDdIzTtVBGIIdjbzpERf2sKUNGw6vtZq8Q='; script-src 'sha256-obQLhE2id96/7pWU+OVxA2Il4k1t4IAuXtnh2TzQdyE='; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; media-src 'self'; font-src 'self'; style-src 'sha256-izIsvC5nYJfDnF4oZNWVO/xz7pGBu4f/WL0qRPkN2iA='; script-src 'sha256-obQLhE2id96/7pWU+OVxA2Il4k1t4IAuXtnh2TzQdyE='; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
   <title>Mica — terminal, voice typing and focus timer in one light Mac app</title>
   <meta name="description" content="Mica puts a terminal, on-device voice typing and a focus timer in one native Mac app that idles around 55–60 MB, where a terminal plus a dictation app takes about 770 MB.">
@@ -151,6 +151,7 @@
     .faq summary { cursor: pointer; font-weight: 600; }
     .faq summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
     .faq details p { color: var(--muted); margin: 10px 0 0; max-width: 62ch; }
+.shot video { display: block; width: 100%; height: auto; }
   </style>
 </head>
 <body>
@@ -190,6 +191,11 @@
         <button type="button" id="theme-light" aria-pressed="false">Light</button>
       </div>
       <p class="caption">This is the real Mica view, rendered from a sample project. Switch themes any time with <kbd>⌥⌘L</kbd>.</p>
+    </div>
+
+    <div class="wrap" id="demo">
+      <div class="shot"><video controls muted loop playsinline preload="none" poster="assets/mica-demo-poster.png" width="1280" height="814" aria-describedby="demo-caption"><source src="assets/mica-demo.mp4" type="video/mp4">Your browser cannot play this video. It shows a git log, passing tests and an agent working in Mica.</video></div>
+      <p class="caption" id="demo-caption">A real recording of Mica in a sample project: typed commands, test output and an agent session, with the timer and live memory readout in the status bar.</p>
     </div>
 
     <div class="wrap" id="memory">
