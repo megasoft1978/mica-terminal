@@ -1006,7 +1006,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         [_leftOptionTimer invalidate];
         _leftOptionTimer = nil;
         if (!_leftOptionUsedWithAnotherKey) {
-            _leftOptionTimer = [NSTimer scheduledTimerWithTimeInterval:0.18
+            _leftOptionTimer = [NSTimer scheduledTimerWithTimeInterval:0.28
                 target:self selector:@selector(leftOptionPressedAlone:) userInfo:nil repeats:NO];
         }
     } else {
@@ -2261,6 +2261,13 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         _leftOptionUsedWithAnotherKey = YES;
         [_leftOptionTimer invalidate];
         _leftOptionTimer = nil;
+    } else if (event.keyCode != 58 && _leftOptionIsDown && _leftOptionStartedDictation &&
+               option && !command && event.characters.length > 0) {
+        // Option is also how Italian, German and Spanish layouts type @ # [ ] { }. If the hold turned into
+        // dictation just before the character key arrived, drop the dictation and type the character.
+        _leftOptionStartedDictation = NO;
+        _leftOptionUsedWithAnotherKey = YES;
+        [self.owner cancelDictation];
     }
     MicaVoiceControllerState voiceState = self.owner.voiceController.state;
     BOOL voiceBusy = voiceState == MicaVoiceControllerStatePreparing ||

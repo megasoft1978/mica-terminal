@@ -608,6 +608,25 @@ static int MicaRunUISelfTest(void) {
             [NSString stringWithFormat:@"@ and # can be typed with Shift and with left Option composing (screen=%@)",
                 MicaUITestScreenTail(voiceTargetTab.session)]);
 
+        // Holding left Option long enough to start dictation, then pressing a character key (Option+ò on
+        // the Italian layout), types the character instead of dictating.
+        [voiceDelegate.terminalView cancelLeftOptionTracking];
+        NSUInteger startsBefore = pushToTalkProbe.pushToTalkStarts;
+        MicaUITestSendFlags(voiceDelegate, NSEventModifierFlagOption, 58);
+        for (int attempt = 0; pushToTalkProbe.pushToTalkStarts <= startsBefore && attempt < 300; attempt++)
+            MicaUITestRunLoopFor(0.01);
+        MicaUITestSendComposedKey(voiceDelegate, @"@", @"\u00f2", NSEventModifierFlagOption, 41);
+        MicaUITestSendFlags(voiceDelegate, 0, 58);
+        BOOL lateAtTyped = NO;
+        for (int attempt = 0; attempt < 200 && !lateAtTyped; attempt++) {
+            mica_session_poll(voiceTargetTab.session, 0);
+            lateAtTyped = MicaUITestFindText(voiceTargetTab.session, @"@#@@@", NULL, NULL);
+            if (!lateAtTyped) usleep(10000);
+        }
+        MicaUITestRecord(report, &allPassed, lateAtTyped && pushToTalkProbe.pushToTalkStarts == startsBefore + 1,
+            [NSString stringWithFormat:@"a character key after a long left Option hold types instead of dictating (typed=%d starts=%lu)",
+                lateAtTyped, (unsigned long)(pushToTalkProbe.pushToTalkStarts - startsBefore)]);
+
         char rawHelperTemplate[] = "/tmp/mica-voice-raw-XXXXXX";
         char rawCallsTemplate[] = "/tmp/mica-voice-raw-calls-XXXXXX";
         int rawHelperFD = mkstemp(rawHelperTemplate);
