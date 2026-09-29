@@ -3184,6 +3184,18 @@ static NSDictionary *MicaScalarDictionary(id object) {
     [alert beginSheetModalForWindow:self.window completionHandler:nil];
 }
 
+- (void)setUiMode:(MicaUIMode)mode {
+    if (_uiMode == mode) return;
+    _uiMode = mode;
+    // Modes are drawn in the status strip only; announce them so VoiceOver users know where they are.
+    NSString *announcement = mode == MicaUIModeTab ? @"Tab picker. Use arrow keys to switch tabs, Escape to leave."
+        : mode == MicaUIModeScroll ? @"Scrollback. Use arrow keys or Page Up and Down, Escape to return to the live terminal."
+        : @"Live terminal";
+    if (self.terminalView)
+        NSAccessibilityPostNotificationWithUserInfo(self.terminalView, NSAccessibilityAnnouncementRequestedNotification,
+            @{ NSAccessibilityAnnouncementKey: announcement });
+}
+
 - (void)openSettings:(id)sender {
     if (self.projectLayoutPath.length) [self openProjectSettings:sender];
     else [self openPomodoroSettings:sender];
