@@ -633,6 +633,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 - (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
     (void)replacementRange;
     _markedText = nil;
+    [self setNeedsDisplay:YES];
     NSString *text = [string isKindOfClass:NSAttributedString.class] ? [(NSAttributedString *)string string] : string;
     MicaTab *tab = _imeTab ?: self.owner.activeTab;
     if (!tab.session) return;
@@ -651,8 +652,9 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     (void)selectedRange; (void)replacementRange;
     NSString *text = [string isKindOfClass:NSAttributedString.class] ? [(NSAttributedString *)string string] : string;
     _markedText = text.length ? [text copy] : nil;
+    [self setNeedsDisplay:YES];
 }
-- (void)unmarkText { _markedText = nil; }
+- (void)unmarkText { _markedText = nil; [self setNeedsDisplay:YES]; }
 - (NSRange)selectedRange { return NSMakeRange(NSNotFound, 0); }
 - (NSRange)markedRange { return _markedText ? NSMakeRange(0, _markedText.length) : NSMakeRange(NSNotFound, 0); }
 - (BOOL)hasMarkedText { return _markedText != nil; }
@@ -662,8 +664,11 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 - (NSArray<NSAttributedStringKey> *)validAttributesForMarkedText { return @[]; }
 - (NSRect)firstRectForCharacterRange:(NSRange)range actualRange:(NSRangePointer)actualRange {
     (void)range; (void)actualRange;
-    // Place IME candidate windows at the top-left of the terminal grid; cursor tracking is not exposed here.
-    NSRect rect = NSMakeRect(NSMinX(self.bounds), NSMaxY(self.bounds) - kHeaderHeight - _lineHeight, _charWidth, _lineHeight);
+    // Anchor candidate windows to the terminal cursor.
+    int row = 0, col = 0;
+    MicaSession *session = self.owner.activeTab.session;
+    if (session) mica_session_cursor(session, &row, &col);
+    NSRect rect = [self cellRectAtRow:row col:col];
     return [self.window convertRectToScreen:[self convertRect:rect toView:nil]];
 }
 - (NSUInteger)characterIndexForPoint:(NSPoint)point { (void)point; return NSNotFound; }
@@ -1873,6 +1878,19 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
                 }
             }
         }
+    }
+    if (_markedText.length && mica_session_view_offset(tab.session) == 0) {
+        // Show an input method's uncommitted text at the cursor, underlined, until it is committed.
+        int markedRow = 0, markedCol = 0;
+        mica_session_cursor(tab.session, &markedRow, &markedCol);
+        NSRect origin = [self cellRectAtRow:markedRow col:markedCol];
+        NSDictionary *markedAttributes = @{
+            NSFontAttributeName: self.terminalFont,
+            NSForegroundColorAttributeName: MicaForegroundColor(),
+            NSBackgroundColorAttributeName: [MicaForegroundColor() colorWithAlphaComponent:0.18],
+            NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle),
+        };
+        [_markedText drawAtPoint:NSMakePoint(NSMinX(origin), NSMinY(origin) + 1) withAttributes:markedAttributes];
     }
     if (!mica_session_is_running(tab.session)) {
         int exitStatus = mica_session_exit_status(tab.session);
