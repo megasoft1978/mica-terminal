@@ -651,6 +651,14 @@ color_checked:
         mica_session_poll(sync_session, 10);
     assert(mica_session_sync_output_active(sync_session));
     mica_session_destroy(sync_session);
+    // A begin marker split across two reads is still recognized.
+    MicaSession *split_session = mica_session_create("/tmp",
+        "printf '\\033[?20'; sleep 0.4; printf '26hSPLIT-FRAME'; sleep 2", 6, 80);
+    assert(split_session != NULL);
+    for (int i = 0; i < 300 && !screen_contains(split_session, "SPLIT-FRAME"); i++)
+        mica_session_poll(split_session, 10);
+    assert(mica_session_sync_output_active(split_session));
+    mica_session_destroy(split_session);
     printf("synchronized output frames are tracked\n");
 
     // OSC 52 writes surface as clipboard text; queries never answer.

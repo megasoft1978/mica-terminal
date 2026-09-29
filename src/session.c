@@ -87,6 +87,8 @@ size_t clipboard_capacity;
 bool clipboard_overflow;
 bool clipboard_ready;
 bool sync_output;
+char sync_tail[8];
+size_t sync_tail_length;
 double sync_output_started;
 char selection_buffer[4096];
     char *title;
@@ -1142,14 +1144,39 @@ static double monotonic_seconds(void) {
     return (double)now.tv_sec + (double)now.tv_nsec / 1e9;
 }
 // libvterm consumes unknown DEC modes silently, so watch the raw byte stream for the toggles.
-static void scan_synchronized_output(MicaSession *session, const char *bytes, size_t length) {
+static void scan_synchronized_output_chunk(MicaSession *session, const char *bytes, size_t length, size_t first_start_limit) {
     static const char begin[] = "\x1b[?2026h", end[] = "\x1b[?2026l";
     const size_t sequence_length = sizeof(begin) - 1;
-    for (size_t i = 0; i + sequence_length <= length; i++) {
+    for (size_t i = 0; i < first_start_limit && i + sequence_length <= length; i++) {
         if (bytes[i] != '\x1b') continue;
         if (memcmp(bytes + i, begin, sequence_length) == 0) { session->sync_output = true; session->sync_output_started = monotonic_seconds(); }
         else if (memcmp(bytes + i, end, sequence_length) == 0) { session->sync_output = false; session->revision++; }
     }
+}
+
+// Sequences can straddle two reads, so keep the last few bytes and rescan across the seam.
+static void scan_synchronized_output(MicaSession *session, const char *bytes, size_t length) {
+    const size_t sequence_length = 8;
+    if (session->sync_tail_length) {
+        char seam[16];
+        size_t head = length < sequence_length - 1 ? length : sequence_length - 1;
+        memcpy(seam, session->sync_tail, session->sync_tail_length);
+        memcpy(seam + session->sync_tail_length, bytes, head);
+        // Only sequences starting in the saved tail are new; the rest is covered by the main scan.
+        scan_synchronized_output_chunk(session, seam, session->sync_tail_length + head, session->sync_tail_length);
+    }
+    scan_synchronized_output_chunk(session, bytes, length, length);
+    size_t keep = length < sequence_length - 1 ? length : sequence_length - 1;
+    if (length < sequence_length - 1 && session->sync_tail_length) {
+        size_t combined = session->sync_tail_length + length;
+        size_t retained = combined < sequence_length - 1 ? combined : sequence_length - 1;
+        memmove(session->sync_tail, session->sync_tail + session->sync_tail_length - (retained - length), retained - length);
+        memcpy(session->sync_tail + (retained - length), bytes, length);
+        session->sync_tail_length = retained;
+        return;
+    }
+    memcpy(session->sync_tail, bytes + length - keep, keep);
+    session->sync_tail_length = keep;
 }
 
 static const VTermStateFallbacks screen_fallbacks = { .osc = notification_osc };

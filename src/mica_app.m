@@ -200,6 +200,7 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 @property(nonatomic, assign) uint64_t attentionCount;
 @property(nonatomic, assign) NSInteger clipboardDecision;  // 0 ask, 1 always allow, 2 deny
 @property(nonatomic, copy) NSString *pendingClipboardText;
+@property(nonatomic, assign) BOOL syncHeld;
 @property(nonatomic, assign) BOOL needsAttention;
 @property(nonatomic, assign) uint64_t commandCompletionCount;
 @property(nonatomic, assign) BOOL tracksCompletion;
@@ -611,6 +612,9 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     MicaTab *_draggingTab;
     NSString *_findQuery;
     long _findRow;
+    MicaSession *_findSession;
+    uint64_t _findScrolled;
+    long _findHistory;
     NSFont *_styledFontBase;
     NSFont *__strong _styledFonts[4];
     NSString *_markedText;
@@ -2083,6 +2087,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 }
 
 - (void)mouseDown:(NSEvent *)event {
+    _draggingTab = nil;
     [self.owner wakePollTimer];
     if (_selecting) {
         [self clearSelection];
@@ -2183,7 +2188,9 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 - (void)mouseDragged:(NSEvent *)event {
     if (_draggingTab) {
         // Drag a tab sideways to reorder it; the active tab stays active.
-        NSInteger target = [self tabIndexAtPoint:[self convertPoint:event.locationInWindow fromView:nil]];
+        NSPoint dragPoint = [self convertPoint:event.locationInWindow fromView:nil];
+        if (dragPoint.y < NSMaxY(self.bounds) - kHeaderHeight - 24) { _draggingTab = nil; return; }
+        NSInteger target = [self tabIndexAtPoint:dragPoint];
         NSMutableArray<MicaTab *> *tabs = self.owner.tabs;
         NSUInteger current = [tabs indexOfObjectIdenticalTo:_draggingTab];
         if (target != NSNotFound && current != NSNotFound && (NSUInteger)target != current) {
@@ -2238,6 +2245,16 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 - (void)findNext:(BOOL)backward {
     MicaSession *session = self.owner.activeTab.session;
     if (!session || !_findQuery.length) { NSBeep(); return; }
+    // Keep the remembered match valid: reset per session, and rebase when full scrollback drops old lines.
+    uint64_t scrolledNow = mica_session_scrolled_lines(session);
+    long historyNow = (long)mica_session_history_lines(session);
+    if (session != _findSession) { _findSession = session; _findRow = -1; }
+    else if (_findRow >= 0) {
+        long dropped = (long)(scrolledNow - _findScrolled) - (historyNow - _findHistory);
+        if (dropped > 0) _findRow = MAX(-1, _findRow - dropped);
+    }
+    _findScrolled = scrolledNow;
+    _findHistory = historyNow;
     [self clearSelection];
     if (!mica_session_find(session, _findQuery.UTF8String, backward, &_findRow)) NSBeep();
     else {
@@ -3340,6 +3357,8 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
 
 - (void)selectTabAtIndex:(NSInteger)index {
     if (index < 0 || index >= (NSInteger)self.tabs.count || index == self.activeIndex) return;
+    [self.terminalView.inputContext discardMarkedText];
+    [self.terminalView unmarkText];
     MicaTab *previous = self.activeTab;
     if (previous.session && NSApp.isActive) mica_session_focus(previous.session, false);
     if (self.uiMode != MicaUIModeTab) self.uiMode = MicaUIModeNormal;
@@ -3485,8 +3504,16 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
         }
         MicaDirtyRows dirtyRows = {0};
         // Hold repaints while a program is mid-frame (mode 2026); the rows stay queued until it finishes.
-        BOOL hasDirtyRows = mica_session_sync_output_active(tab.session)
-            ? NO : mica_session_take_dirty_rows(tab.session, &dirtyRows);
+        BOOL syncHeld = mica_session_sync_output_active(tab.session);
+        BOOL hasDirtyRows = syncHeld ? NO : mica_session_take_dirty_rows(tab.session, &dirtyRows);
+        if (syncHeld) tab.syncHeld = YES;
+        else if (tab.syncHeld) {
+            // The frame ended (or timed out) without a revision change; repaint whatever was held back.
+            tab.syncHeld = NO;
+            if (tab == self.activeTab) [self.terminalView setNeedsDisplay:YES];
+        }
+        if (tab == self.activeTab && tab.pendingClipboardText.length && tab.clipboardDecision == 0 && !self.clipboardPromptShowing)
+            [self handleClipboardWrite:tab.pendingClipboardText fromTab:tab];
         const char *rawTitle = mica_session_title(tab.session);
         NSString *terminalTitle = rawTitle[0]
             ? [[NSString alloc] initWithBytes:rawTitle length:strlen(rawTitle) encoding:NSUTF8StringEncoding]
