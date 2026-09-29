@@ -61,6 +61,7 @@ Mica’s terminal session core is C, its macOS interface uses AppKit, and termin
 make app       # build Mica.app and its local speech helper
 make test      # run the PTY, UI, launcher, and fixture checks
 make validate  # run tests, build, and check the app bundle
+make dist      # ad-hoc sign (SIGN_ID="Developer ID Application: …" to override) and zip build/Mica.zip
 ```
 
 Tests use local fixtures and never send prompts to agent CLIs. See [memory notes and a Zellij comparison](docs/MEMORY-BASELINE.md), [agent notifications](docs/AGENT-NOTIFICATIONS.md), and [all workflows](https://github.com/megasoft1978/mica-terminal/actions).

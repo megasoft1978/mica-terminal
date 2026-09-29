@@ -57,6 +57,16 @@ void MicaDiagnosticsInitialize(void) {
         return;
     }
 
+    // Each launch writes its own log; drop ones older than a week so the folder stays small.
+    NSDate *cutoff = [NSDate dateWithTimeIntervalSinceNow:-7 * 24 * 3600];
+    for (NSURL *old in [NSFileManager.defaultManager contentsOfDirectoryAtURL:directory
+            includingPropertiesForKeys:@[NSURLContentModificationDateKey] options:0 error:nil]) {
+        NSDate *modified = nil;
+        [old getResourceValue:&modified forKey:NSURLContentModificationDateKey error:nil];
+        if ([old.pathExtension isEqualToString:@"log"] && modified && [modified compare:cutoff] == NSOrderedAscending)
+            [NSFileManager.defaultManager removeItemAtURL:old error:nil];
+    }
+
     NSString *identifier = NSBundle.mainBundle.bundleIdentifier ?: @"com.megasoft78.mica";
     NSMutableCharacterSet *allowed = [NSMutableCharacterSet alphanumericCharacterSet];
     [allowed addCharactersInString:@".-_"];

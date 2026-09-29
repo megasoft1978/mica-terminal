@@ -334,6 +334,13 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 }
 
 @class MicaAppDelegate;
+@interface MicaTabAccessibilityElement : NSAccessibilityElement
+@property(nonatomic, copy) BOOL (^pressHandler)(void);
+@end
+@implementation MicaTabAccessibilityElement
+- (BOOL)accessibilityPerformPress { return self.pressHandler ? self.pressHandler() : NO; }
+@end
+
 @interface MicaTerminalView : NSView
 @property(nonatomic, weak) MicaAppDelegate *owner;
 @property(nonatomic, strong) NSFont *terminalFont;
@@ -615,6 +622,21 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 - (NSString *)accessibilityLabel {
     NSString *project = self.owner.projectName;
     return project.length ? [NSString stringWithFormat:@"Terminal, %@", project] : @"Terminal";
+}
+- (NSArray *)accessibilityChildren {
+    // Expose each visible tab as a selectable button so VoiceOver can switch tabs.
+    NSMutableArray *children = [NSMutableArray array];
+    NSRange visible = [self visibleTabRange];
+    for (NSUInteger index = visible.location; index < NSMaxRange(visible); index++) {
+        MicaTab *tab = self.owner.tabs[index];
+        __weak typeof(self) weakSelf = self;
+        MicaTabAccessibilityElement *element = [MicaTabAccessibilityElement accessibilityElementWithRole:NSAccessibilityButtonRole
+            frame:[self.window convertRectToScreen:[self convertRect:[self tabRectAtIndex:index] toView:nil]]
+            label:[self labelForTab:tab active:(NSInteger)index == self.owner.activeIndex] parent:self];
+        element.pressHandler = ^BOOL{ [weakSelf.owner selectTabAtIndex:(NSInteger)index]; return YES; };
+        [children addObject:element];
+    }
+    return children;
 }
 - (id)accessibilityValue {
     // Expose the visible screen text so VoiceOver can read terminal output.
