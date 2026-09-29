@@ -94,11 +94,15 @@ int main(int argc, const char *argv[]) {
         [voice setValue:@"Microphone access is off. Enable Mica in System Settings → Privacy & Security → Microphone." forKey:@"statusText"];
         SaveViewImage(main.terminalView, out, @"06-dictation-failed");
         NSArray<NSNumber *> *dictationWidths = @[@480, @600, @800, @1600];
+        NSMutableArray<NSString *> *fortyWords = [NSMutableArray array];
+        for (NSUInteger wordIndex = 0; wordIndex < 40; wordIndex++)
+            [fortyWords addObject:@[@"recent", @"words", @"current", @"phrase"][wordIndex % 4]];
+        NSString *fortyWordTranscript = [fortyWords componentsJoinedByString:@" "];
         NSArray<NSDictionary *> *dictationStates = @[
             @{@"name":@"preparing", @"state":@(MicaVoiceControllerStatePreparing), @"words":@""},
             @{@"name":@"listening-0", @"state":@(MicaVoiceControllerStateListening), @"words":@""},
             @{@"name":@"listening-3", @"state":@(MicaVoiceControllerStateListening), @"words":@"change the tab widths"},
-            @{@"name":@"listening-40", @"state":@(MicaVoiceControllerStateListening), @"words":[@"recent words " stringByPaddingToLength:320 withString:@" current phrase" startingAtIndex:0]},
+            @{@"name":@"listening-40", @"state":@(MicaVoiceControllerStateListening), @"words":fortyWordTranscript},
             @{@"name":@"failed", @"state":@(MicaVoiceControllerStateFailed), @"words":@""},
             @{@"name":@"denied", @"state":@(MicaVoiceControllerStateFailed), @"words":@""}
         ];

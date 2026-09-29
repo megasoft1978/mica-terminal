@@ -13,6 +13,9 @@
 #import <sys/file.h>
 #import <sys/sysctl.h>
 #import <sys/time.h>
+#import <sys/stat.h>
+#import <limits.h>
+#include <errno.h>
 #include <unistd.h>
 
 static const CGFloat kHeaderHeight = 28.0;
@@ -3952,11 +3955,20 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     if (windows.count > 32) return @[];
     for (id window in windows) {
         if (![window isKindOfClass:NSDictionary.class] || ![window[@"tabs"] isKindOfClass:NSArray.class] ||
-            [window[@"tabs"] count] > 32) return @[];
+            [window[@"tabs"] count] == 0 || [window[@"tabs"] count] > 9) return @[];
         for (id tab in window[@"tabs"]) {
             if (![tab isKindOfClass:NSDictionary.class] || ![tab[@"name"] isKindOfClass:NSString.class] ||
                 ![tab[@"cwd"] isKindOfClass:NSString.class] ||
-                (tab[@"command"] && ![tab[@"command"] isKindOfClass:NSString.class])) return @[];
+                (tab[@"command"] && (![tab[@"command"] isKindOfClass:NSString.class] ||
+                    [tab[@"command"] length] > 4096))) return @[];
+            NSString *name = tab[@"name"], *cwd = tab[@"cwd"];
+            struct stat cwdInfo;
+            int cwdStatus = lstat(cwd.fileSystemRepresentation, &cwdInfo);
+            if ((cwdStatus == 0 && (S_ISLNK(cwdInfo.st_mode) || !S_ISDIR(cwdInfo.st_mode))) ||
+                (cwdStatus != 0 && errno != ENOENT)) return @[];
+            if (name.length == 0 || name.length > 64 || [name rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound ||
+                cwd.length == 0 || cwd.length > PATH_MAX || !cwd.isAbsolutePath ||
+                [[cwd pathComponents] containsObject:@".."]) return @[];
         }
     }
     return windows;
@@ -3969,19 +3981,34 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         if (controller.explicitLayoutLaunch) continue;
         NSMutableArray *tabs = [NSMutableArray array];
         for (MicaTab *tab in controller.tabs) {
-            NSMutableDictionary *record = [@{@"name":tab.name ?: @"Terminal",
-                @"cwd":tab.cwd ?: NSHomeDirectory()} mutableCopy];
-            if (tab.command.length) record[@"command"] = tab.command;
-            [tabs addObject:record];
+            if (tabs.count >= 9) break;
+            NSString *name = tab.name.length && tab.name.length <= 64 &&
+                [tab.name rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location == NSNotFound
+                ? tab.name : @"Terminal";
+            NSString *cwd = tab.cwd ?: NSHomeDirectory();
+            BOOL isDirectory = NO;
+            if (!cwd.isAbsolutePath || cwd.length > PATH_MAX ||
+                [[cwd pathComponents] containsObject:@".."] ||
+                ![NSFileManager.defaultManager fileExistsAtPath:cwd isDirectory:&isDirectory] || !isDirectory)
+                cwd = NSHomeDirectory();
+            else {
+                char resolvedPath[PATH_MAX];
+                if (realpath(cwd.fileSystemRepresentation, resolvedPath)) cwd = @(resolvedPath);
+            }
+            NSMutableDictionary *savedTab = [@{@"name":name, @"cwd":cwd} mutableCopy];
+            if (tab.command.length && tab.command.length <= 4096) savedTab[@"command"] = tab.command;
+            [tabs addObject:savedTab];
         }
         if (tabs.count) [windows addObject:@{@"tabs":tabs}];
     }
     NSURL *url = [self sessionStateURL];
     [NSFileManager.defaultManager createDirectoryAtURL:url.URLByDeletingLastPathComponent
-        withIntermediateDirectories:YES attributes:nil error:nil];
+        withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil];
+    chmod(url.URLByDeletingLastPathComponent.fileSystemRepresentation, 0700);
     NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"version":@1,@"windows":windows}
         options:NSJSONWritingSortedKeys error:nil];
-    if (data.length && data.length <= 256 * 1024) [data writeToURL:url options:NSDataWritingAtomic error:nil];
+    if (data.length && data.length <= 256 * 1024 && [data writeToURL:url options:NSDataWritingAtomic error:nil])
+        chmod(url.fileSystemRepresentation, 0600);
 }
 
 - (void)addTabWithName:(NSString *)name cwd:(NSString *)cwd command:(NSString *)command prefilled:(BOOL)prefilled {

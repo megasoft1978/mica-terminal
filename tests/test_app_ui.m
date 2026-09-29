@@ -1783,34 +1783,82 @@ static int MicaRunUISelfTest(void) {
             [MicaControllers() removeAllObjects];
             MicaAppDelegate *stateOwner = [MicaAppDelegate new];
             stateOwner.tabs = [NSMutableArray array];
-            MicaTab *savedTab = [MicaTab new]; savedTab.name = @"Remembered"; savedTab.cwd = @"/tmp"; savedTab.command = @"printf MICA_RESTORED";
+            NSString *safeTempFolder = @"/private/tmp";
+            MicaTab *savedTab = [MicaTab new]; savedTab.name = @"Remembered"; savedTab.cwd = safeTempFolder; savedTab.command = @"printf MICA_RESTORED";
             [stateOwner.tabs addObject:savedTab]; [MicaControllers() addObject:stateOwner];
-            NSString *statePath = [NSTemporaryDirectory() stringByAppendingPathComponent:
-                [NSString stringWithFormat:@"mica-state-%d.json", getpid()]];
+            NSString *stateDirectory = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                [NSString stringWithFormat:@"mica-state-%d", getpid()]];
+            NSString *statePath = [stateDirectory stringByAppendingPathComponent:@"sessions.json"];
             gMicaSessionStateURLOverride = [NSURL fileURLWithPath:statePath];
             [stateOwner saveSessionState];
             NSDictionary *savedState = [stateOwner readSessionState].firstObject;
+            NSString *rawState = [NSString stringWithContentsOfFile:statePath encoding:NSUTF8StringEncoding error:nil];
             BOOL stateRoundTrips = [savedState[@"tabs"] count] == 1 &&
                 [savedState[@"tabs"][0][@"name"] isEqual:@"Remembered"] &&
-                [savedState[@"tabs"][0][@"cwd"] isEqual:@"/tmp"] &&
+                [savedState[@"tabs"][0][@"cwd"] isEqual:safeTempFolder] &&
                 [savedState[@"tabs"][0][@"command"] isEqual:@"printf MICA_RESTORED"];
+            NSDictionary *stateAttributes = [NSFileManager.defaultManager attributesOfItemAtPath:statePath error:nil];
+            NSDictionary *directoryAttributes = [NSFileManager.defaultManager attributesOfItemAtPath:stateDirectory error:nil];
+            BOOL privateStatePermissions = [stateAttributes[NSFilePosixPermissions] unsignedShortValue] == 0600 &&
+                [directoryAttributes[NSFilePosixPermissions] unsignedShortValue] == 0700;
             MicaAppDelegate *restoredStateOwner = [MicaAppDelegate new];
             restoredStateOwner.tabs = [NSMutableArray array]; restoredStateOwner.activeIndex = 0;
             [restoredStateOwner loadLaunchConfigurationFromArguments:@[@"mica"] bundleInfo:@{}];
             BOOL restoredSession = restoredStateOwner.tabs.count == 1 &&
                 [restoredStateOwner.activeTab.name isEqual:@"Remembered"] &&
-                [restoredStateOwner.activeTab.cwd isEqual:@"/tmp"] &&
+                [restoredStateOwner.activeTab.cwd isEqual:MicaStandardizedWorkingDirectory(@"/tmp")] &&
                 [restoredStateOwner.activeTab.command isEqual:@"printf MICA_RESTORED"];
             for (NSValue *value in [restoredStateOwner detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
+            NSDictionary *missingFolderState = @{@"version":@1,@"windows":@[@{@"tabs":@[@{
+                @"name":@"Missing folder",@"cwd":[stateDirectory stringByAppendingPathComponent:@"deleted-folder"]}]}]};
+            [[NSJSONSerialization dataWithJSONObject:missingFolderState options:0 error:nil] writeToFile:statePath atomically:YES];
+            MicaAppDelegate *missingFolderOwner = [MicaAppDelegate new];
+            missingFolderOwner.tabs = [NSMutableArray array]; missingFolderOwner.activeIndex = 0;
+            [missingFolderOwner loadLaunchConfigurationFromArguments:@[@"mica"] bundleInfo:@{}];
+            BOOL missingFolderFallsHome = [missingFolderOwner.activeTab.cwd isEqual:MicaStandardizedWorkingDirectory(NSHomeDirectory())];
+            for (NSValue *value in [missingFolderOwner detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
+            [stateOwner saveSessionState];
             [@"{" writeToFile:statePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
             BOOL corruptIgnored = [stateOwner readSessionState].count == 0;
             [[NSMutableData dataWithLength:256 * 1024 + 1] writeToFile:statePath atomically:YES];
             BOOL oversizedIgnored = [stateOwner readSessionState].count == 0;
-            [NSFileManager.defaultManager removeItemAtPath:statePath error:nil];
+            NSString *hugeName = [@"x" stringByPaddingToLength:4096 withString:@"x" startingAtIndex:0];
+            NSArray<NSDictionary *> *hostileCases = @[
+                @{@"name":hugeName,@"cwd":safeTempFolder},
+                @{@"name":@"bad\nname",@"cwd":safeTempFolder},
+                @{@"name":@"Traversal",@"cwd":@"/tmp/../tmp"}
+            ];
+            BOOL hostileIgnored = YES;
+            for (NSDictionary *entry in hostileCases) {
+                NSDictionary *hostile = @{@"version":@1,@"windows":@[@{@"tabs":@[entry]}]};
+                NSData *hostileJSON = [NSJSONSerialization dataWithJSONObject:hostile options:0 error:nil];
+                [hostileJSON writeToFile:statePath atomically:YES];
+                hostileIgnored = hostileIgnored && [stateOwner readSessionState].count == 0;
+            }
+            NSString *fileLink = [stateDirectory stringByAppendingPathComponent:@"file-link"];
+            symlink("/etc/hosts", fileLink.fileSystemRepresentation);
+            NSDictionary *linkHostile = @{@"version":@1,@"windows":@[@{@"tabs":@[@{@"name":@"Link",@"cwd":fileLink}]}]};
+            [[NSJSONSerialization dataWithJSONObject:linkHostile options:0 error:nil] writeToFile:statePath atomically:YES];
+            hostileIgnored = hostileIgnored && [stateOwner readSessionState].count == 0;
+            NSDictionary *commandHostile = @{@"version":@1,@"windows":@[@{@"tabs":@[@{@"name":@"Command",@"cwd":safeTempFolder,
+                @"command":@"printf COMMAND_RESTORED"}]}]};
+            [[NSJSONSerialization dataWithJSONObject:commandHostile options:0 error:nil] writeToFile:statePath atomically:YES];
+            BOOL commandFieldRead = [stateOwner readSessionState].count == 1;
+            MicaAppDelegate *commandRestored = [MicaAppDelegate new];
+            commandRestored.tabs = [NSMutableArray array]; commandRestored.activeIndex = 0;
+            [commandRestored loadLaunchConfigurationFromArguments:@[@"mica"] bundleInfo:@{}];
+            BOOL commandRestoredSafely = commandFieldRead && commandRestored.tabs.count == 1 &&
+                [commandRestored.activeTab.command isEqual:@"printf COMMAND_RESTORED"];
+            for (NSValue *value in [commandRestored detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
+            hostileIgnored = hostileIgnored && commandRestoredSafely;
+            [NSFileManager.defaultManager removeItemAtPath:stateDirectory error:nil];
             gMicaSessionStateURLOverride = nil;
             [MicaControllers() removeAllObjects]; [MicaControllers() addObjectsFromArray:savedControllers];
-            MicaUITestRecord(report, &allPassed, stateRoundTrips && restoredSession && corruptIgnored && oversizedIgnored,
-                @"session state restores configured tab metadata and safely ignores corrupt or oversized JSON");
+            MicaUITestRecord(report, &allPassed, stateRoundTrips && restoredSession && missingFolderFallsHome && corruptIgnored && oversizedIgnored && hostileIgnored && privateStatePermissions,
+                [NSString stringWithFormat:@"session state validates names/folders, ignores hostile metadata and uses private permissions (roundtrip=%d restore=%d corrupt=%d oversized=%d hostile=%d private=%d command=%d mode=%o/%o saved=%@ actual=%@ raw=%@)",
+                    stateRoundTrips, restoredSession, corruptIgnored, oversizedIgnored, hostileIgnored, privateStatePermissions,
+                    commandRestoredSafely, [stateAttributes[NSFilePosixPermissions] unsignedShortValue],
+                    [directoryAttributes[NSFilePosixPermissions] unsignedShortValue], savedState, restoredStateOwner.activeTab, rawState]);
             [preferences close];
 
             // Git branch detection reads .git/HEAD directly: plain repo, linked worktree, detached HEAD, no repo.
@@ -2008,8 +2056,10 @@ static int MicaRunUISelfTest(void) {
             tailStyle.lineBreakMode = NSLineBreakByTruncatingHead;
             NSDictionary *tailAttrs = @{ NSFontAttributeName: [NSFont systemFontOfSize:10.5],
                 NSParagraphStyleAttributeName: tailStyle };
-            NSString *longLiveTranscript = [@"recent words " stringByPaddingToLength:400
-                withString:@" current phrase" startingAtIndex:0];
+            NSMutableArray<NSString *> *fortyTranscriptWords = [NSMutableArray array];
+            for (NSUInteger wordIndex = 0; wordIndex < 40; wordIndex++)
+                [fortyTranscriptWords addObject:@[@"recent", @"words", @"current", @"phrase"][wordIndex % 4]];
+            NSString *longLiveTranscript = [fortyTranscriptWords componentsJoinedByString:@" "];
             [previewController setValue:longLiveTranscript forKey:@"transcript"];
             NSRect transcriptRect = NSMakeRect(205, 0,
                 MAX(0, delegate.terminalView.bounds.size.width - 217), kStatusHeight);
@@ -2017,6 +2067,53 @@ static int MicaRunUISelfTest(void) {
                 [previewController.transcript sizeWithAttributes:tailAttrs].width > transcriptRect.size.width &&
                     transcriptRect.size.height == kStatusHeight,
                 @"a long live transcript stays on one status line and truncates from the start to keep recent words visible");
+            BOOL dictationRectsSafe = YES;
+            NSArray<NSNumber *> *dictationWidths = @[@480, @600, @800, @1600];
+            NSArray<NSNumber *> *dictationStatesForLayout = @[@(MicaVoiceControllerStatePreparing),
+                @(MicaVoiceControllerStateListening), @(MicaVoiceControllerStateFailed)];
+            NSArray<NSString *> *dictationWordSamples = @[@"", @"change the tab widths", longLiveTranscript];
+            NSWindow *dictationLayoutWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1600, 360)
+                styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+            dictationLayoutWindow.releasedWhenClosed = NO;
+            MicaTerminalView *dictationLayoutView = [[MicaTerminalView alloc] initWithFrame:NSMakeRect(0, 0, 1600, 360)];
+            dictationLayoutView.owner = delegate;
+            dictationLayoutView.terminalFont = delegate.terminalView.terminalFont;
+            [dictationLayoutWindow setContentView:dictationLayoutView];
+            for (NSInteger themeIndex = 0; themeIndex < 2; themeIndex++) {
+                [delegate setLightTheme:themeIndex == 1];
+                for (NSNumber *width in dictationWidths) for (NSNumber *stateValue in dictationStatesForLayout)
+                    for (NSString *sampleWords in dictationWordSamples) {
+                    [dictationLayoutView setFrameSize:NSMakeSize(width.doubleValue, dictationLayoutView.bounds.size.height)];
+                    [previewController setValue:stateValue forKey:@"state"];
+                    [previewController setValue:sampleWords forKey:@"transcript"];
+                    [previewController setValue:[stateValue integerValue] == MicaVoiceControllerStateFailed
+                        ? @"Microphone access was denied. Enable Mica in System Settings → Privacy & Security → Microphone."
+                        : @"Listening · 00:00" forKey:@"statusText"];
+                    [dictationLayoutView setNeedsDisplay:YES]; [dictationLayoutView displayIfNeeded];
+                    NSBitmapImageRep *layoutBitmap = [dictationLayoutView bitmapImageRepForCachingDisplayInRect:dictationLayoutView.bounds];
+                    [dictationLayoutView cacheDisplayInRect:dictationLayoutView.bounds toBitmapImageRep:layoutBitmap];
+                    NSRect labelRect = dictationLayoutView.dictationLabelTextRect;
+                    NSRect wordsRect = dictationLayoutView.dictationWordsTextRect;
+                    NSRect hintRect = dictationLayoutView.dictationHintTextRect;
+                    NSDictionary *visibleAttrs = @{NSFontAttributeName:sampleWords.length
+                        ? [NSFont systemFontOfSize:kDictationWordsFontSize weight:NSFontWeightMedium]
+                        : [NSFont systemFontOfSize:kDictationLabelFontSize]};
+                    NSString *visibleText = MicaHeadTruncatedText(sampleWords, wordsRect.size.width, visibleAttrs);
+                    NSRange lastSpace = [sampleWords rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet
+                        options:NSBackwardsSearch];
+                    NSString *lastWord = lastSpace.location == NSNotFound ? sampleWords :
+                        [sampleWords substringFromIndex:NSMaxRange(lastSpace)];
+                    BOOL shouldShowLastWord = [stateValue integerValue] == MicaVoiceControllerStateListening && sampleWords.length;
+                    dictationRectsSafe = dictationRectsSafe && !NSIntersectsRect(labelRect, wordsRect) &&
+                        (NSIsEmptyRect(hintRect) || (!NSIntersectsRect(labelRect, hintRect) && !NSIntersectsRect(wordsRect, hintRect))) &&
+                        NSMinX(wordsRect) >= NSMaxX(labelRect) && NSMaxX(wordsRect) <= width.doubleValue &&
+                        (!shouldShowLastWord || [visibleText hasSuffix:lastWord]);
+                }
+            }
+            [dictationLayoutWindow close];
+            [delegate setLightTheme:NO];
+            MicaUITestRecord(report, &allPassed, dictationRectsSafe,
+                @"dictation label, 0/3/40-word transcript and hint stay separate with the last word visible at 480/600/800/1600 px in both themes");
             [previewController setValue:@(MicaVoiceControllerStateFailed) forKey:@"state"];
             [previewController setValue:@"I didn’t catch any speech. Hold left Option and speak a little longer."
                                   forKey:@"statusText"];
@@ -2057,7 +2154,7 @@ static int MicaRunUISelfTest(void) {
             }
 
             if (bitmapReady) {
-                NSColor *reverseBackground = MicaUITestColor(0xd4d4d4, bitmap.colorSpace);
+                NSColor *reverseBackground = MicaUITestColor(gMicaLightTheme ? 0x24292f : 0xd4d4d4, bitmap.colorSpace);
                 NSColor *blockBackground = MicaUITestColor(0x123456, bitmap.colorSpace);
                 NSColor *terminalBackground = MicaUITestColor(0x1e1e1e, bitmap.colorSpace);
                 NSInteger blockRow = 0, blockCol = 0;

@@ -34,7 +34,7 @@ static NSMutableArray<MicaAppDelegate *> *gWindows;
 static void Act(MicaAppDelegate *delegate) {
     MicaTerminalView *view = delegate.terminalView;
     NSSize size = view.bounds.size;
-    int chosen = Between(0, 36);
+    int chosen = Between(0, 37);
     const char *only = getenv("STRESS_ONLY");
     if (only && chosen != atoi(only)) return;
     switch (chosen) {
@@ -196,6 +196,23 @@ static void Act(MicaAppDelegate *delegate) {
         [view displayIfNeeded];
         break;
     }
+    case 37: {   // Persist names/folders, destroy the window, and restore ordinary shells.
+        [delegate saveSessionState];
+        NSArray<NSDictionary *> *savedWindows = [delegate readSessionState];
+        if (!savedWindows.count) break;
+        NSArray<NSDictionary *> *savedTabs = savedWindows.firstObject[@"tabs"];
+        NSArray<NSValue *> *sessions = [delegate detachSessionsForTermination];
+        for (NSValue *value in sessions) mica_session_destroy(value.pointerValue);
+        [MicaControllers() removeObject:delegate];
+        [gWindows removeObject:delegate];
+        delegate.window.delegate = nil;
+        [delegate.window close];
+        MicaAppDelegate *restored = [MicaAppDelegate new];
+        restored.savedTabsForWindow = savedTabs;
+        [restored startWindowWithArguments:@[@"mica", @"--new-window"]];
+        [gWindows addObject:restored];
+        break;
+    }
     }
 }
 
@@ -206,6 +223,11 @@ int main(int argc, const char *argv[]) {
         rngState = seed;
         printf("stress seed %u, %d steps\n", seed, steps);
         setenv("MICA_TEST_NO_STARTUP", "1", 1);
+        NSString *stateDirectory = [NSTemporaryDirectory() stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"mica-stress-state-%d", getpid()]];
+        [[NSFileManager defaultManager] createDirectoryAtPath:stateDirectory withIntermediateDirectories:YES
+            attributes:@{NSFilePosixPermissions:@0700} error:nil];
+        gMicaSessionStateURLOverride = [NSURL fileURLWithPath:[stateDirectory stringByAppendingPathComponent:@"sessions.json"]];
         [NSApplication sharedApplication];
         gWindows = [NSMutableArray array];
         MicaAppDelegate *first = [[MicaAppDelegate alloc] init];

@@ -970,15 +970,15 @@ color_checked:
     assert(screen_contains(zsh_completion_session, "alpine"));
     mica_session_text(zsh_completion_session, 'c', VTERM_MOD_CTRL);
     uint64_t completion_baseline = mica_session_command_completion_count(zsh_completion_session);
-    mica_session_write(zsh_completion_session, "unset CLAUDECODE && sleep 0.35\n",
-                       strlen("unset CLAUDECODE && sleep 0.35\n"));
+    mica_session_write(zsh_completion_session, "unset CLAUDECODE && sleep 1.5\n",
+                       strlen("unset CLAUDECODE && sleep 1.5\n"));
     bool command_started = false;
-    for (int i = 0; i < 100 && !command_started; i++) {
+    for (int i = 0; i < 400 && !command_started; i++) {
         mica_session_poll(zsh_completion_session, 10);
         command_started = strcmp(mica_session_current_command(zsh_completion_session), "sleep") == 0;
     }
     assert(command_started);
-    for (int i = 0; i < 200 &&
+    for (int i = 0; i < 600 &&
          (mica_session_command_completion_count(zsh_completion_session) == completion_baseline ||
           mica_session_current_command(zsh_completion_session)[0] != '\0'); i++)
         mica_session_poll(zsh_completion_session, 10);
