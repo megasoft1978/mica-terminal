@@ -32,7 +32,7 @@ Most people run a terminal, a voice-typing app and a timer as separate programs,
 
 | Idle, one window, same Mac | Covers | Memory |
 | --- | --- | ---: |
-| **Mica** | terminal, dictation, focus timer | **about 55–60 MB** |
+| **Mica** (3 tabs) | terminal, dictation, focus timer | **about 55–60 MB** |
 | Alacritty | terminal | 69 MB |
 | kitty | terminal | 80 MB |
 | iTerm2 | terminal | 126 MB |
@@ -42,15 +42,15 @@ iTerm2 plus Wispr Flow is about 770 MB before you add a timer. Dictation adds a 
 
 ## What you get
 
-- **A window per project.** Named tabs, folders and startup commands, reopened from a Desktop launcher. The Dock icon carries a short mark of the project name. The status bar shows the git branch, and **Session → New Worktree Tab…** gives an agent its own checkout.
-- **Agents stay ordinary programs.** Run Codex, Claude Code, `lazygit` or anything else in a normal `zsh` tab. Mica shows when one is working and when it is waiting for you.
+- **A window per project.** Named tabs, folders and startup commands, reopened from a Desktop launcher. The Dock icon shows the mark of the project in front. The status bar shows the git branch, and **Session → New Worktree Tab…** gives an agent its own checkout.
+- **Agents stay ordinary programs.** Run Codex, Claude Code, `lazygit` or anything else in a normal `zsh` tab. Mica reads the visible screen for signs of work or a question and shows it on the tab, and posts a notification when a program asks for attention.
 - **Good dictation that stays on your Mac.** Hold left <kbd>⌥</kbd>, speak, edit the text, press Return. It uses NVIDIA’s Parakeet speech model through Core ML; the first use downloads 630 MB, and nothing is sent anywhere.
 - **A focus timer that follows you.** One timer shared by every Mica window, with a notification when a period ends.
-- **Still a real terminal.** Search scrollback, open links, drag tabs, choose a cursor and a light or dark theme. If a program over SSH asks to set your clipboard, Mica asks you first.
+- **Still a real terminal.** Search scrollback, Command-click links, drag tabs, choose a cursor and a light or dark theme. If a program over SSH asks to set your clipboard, Mica asks you first.
 
 ## Build it
 
-You need Xcode’s command line tools. Everything else, including the terminal parsing library, is in the repository.
+You need Xcode’s command line tools (Swift 6). The terminal parsing library is in the repository; the first build also fetches the speech package over the network.
 
 ```sh
 git clone https://github.com/megasoft1978/mica-terminal.git
@@ -58,7 +58,7 @@ cd mica-terminal
 make app && open build/Mica.app
 ```
 
-There is no packaged download yet. A build from `make dist` is ad-hoc signed, so on another Mac Control-click the app and choose Open once. Mica asks for the microphone only when you start dictation.
+There is no packaged download yet. A build from `make dist` is ad-hoc signed, so on another Mac open System Settings → Privacy & Security and choose Open Anyway once (macOS 15 and later; earlier versions also allow Control-click → Open). Mica asks for the microphone only when you start dictation.
 
 ## Keys worth knowing
 
@@ -96,7 +96,7 @@ make validate   # tests, build, helper build and bundle checks
 make dist       # ad-hoc sign and zip (SIGN_ID="Developer ID Application: …" to override)
 ```
 
-More: [how it compares](docs/COMPETITORS.md) · [stability testing](docs/STABILITY.md) · [UI plan](docs/UI-REVIEW.md) · [releasing](docs/RELEASING.md) · [agent notifications](docs/AGENT-NOTIFICATIONS.md) · [contributing](CONTRIBUTING.md) · [security](SECURITY.md)
+More: [what is left](docs/ROADMAP.md) · [how it compares](docs/COMPETITORS.md) · [stability testing](docs/STABILITY.md) · [UI plan](docs/UI-REVIEW.md) · [releasing](docs/RELEASING.md) · [agent notifications](docs/AGENT-NOTIFICATIONS.md) · [contributing](CONTRIBUTING.md) · [security](SECURITY.md)
 
 ## Credits
 

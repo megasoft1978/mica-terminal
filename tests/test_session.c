@@ -679,6 +679,19 @@ color_checked:
     mica_session_destroy(theme_session);
     printf("light theme swaps the ANSI palette\n");
 
+    // Notification text from OSC 9 / 777 is kept for the app to show; control characters are removed.
+    MicaSession *notify_session = mica_session_create("/tmp",
+        "printf '\\033]9;Build finished\\007NOTE1\\n'; sleep 0.3; printf '\\033]777;notify;Codex;Needs your input\\033\\\\NOTE2\\n'; sleep 2", 6, 80);
+    assert(notify_session != NULL);
+    for (int i = 0; i < 300 && !screen_contains(notify_session, "NOTE2"); i++)
+        mica_session_poll(notify_session, 10);
+    char *note = mica_session_take_notification(notify_session);
+    assert(note != NULL && strcmp(note, "Codex: Needs your input") == 0);
+    free(note);
+    assert(mica_session_take_notification(notify_session) == NULL);
+    mica_session_destroy(notify_session);
+    printf("agent notification text is captured\n");
+
     // A missing start folder falls back to the nearest existing parent, decided before fork.
     MicaSession *missing_folder_session = mica_session_create("/tmp/mica-no-such-folder-xyz/sub", "pwd; sleep 1", 6, 100);
     assert(missing_folder_session != NULL);

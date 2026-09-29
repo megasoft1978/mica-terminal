@@ -1629,6 +1629,18 @@ static int MicaRunUISelfTest(void) {
                 @"worktree branch names reject options and shell-looking text, and the repository root is found");
             [fileManager removeItemAtPath:gitRoot error:nil];
 
+            // Bare URLs in terminal text: found under the pointer, punctuation stripped, other text ignored.
+            NSString *prose = @"see (https://example.com/a?b=1). and http://localhost:8080/x, or file:///etc/passwd or javascript:alert(1)";
+            BOOL bareUrls =
+                [MicaBareURLInLine(prose, 8).absoluteString isEqualToString:@"https://example.com/a?b=1"] &&
+                [MicaBareURLInLine(prose, [prose rangeOfString:@"localhost"].location + 2).absoluteString isEqualToString:@"http://localhost:8080/x"] &&
+                MicaBareURLInLine(prose, 1) == nil &&
+                MicaBareURLInLine(prose, [prose rangeOfString:@"file:"].location + 1) == nil &&
+                MicaBareURLInLine(prose, [prose rangeOfString:@"javascript"].location + 3) == nil &&
+                MicaBareURLInLine(@"https://user:pw@evil.test/", 4) == nil;
+            MicaUITestRecord(report, &allPassed, bareUrls,
+                @"plain http(s) addresses in terminal text can be opened, and file:, javascript: and credential URLs cannot");
+
             // mica:// project URLs: only layouts inside the layouts folder are accepted.
             NSString *layoutsRoot = [NSTemporaryDirectory() stringByAppendingPathComponent:
                 [NSString stringWithFormat:@"mica-layouts-%d", getpid()]];

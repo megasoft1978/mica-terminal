@@ -13,6 +13,7 @@ set -eu
 total=0
 count=0
 for pid in $(pgrep -f "$1"); do
+    [ "$pid" = "$$" ] && continue   # the shell running this script has the pattern in its own command line
     line=$(footprint -p "$pid" 2>/dev/null | awk '/phys_footprint:/ { print $2 " " $3; exit }') || continue
     [ -n "$line" ] || continue
     mb=$(echo "$line" | awk '{ if ($2 == "KB") print $1 / 1024; else if ($2 == "GB") print $1 * 1024; else print $1 }')

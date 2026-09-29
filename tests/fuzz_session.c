@@ -77,7 +77,11 @@ int main(int argc, char **argv) {
     setenv("MICA_TEST_NO_STARTUP", "1", 1);
 
     // Pure random bytes: exercises UTF-8 decoding, control characters and unknown sequences.
-    run_case("random bytes", "head -c 600000 /dev/urandom; sleep 1", 400);
+    // perl with a fixed srand keeps the byte stream identical for a given seed, so failures replay.
+    char random_command[256];
+    snprintf(random_command, sizeof(random_command),
+        "perl -e 'srand(%u); $|=1; print pack(\"C*\", map { int(rand(256)) } 1..600000)'; sleep 1", seed);
+    run_case("random bytes", random_command, 400);
     // Random but well-formed escape sequences with extreme parameters, OSC strings, and DCS/APC payloads.
     run_case("random escape sequences",
         "perl -e 'srand(" "7" "); my @t=(\"\\e[\",\"\\e]\",\"\\eP\",\"\\e_\",\"\\e^\",\"\\eX\",\"\\e(\",\"\\e#\"); "

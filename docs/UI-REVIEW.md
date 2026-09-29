@@ -1,6 +1,6 @@
 # Mica UI review and modernization plan
 
-Reviewed 2026-09-29 against the current code (`src/mica_app.m`), the offscreen renders the test suite produces, and Apple's macOS Tahoe guidance (sources at the end). This is a plan, not a redesign that has been built.
+Reviewed 2026-09-29 against the current code (`src/mica_app.m`), the offscreen renders the test suite produces, and Apple's macOS Tahoe guidance (sources at the end). Status 2026-09-29: the first slice (terminal padding, merged title bar with the tabs, unfocused-window state), the bundled font, cursor styles and a Settings window are built. Still open: glass on the tab strip, follow-system appearance, vertical padding and a slimmer status bar. The table below describes the state before those changes.
 
 ## What the window is made of today
 

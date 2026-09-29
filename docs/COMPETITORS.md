@@ -43,7 +43,8 @@ Method and caveats: [MEMORY-BASELINE.md](MEMORY-BASELINE.md). cmux, Warp, Ghostt
 | Restore tabs after quitting | Not done. Medium; needs a saved layout for windows that were not opened from a project file |
 | Diff review and merge or PR flow | Not done. Large; the alternative is to run `lazygit` or `gh` in a tab, which already works |
 | Quick terminal on a global hotkey | Not done. Medium |
-| Scriptable control (a `mica` command for agents to set a tab's status) | Partly: OSC 9/99/777 notifications and `scripts/claude-notify.sh` |
+| Agent notifications with text, click to return to the tab | Done (OSC 9/99/777 become macOS notifications when Mica is in the background) |
+| Scriptable control (a `mica` command for agents to set a tab's status) | Partly: OSC 9/99/777 and `scripts/claude-notify.sh` |
 | Import of Ghostty or iTerm themes | Not done |
 
 ## Suggested order

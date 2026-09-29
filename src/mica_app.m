@@ -203,6 +203,7 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 @property(nonatomic, assign) uint64_t revision;
 @property(nonatomic, assign) uint64_t attentionCount;
 @property(nonatomic, copy) NSString *gitBranch;
+@property(nonatomic, assign) NSTimeInterval lastAgentNotificationAt;
 @property(nonatomic, assign) NSTimeInterval gitBranchCheckedAt;
 @property(nonatomic, assign) NSInteger clipboardDecision;  // 0 ask, 1 always allow, 2 deny
 @property(nonatomic, copy) NSString *pendingClipboardText;
@@ -428,6 +429,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic) NSInteger lastVoiceState;
 @property(nonatomic, copy) NSString *memoryLabel;
 @property(nonatomic) NSTimeInterval memoryCheckedAt;
+@property(nonatomic) double lastPomodoroFilesStamp;
 @property(nonatomic) BOOL clipboardPromptShowing;
 @property(nonatomic) NSTimeInterval clipboardCooldownUntil;
 @property(nonatomic) NSUInteger idlePollTicks;
@@ -467,6 +469,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)setCursorStyle:(id)sender;
 - (void)openPreferences:(id)sender;
 - (void)newWorktreeTab:(id)sender;
+- (void)postAgentNotification:(NSString *)words forTab:(MicaTab *)tab;
 - (void)startWindowWithArguments:(NSArray<NSString *> *)arguments;
 - (void)openProjectWindowWithArguments:(NSArray<NSString *> *)arguments;
 - (void)takeMenuOwnership;
@@ -717,6 +720,25 @@ static NSString *MicaGitBranchForDirectory(NSString *directory) {
         return head.length >= 7 ? [head substringToIndex:7] : nil;
     }
     return nil;
+}
+
+// A plain http(s) address at `index` in a line of terminal text, with trailing punctuation removed.
+// Agents print bare URLs constantly; OSC 8 links are the only ones terminals get for free.
+static NSURL *MicaBareURLInLine(NSString *line, NSUInteger index) {
+    if (index >= line.length) return nil;
+    NSCharacterSet *breaks = [NSCharacterSet characterSetWithCharactersInString:@" \t<>\"'`|"];
+    if ([breaks characterIsMember:[line characterAtIndex:index]]) return nil;
+    NSUInteger start = index, end = index;
+    while (start > 0 && ![breaks characterIsMember:[line characterAtIndex:start - 1]]) start--;
+    while (end + 1 < line.length && ![breaks characterIsMember:[line characterAtIndex:end + 1]]) end++;
+    NSString *token = [line substringWithRange:NSMakeRange(start, end - start + 1)];
+    // Markdown and prose wrap addresses in brackets and end them with punctuation.
+    while (token.length && [@".,;:!?)]}>" containsString:[token substringFromIndex:token.length - 1]]) token = [token substringToIndex:token.length - 1];
+    NSRange scheme = [token rangeOfString:@"http" options:NSCaseInsensitiveSearch];
+    if (scheme.location == NSNotFound) return nil;
+    token = [token substringFromIndex:scheme.location];   // drops a leading "(" or "["
+    if (![token.lowercaseString hasPrefix:@"http://"] && ![token.lowercaseString hasPrefix:@"https://"]) return nil;
+    return MicaSafeHyperlinkURL(token);
 }
 
 static NSString *MicaStandardizedWorkingDirectory(NSString *requestedPath) {
@@ -2374,6 +2396,26 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
             [self openHyperlinkID:hit.hyperlink_id forTab:self.owner.activeTab];
             return;
         }
+        // No OSC 8 link here: open a plain http(s) address if one is under the pointer.
+        NSMutableString *line = [NSMutableString string];
+        NSUInteger clickedIndex = 0;
+        MicaSession *clickSession = self.owner.activeTab.session;
+        for (int col = 0; col < mica_session_cols(clickSession); col++) {
+            MicaCell probe;
+            if (!mica_session_get_cell(clickSession, (int)cell.y, col, &probe) || CellIsContinuation(probe)) continue;
+            if (col <= (int)cell.x) clickedIndex = line.length;
+            uint32_t codepoint = probe.chars[0] ? probe.chars[0] : ' ';
+            NSString *glyph = [[NSString alloc] initWithBytes:&codepoint length:4 encoding:NSUTF32LittleEndianStringEncoding];
+            [line appendString:glyph ?: @" "];
+        }
+        NSURL *bare = MicaBareURLInLine(line, clickedIndex);
+        if (bare) {
+#if defined(MICA_APP_NO_MAIN)
+            if (self.testOpenURLHandler) { self.testOpenURLHandler(bare); return; }
+#endif
+            [NSWorkspace.sharedWorkspace openURL:bare];
+            return;
+        }
     }
     if (mica_session_toggle_fold_at_view_row(self.owner.activeTab.session, (int)cell.y)) {
         [self clearSelection];
@@ -3140,14 +3182,29 @@ static NSDictionary *MicaScalarDictionary(id object) {
     [self.terminalView setNeedsDisplay:YES];
 }
 
+- (double)currentPomodoroFilesStamp {
+    double total = 0;
+    for (NSURL *url in @[self.pomodoroStateURL ?: NSURL.new, self.pomodoroSettingsURL ?: NSURL.new]) {
+        struct stat info;
+        if (url.isFileURL && stat(url.fileSystemRepresentation, &info) == 0)
+            total += (double)info.st_mtimespec.tv_sec + (double)info.st_mtimespec.tv_nsec / 1e9 + (double)info.st_size;
+    }
+    return total;
+}
+
 - (void)updatePomodoroTimer {
     NSTimeInterval systemNow = NSProcessInfo.processInfo.systemUptime;
     if (systemNow - self.lastPomodoroTickAt < 1.0) return;
     self.lastPomodoroTickAt = systemNow;
+    // Idle timer and neither shared file touched since the last look: nothing can have changed, so skip the
+    // lock and the JSON parse (this ran every second in every window).
+    double stamp = [self currentPomodoroFilesStamp];
+    if (self.pomodoro.phase == MICA_POMODORO_IDLE && stamp == self.lastPomodoroFilesStamp) return;
     if (![self acquirePomodoroLock]) return;
     MicaPomodoroPhase oldPhase = self.pomodoro.phase;
     uint64_t oldCompletedFocuses = self.pomodoro.completed_focuses;
     [self loadPomodoroStateFromDisk];
+    self.lastPomodoroFilesStamp = stamp;
     BOOL changed = oldPhase != self.pomodoro.phase || oldCompletedFocuses != self.pomodoro.completed_focuses;
     changed = mica_pomodoro_advance(&_pomodoro, MicaContinuousTimeSeconds(),
         self.pomodoroCycleFocusMinutes * 60.0, self.pomodoroCycleBreakMinutes * 60.0) || changed;
@@ -3203,6 +3260,51 @@ static NSDictionary *MicaScalarDictionary(id object) {
             [error addButtonWithTitle:@"OK"]; [error beginSheetModalForWindow:self.window completionHandler:nil];
         }
     }];
+}
+
+// A macOS notification carrying the words an agent sent. At most one per tab every ten seconds.
+- (void)postAgentNotification:(NSString *)words forTab:(MicaTab *)tab {
+#if !defined(MICA_APP_NO_MAIN)
+    NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
+    if (now - tab.lastAgentNotificationAt < 10.0) return;
+    tab.lastAgentNotificationAt = now;
+    static BOOL authorizationRequested;
+    UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
+    if (!authorizationRequested) {
+        authorizationRequested = YES;
+        [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert | UNAuthorizationOptionSound
+            completionHandler:^(BOOL granted, NSError *error) { (void)granted; (void)error; }];
+    }
+    UNMutableNotificationContent *content = [UNMutableNotificationContent new];
+    content.title = self.projectName.length ? [NSString stringWithFormat:@"%@ · %@", self.projectName, tab.name ?: @"Terminal"]
+                                            : (tab.name ?: @"Mica");
+    content.body = words;
+    content.sound = UNNotificationSound.defaultSound;
+    content.userInfo = @{ @"window": @(self.window.windowNumber), @"tab": @([self.tabs indexOfObjectIdenticalTo:tab]) };
+    NSString *identifier = [NSString stringWithFormat:@"mica-agent-%ld-%lu", (long)self.window.windowNumber,
+        (unsigned long)[self.tabs indexOfObjectIdenticalTo:tab]];
+    [center addNotificationRequest:[UNNotificationRequest requestWithIdentifier:identifier content:content trigger:nil]
+        withCompletionHandler:nil];
+#else
+    (void)words; (void)tab;
+#endif
+}
+
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+didReceiveNotificationResponse:(UNNotificationResponse *)response
+         withCompletionHandler:(void (^)(void))completionHandler {
+    (void)center;
+    NSDictionary *info = response.notification.request.content.userInfo;
+    NSNumber *windowNumber = info[@"window"], *tabIndex = info[@"tab"];
+    for (MicaAppDelegate *controller in MicaControllers()) {
+        if (windowNumber && controller.window.windowNumber == windowNumber.integerValue) {
+            [NSApp activateIgnoringOtherApps:YES];
+            [controller.window makeKeyAndOrderFront:nil];
+            if (tabIndex) [controller selectTabAtIndex:tabIndex.integerValue];
+            break;
+        }
+    }
+    completionHandler();
 }
 
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center
@@ -3479,7 +3581,7 @@ static NSDictionary *MicaScalarDictionary(id object) {
         @"⌘K  Clear scrollback",
         @"⌥⌘L  Toggle the light terminal theme",
         @"⌥⌘F  Fold selected lines",
-        @"⌘-click  Open an OSC 8 web link",
+        @"⌘-click  Open a link or web address",
         @"Hold left ⌥  Dictate; release to finish",
         @"Esc  Cancel dictation or return to live terminal"
     ] componentsJoinedByString:@"\n"];
@@ -4216,7 +4318,7 @@ static BOOL MicaValidBranchName(NSString *name) {
             }
         }
         if (receivedOutput) {
-            self.pollSawOutput = YES;
+            if (tab == self.activeTab) self.pollSawOutput = YES;   // a background agent spinner must not keep the timer at 66 Hz
             tab.outputBytes += outputMetrics.bytes_read;
             tab.outputReadCalls += outputMetrics.read_calls;
             tab.outputLargestRead = MAX(tab.outputLargestRead, outputMetrics.largest_read);
@@ -4288,12 +4390,17 @@ static BOOL MicaValidBranchName(NSString *name) {
         uint64_t attentionCount = mica_session_attention_count(tab.session);
         if (attentionCount != tab.attentionCount) {
             tab.attentionCount = attentionCount;
+            char *agentWords = mica_session_take_notification(tab.session);
             if (tab != self.activeTab || !NSApp.isActive) {
                 tab.needsAttention = YES;
                 if (!NSApp.isActive && self.attentionRequest == 0)
                     self.attentionRequest = [NSApp requestUserAttention:NSInformationalRequest];
+                // Away from Mica: say what the program asked, and bring you back to that tab when clicked.
+                if (agentWords && !NSApp.isActive)
+                    [self postAgentNotification:[NSString stringWithUTF8String:agentWords] forTab:tab];
                 redraw = YES;
             }
+            free(agentWords);
         }
         uint64_t completionCount = mica_session_command_completion_count(tab.session);
         if (tab.tracksCompletion && completionCount > tab.commandCompletionCount) {
@@ -4393,6 +4500,8 @@ static BOOL MicaValidBranchName(NSString *name) {
         if (state == MicaTabActivityStateRunning || state == MicaTabActivityStateNeedsAttention)
             animatesTab = YES;
     }
+    // Reduce Motion: keep the activity indicator still (it still changes state and colour, it just stops spinning).
+    if (NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) animatesTab = NO;
     BOOL activityAnimationTick = animatesTab && now - self.lastActivityAnimationAt >= 0.12;
     if (activityAnimationTick || activityIndicatorChanged) {
         if (activityAnimationTick) {

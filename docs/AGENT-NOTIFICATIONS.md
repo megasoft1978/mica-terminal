@@ -1,6 +1,6 @@
 # Claude Code and Codex notifications
 
-Mica handles terminal BEL, OSC 9, and OSC 777 notifications from terminal applications and agent hooks. Notifications from background tabs show an `!` marker; macOS Dock attention is requested while Mica is unfocused. Selecting a marked tab clears its marker. Focus gained/lost events are also passed to the active terminal session.
+Mica handles terminal BEL, OSC 9, OSC 99 and OSC 777 (`notify;`) notifications from terminal applications and agent hooks. Notifications from background tabs show an `!` marker; macOS Dock attention is requested while Mica is unfocused. Selecting a marked tab clears its marker. Focus gained/lost events are also passed to the active terminal session.
 
 Claude Code and Codex run as regular commands inside zsh tabs. A command in a `.mica` layout is placed at the prompt; press Return to start it. Mica also reads OSC window titles from terminal programs and adds them to the tab label. Commands started with Mica's `--command` option report their exit status; completed background commands get a tab indicator, and Mica requests Dock attention while unfocused.
 

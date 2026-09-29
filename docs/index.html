@@ -204,7 +204,7 @@
       <section class="install">
         <div>
           <h2>Build it in three commands.</h2>
-          <p>You need the Xcode command line tools. The terminal parsing library ships in the repository and is linked into the app, so the finished bundle runs on its own.</p>
+          <p>You need the Xcode command line tools. The terminal parsing library ships in the repository and is linked into the app, so the finished bundle runs on its own. The first build also fetches the speech package over the network.</p>
         </div>
         <div class="code" role="group" aria-label="Build instructions"><button class="copy" type="button" data-copy="git clone https://github.com/megasoft1978/mica-terminal.git&#10;cd mica-terminal&#10;make app &amp;&amp; open build/Mica.app">Copy</button>git clone https://github.com/megasoft1978/mica-terminal.git
 cd mica-terminal
@@ -216,7 +216,7 @@ make app &amp;&amp; open build/Mica.app</div>
       <div class="row">
         <div>
           <h3>One window for each project.</h3>
-          <p>Name a project, give it folders and startup tabs, and open it again from a launcher on your Desktop. Its Dock icon carries a short mark of the project name, so you can tell windows apart at a glance. The status bar shows the git branch, and a worktree tab gives each agent its own checkout.</p>
+          <p>Name a project, give it folders and startup tabs, and open it again from a launcher on your Desktop. The Dock icon shows the mark of the project in front. The status bar shows the git branch, and a worktree tab gives each agent its own checkout.</p>
         </div>
         <div class="shot"><img src="assets/crop-tabs-dark.png" width="1500" height="190" alt="A row of tabs named Shell, Preview, Codex, Claude Code and lazygit above terminal output." loading="lazy"></div>
       </div>
@@ -224,7 +224,7 @@ make app &amp;&amp; open build/Mica.app</div>
       <div class="row flip">
         <div>
           <h3>Agents are ordinary programs.</h3>
-          <p>Run Codex, Claude Code or anything else in a normal zsh tab. Mica watches the tab and shows whether the program is working or waiting for you, so you can look away until it asks. Your own zsh configuration keeps working.</p>
+          <p>Run Codex, Claude Code or anything else in a normal zsh tab. Mica reads the visible screen for signs of work or a question, shows it on the tab, and notifies you when a program asks for attention, so you can look away until it does. Your own zsh configuration keeps working.</p>
         </div>
         <div class="shot"><img src="assets/crop-terminal-dark.png" width="1300" height="388" alt="Terminal output with coloured commit hashes and passing test lines." loading="lazy"></div>
       </div>
@@ -248,7 +248,7 @@ make app &amp;&amp; open build/Mica.app</div>
       <div class="row">
         <div>
           <h3>Still your terminal.</h3>
-          <p>Search what scrolled by with <kbd>⌘F</kbd>, open links with <kbd>⌘</kbd>-click, drag tabs to reorder them, and paste images for agents that read them. When a program on a remote machine asks to set your clipboard, Mica asks you first.</p>
+          <p>Search what scrolled by with <kbd>⌘F</kbd>, open links and web addresses with <kbd>⌘</kbd>-click, drag tabs to reorder them, and paste images for agents that read them. When a program on a remote machine asks to set your clipboard, Mica asks you first.</p>
         </div>
         <div class="shot"><img src="assets/crop-terminal-light.png" width="1300" height="388" alt="The same terminal in the light theme, with dark JetBrains Mono text on white." loading="lazy"></div>
       </div>

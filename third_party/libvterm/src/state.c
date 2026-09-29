@@ -186,18 +186,25 @@ static void grow_combine_buffer(VTermState *state)
 
 static void set_col_tabstop(VTermState *state, int col)
 {
+  /* Mica patch: a cursor column outside the current width (seen after resizes) indexed past the tab stop array. */
+  if(col < 0 || col >= state->cols)
+    return;
   unsigned char mask = 1 << (col & 7);
   state->tabstops[col >> 3] |= mask;
 }
 
 static void clear_col_tabstop(VTermState *state, int col)
 {
+  if(col < 0 || col >= state->cols)  /* Mica patch: see set_col_tabstop */
+    return;
   unsigned char mask = 1 << (col & 7);
   state->tabstops[col >> 3] &= ~mask;
 }
 
 static int is_col_tabstop(VTermState *state, int col)
 {
+  if(col < 0 || col >= state->cols)  /* Mica patch: see set_col_tabstop */
+    return 0;
   unsigned char mask = 1 << (col & 7);
   return state->tabstops[col >> 3] & mask;
 }

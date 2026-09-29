@@ -99,6 +99,8 @@ bool clipboard_ready;
 bool sync_output;
 bool bracketed_paste;
 char mark_token[33];
+char notification_text[256];
+bool notification_ready;
 char sync_tail[8];
 size_t sync_tail_length;
 double sync_output_started;
@@ -734,6 +736,31 @@ static int notification_osc(int command, VTermStringFragment fragment, void *use
         if (command == 777 &&
             (!fragment.str || fragment.len < 7 || memcmp(fragment.str, "notify;", 7) != 0)) notification = false;
         if (notification) note_attention(session, command);
+        // Keep the words an agent sent (Codex, Claude Code and others use OSC 9/99/777) so the app can show them.
+        if (notification && fragment.initial && fragment.final && fragment.str && fragment.len > 0) {
+            const char *text = fragment.str;
+            size_t length = fragment.len;
+            if (command == 777 && length > 7) { text += 7; length -= 7; }               // "notify;" prefix
+            else if (command == 99) {                                                    // "metadata;body"
+                const char *separator = memchr(text, ';', length);
+                if (separator) { length -= (size_t)(separator + 1 - text); text = separator + 1; }
+            }
+            size_t used = 0;
+            bool last_space = false;
+            for (size_t i = 0; i < length && used + 1 < sizeof(session->notification_text); i++) {
+                unsigned char byte = (unsigned char)text[i];
+                if (byte == ';' && command == 777) byte = 0x1f;                        // title;body separator
+                if (byte < 0x20 || byte == 0x7f) {
+                    if (byte == 0x1f) { if (used) { session->notification_text[used++] = ':'; } last_space = false; byte = ' '; }
+                    else byte = ' ';
+                }
+                if (byte == ' ') { if (last_space || used == 0) continue; last_space = true; } else last_space = false;
+                session->notification_text[used++] = (char)byte;
+            }
+            while (used && session->notification_text[used - 1] == ' ') used--;
+            session->notification_text[used] = '\0';
+            session->notification_ready = used > 0;
+        }
     }
     return 1;
 }
@@ -1886,6 +1913,11 @@ bool mica_session_sync_output_active(const MicaSession *session) {
     // A stuck frame must never freeze the display: give up after a quarter second.
     if (!session || !session->sync_output) return false;
     return monotonic_seconds() - session->sync_output_started < 0.25;
+}
+char *mica_session_take_notification(MicaSession *session) {
+    if (!session || !session->notification_ready) return NULL;
+    session->notification_ready = false;
+    return strdup(session->notification_text);
 }
 char *mica_session_take_clipboard_write(MicaSession *session) {
     if (!session || !session->clipboard_ready || !session->clipboard_text) return NULL;

@@ -18,6 +18,6 @@ Local builds are ad-hoc signed (`make dist`). To publish a build other people ca
 make notarize SIGN_ID="Developer ID Application: Your Name (TEAMID)"
 ```
 
-This signs the helper, icon tool and app with the hardened runtime and the microphone entitlement, zips the app, submits it with `notarytool --wait`, staples the ticket, re-zips and runs `spctl --assess`. Attach `build/Mica.zip` to a GitHub release.
+This signs the helper, icon tool and app with the hardened runtime, Apple's secure timestamp (required for notarization) and the microphone entitlement, zips the app, submits it with `notarytool --wait`, staples the ticket, re-zips and runs `spctl --assess`. Attach `build/Mica.zip` to a GitHub release.
 
 `make notarize` has not been run end to end yet because no Developer ID certificate is installed on the development machine.

@@ -6,7 +6,7 @@ Mica runs shells whose output it does not control, so the parser, the session co
 
 | Command | What it does |
 | --- | --- |
-| `make test` | Fast checks: session core, timer, launcher, memory tools, 75 AppKit checks, agent loop. |
+| `make test` | Fast checks: session core, timer, launcher, memory tools, the AppKit checks (80+ assertions), agent loop. |
 | `make sanitize` | The session tests plus a fuzzer, built with AddressSanitizer and UBSan. |
 | `make fuzz FUZZ_SEEDS=12` | Only the fuzzer. Each seed prints its number so a failure can be replayed with `build/fuzz-session-san <seed>`. |
 | `make stress STRESS_SEEDS=8` | The real AppKit view driven by 1,500 random user actions per seed (tabs, keys, mouse, resize, find, clear, theme, settings, paste), under the sanitizers. |

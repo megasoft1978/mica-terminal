@@ -157,11 +157,13 @@ new-instance: app
 
 # SIGN_ID defaults to ad-hoc ("-"); pass a Developer ID identity for distribution.
 SIGN_ID ?= -
+# Ad-hoc local builds need no timestamp; Developer ID signatures must carry Apple's secure timestamp to be notarized.
+SIGN_TIMESTAMP := $(if $(filter -,$(SIGN_ID)),=none,)
 
 sign: app
-	codesign --force --options runtime --timestamp=none --entitlements Mica.entitlements --sign "$(SIGN_ID)" $(APP_VOICE_HELPER)
-	codesign --force --options runtime --timestamp=none --sign "$(SIGN_ID)" $(APP_ICON_TOOL)
-	codesign --force --options runtime --timestamp=none --entitlements Mica.entitlements --sign "$(SIGN_ID)" $(APP)
+	codesign --force --options runtime --timestamp$(SIGN_TIMESTAMP) --entitlements Mica.entitlements --sign "$(SIGN_ID)" $(APP_VOICE_HELPER)
+	codesign --force --options runtime --timestamp$(SIGN_TIMESTAMP) --sign "$(SIGN_ID)" $(APP_ICON_TOOL)
+	codesign --force --options runtime --timestamp$(SIGN_TIMESTAMP) --entitlements Mica.entitlements --sign "$(SIGN_ID)" $(APP)
 	codesign --verify --deep --strict $(APP)
 
 dist: sign

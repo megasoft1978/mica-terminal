@@ -70,6 +70,8 @@ size_t mica_session_history_lines(const MicaSession *session);
 bool mica_session_bracketed_paste(const MicaSession *session);
 // True while a program has an unfinished synchronized-output frame (mode 2026); redraw should wait.
 bool mica_session_sync_output_active(const MicaSession *session);
+// Words a program sent with OSC 9, 99 or 777 (an agent asking for attention), or NULL. The caller frees it.
+char *mica_session_take_notification(MicaSession *session);
 // Text a program set through OSC 52, or NULL. The caller frees it.
 char *mica_session_take_clipboard_write(MicaSession *session);
 uint64_t mica_session_scrolled_lines(const MicaSession *session);
