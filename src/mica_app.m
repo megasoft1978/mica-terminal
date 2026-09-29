@@ -1438,9 +1438,15 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     };
     NSFont *hintFont = hintAttrs[NSFontAttributeName];
     CGFloat hintWidth = 0;
-    for (NSString *part in hintParts) hintWidth += [part sizeWithAttributes:hintAttrs].width;
-    hintWidth += (hintParts.count - 1) * 16;
     CGFloat hintRight = self.bounds.size.width - 12;
+    // Drop trailing hints that would run over the context text at narrow widths.
+    while (hintParts.count > 1) {
+        hintWidth = (hintParts.count - 1) * 16;
+        for (NSString *part in hintParts) hintWidth += [part sizeWithAttributes:hintAttrs].width;
+        if (hintRight - hintWidth >= contextX + 18) break;
+        hintParts = [hintParts subarrayWithRange:NSMakeRange(0, hintParts.count - 1)];
+    }
+    if (hintParts.count == 1) hintWidth = [hintParts[0] sizeWithAttributes:hintAttrs].width;
     CGFloat hintX = MAX(contextX + 18, hintRight - hintWidth);
     CGFloat availableWidth = MAX(0, hintX - contextX - 18);
     if (!modeName && !tab.currentCommand.length && !tab.completedCommand && viewOffset == 0) {
@@ -1565,10 +1571,14 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         return YES;
     }
     if (mode == MicaUIModeTab) {
-        if (key.length == 1 && key.integerValue >= 1 && key.integerValue <= 9 &&
-            [key characterAtIndex:0] >= '1' && [key characterAtIndex:0] <= '9') {
-            [self.owner selectTabAtIndex:key.integerValue - 1];
+        if (event.keyCode == 36 || event.keyCode == 76 || event.keyCode == 49) {
             self.owner.uiMode = MicaUIModeNormal;
+        } else if (key.length == 1 && key.integerValue >= 1 && key.integerValue <= 9 &&
+            [key characterAtIndex:0] >= '1' && [key characterAtIndex:0] <= '9') {
+            if ((NSUInteger)key.integerValue <= self.owner.tabs.count) {
+                [self.owner selectTabAtIndex:key.integerValue - 1];
+                self.owner.uiMode = MicaUIModeNormal;
+            }
         } else if ([key isEqualToString:@"h"] || [key isEqualToString:@"k"] || event.keyCode == 123 || event.keyCode == 126) {
             [self.owner selectRelativeTab:-1];
         } else if ([key isEqualToString:@"j"] || [key isEqualToString:@"l"] || event.keyCode == 124 || event.keyCode == 125) {
@@ -1728,7 +1738,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
                 (unsigned long)hiddenRows];
             NSDictionary *foldAttrs = @{
                 NSFontAttributeName: [NSFont systemFontOfSize:12 weight:NSFontWeightMedium],
-                NSForegroundColorAttributeName: NSColor.secondaryLabelColor
+                NSForegroundColorAttributeName: [MicaForegroundColor() colorWithAlphaComponent:0.6]
             };
             [foldLabel drawWithRect:NSInsetRect(foldRect, 7, 1)
                             options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
@@ -1760,7 +1770,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
             NSColor *fg = [self colorForVTermColor:cell.fg isForeground:YES];
             NSColor *bg = [self colorForVTermColor:cell.bg isForeground:NO];
             BOOL linked = cell.hyperlink_id != 0;
-            if (linked && !selected) fg = NSColor.linkColor;
+            if (linked && !selected) fg = [NSColor colorWithSRGBRed:0.45 green:0.68 blue:1.0 alpha:1.0];  // readable on the fixed dark terminal
             if (cell.attrs.reverse) { NSColor *swap = fg; fg = bg; bg = swap; }
             if (selected) {
                 fg = NSColor.selectedTextColor;
@@ -1867,7 +1877,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         int exitStatus = mica_session_exit_status(tab.session);
         NSString *exitMessage = exitStatus == 0 ? @"Shell exited" : [NSString stringWithFormat:@"Shell exited with status %d", exitStatus];
         NSRect exitRect = NSMakeRect(0, kStatusHeight, [self terminalRect].size.width, 28);
-        NSDictionary *exitAttrs = @{ NSFontAttributeName: [NSFont systemFontOfSize:12], NSForegroundColorAttributeName: NSColor.secondaryLabelColor };
+        NSDictionary *exitAttrs = @{ NSFontAttributeName: [NSFont systemFontOfSize:12], NSForegroundColorAttributeName: [MicaForegroundColor() colorWithAlphaComponent:0.6] };
         if (NSIntersectsRect(exitRect, dirtyRect))
             [exitMessage drawAtPoint:NSMakePoint(12, kStatusHeight + 4) withAttributes:exitAttrs];
     }
@@ -2213,6 +2223,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 - (void)copy:(id)sender { [self copySelection:sender]; }
 
 - (void)paste:(id)sender {
+    [self.owner wakePollTimer];
     (void)sender;
     MicaTab *tab = self.owner.activeTab;
     if (!tab.session) return;
@@ -3258,7 +3269,8 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     (void)timer;
     BOOL redraw = NO;
     // Idle backoff: after ~5 s without output, poll at 50 ms instead of 15 ms.
-    if (self.pollSawOutput) { self.pollSawOutput = NO; [self wakePollTimer]; }
+    BOOL justWoke = NO;
+    if (self.pollSawOutput) { self.pollSawOutput = NO; justWoke = self.pollIsSlow; [self wakePollTimer]; }
     else if (!self.pollIsSlow && ++self.idlePollTicks > 330 && self.pollTimer) [self restartPollTimerWithInterval:0.050];
     NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
     MicaVoiceController *voice = self.voiceController;
@@ -3268,7 +3280,7 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
         [self.terminalView setNeedsDisplayInRect:[self.terminalView dictationStatusRect]];
     }
     NSTimeInterval pollStartedAt = now;
-    if (self.lastPollTimerTickAt > 0 && now - self.lastPollTimerTickAt >= (self.pollIsSlow ? 0.150 : 0.050) &&
+    if (!justWoke && self.lastPollTimerTickAt > 0 && now - self.lastPollTimerTickAt >= (self.pollIsSlow ? 0.150 : 0.050) &&
         now - self.lastSlowPollLogAt >= 1.0) {
         MicaDiagnosticsLog(@"performance", [NSString stringWithFormat:
             @"poll-timer-gap duration_ms=%.1f tabs=%lu", (now - self.lastPollTimerTickAt) * 1000.0,
@@ -3478,29 +3490,36 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     }
 }
 
-- (BOOL)windowShouldClose:(NSWindow *)sender {
-    // Closing the window ends every shell; confirm when a command is still running.
+- (BOOL)confirmEndingRunningCommandsFor:(NSString *)action {
     if (getenv("MICA_TEST_NO_STARTUP")) return YES;
     NSMutableArray<NSString *> *running = [NSMutableArray array];
     for (MicaTab *tab in self.tabs) {
-        if (tab.currentCommand.length) [running addObject:tab.currentCommand.lastPathComponent.length
+        // An exited shell can leave a stale command label behind; only live sessions count.
+        if (!tab.currentCommand.length || !tab.session || !mica_session_is_running(tab.session)) continue;
+        [running addObject:tab.currentCommand.lastPathComponent.length
             ? tab.currentCommand.lastPathComponent : tab.currentCommand];
     }
     if (!running.count) return YES;
     NSAlert *alert = [NSAlert new];
-    alert.messageText = @"Close this window?";
-    alert.informativeText = [NSString stringWithFormat:@"%@ still running. Closing ends it.",
+    alert.messageText = [NSString stringWithFormat:@"%@?", action];
+    alert.informativeText = [NSString stringWithFormat:@"%@ still running. This ends it.",
         running.count == 1 ? [NSString stringWithFormat:@"“%@” is", running[0]]
                            : [NSString stringWithFormat:@"%lu commands are", (unsigned long)running.count]];
     [alert addButtonWithTitle:@"Cancel"];
-    [alert addButtonWithTitle:@"Close Window"];
-    (void)sender;
+    [alert addButtonWithTitle:action];
     return [alert runModal] == NSAlertSecondButtonReturn;
 }
+
+- (BOOL)windowShouldClose:(NSWindow *)sender {
+    (void)sender;
+    return [self confirmEndingRunningCommandsFor:@"Close Window"];
+}
+
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender { (void)sender; return YES; }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
     (void)sender;
     if (self.terminationCleanupStarted) return NSTerminateLater;
+    if (![self confirmEndingRunningCommandsFor:@"Quit Mica"]) return NSTerminateCancel;
     self.terminationCleanupStarted = YES;
     MicaDiagnosticsLog(@"app", @"application termination requested");
     [self.pollTimer invalidate];
