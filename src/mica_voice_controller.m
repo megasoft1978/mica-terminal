@@ -66,6 +66,28 @@
     BOOL _audioFinishRequested;
 }
 
+- (void)prewarmSpeechModelIfNeeded {
+    NSString *path = self.helperURL.path;
+    if (![NSFileManager.defaultManager isExecutableFileAtPath:path]) return;
+    NSDate *modified = [NSFileManager.defaultManager attributesOfItemAtPath:path error:nil][NSFileModificationDate];
+    NSString *stamp = [NSString stringWithFormat:@"%.0f", modified.timeIntervalSince1970];
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    if ([[defaults stringForKey:@"MicaWarmedHelperStamp"] isEqualToString:stamp]) return;
+    NSTask *task = [NSTask new];
+    task.executableURL = self.helperURL;
+    task.arguments = @[@"warm"];
+    task.standardInput = NSFileHandle.fileHandleWithNullDevice;
+    task.standardOutput = NSFileHandle.fileHandleWithNullDevice;
+    task.standardError = NSFileHandle.fileHandleWithNullDevice;
+    task.qualityOfService = NSQualityOfServiceBackground;
+    task.terminationHandler = ^(NSTask *finished) {
+        MicaDiagnosticsLog(@"dictation", [NSString stringWithFormat:@"speech model prewarm finished status=%d", finished.terminationStatus]);
+        if (finished.terminationStatus == 0) [defaults setObject:stamp forKey:@"MicaWarmedHelperStamp"];
+    };
+    NSError *error = nil;
+    if ([task launchAndReturnError:&error]) MicaDiagnosticsLog(@"dictation", @"prewarming the speech model in the background");
+}
+
 - (instancetype)initWithHelperURL:(NSURL *)helperURL {
     self = [super init];
     if (self) {

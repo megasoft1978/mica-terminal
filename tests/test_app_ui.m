@@ -486,7 +486,11 @@ static int MicaRunUISelfTest(void) {
         MicaUITestRecord(report, &allPassed, openedHyperlink == nil,
             @"ordinary clicks remain available to mouse-reporting terminal applications");
         NSInteger unsafeLinkRow = -1, unsafeLinkCol = -1;
-        MicaUITestFindText(hyperlinkTab.session, @"BAD-LINK", &unsafeLinkRow, &unsafeLinkCol);
+        // The second printf can arrive after the first; wait for it instead of racing the PTY.
+        for (int attempt = 0; attempt < 200 && unsafeLinkRow < 0; attempt++) {
+            mica_session_poll(hyperlinkTab.session, 10);
+            MicaUITestFindText(hyperlinkTab.session, @"BAD-LINK", &unsafeLinkRow, &unsafeLinkCol);
+        }
         NSRect unsafeLinkCell = [hyperlinkDelegate.terminalView cellRectAtRow:unsafeLinkRow col:unsafeLinkCol];
         NSPoint unsafeLinkPoint = NSMakePoint(NSMidX(unsafeLinkCell), NSMidY(unsafeLinkCell));
         MicaUITestSendMouse(hyperlinkDelegate, NSEventTypeLeftMouseDown, unsafeLinkPoint,

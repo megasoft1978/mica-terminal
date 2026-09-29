@@ -65,9 +65,20 @@ private struct MicaVoiceCLI {
         switch command {
         case "stream":
             await transcribeStream()
+        case "warm":
+            await warmModels()
         default:
             fail("Unknown voice helper command: \(command)")
         }
+    }
+
+    /// Loads the already-downloaded models once so Core ML rebuilds its compiled cache in the
+    /// background (it does after every app update). Never downloads anything.
+    private static func warmModels() async {
+        let cacheDirectory = modelCacheDirectory()
+        guard AsrModels.modelsExist(at: cacheDirectory, version: .ultra) else { exit(0) }
+        _ = try? await AsrModels.downloadAndLoad(to: cacheDirectory, version: .ultra, progressHandler: nil)
+        exit(0)
     }
 
     private static func transcribeStream() async {

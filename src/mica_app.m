@@ -3092,6 +3092,11 @@ static NSDictionary *MicaScalarDictionary(id object) {
     NSURL *voiceHelperURL = [NSBundle.mainBundle.bundleURL URLByAppendingPathComponent:@"Contents/Helpers/mica-voice"];
     self.voiceController = [[MicaVoiceController alloc] initWithHelperURL:voiceHelperURL];
     self.voiceController.delegate = self;
+    // Rebuild Core ML's compiled model cache in the background after an update so the first dictation is fast.
+    if (!getenv("MICA_TEST_NO_STARTUP"))
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 4 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            [self.voiceController prewarmSpeechModelIfNeeded];
+        });
     [self installMenus];
     self.uiMode = MicaUIModeNormal;
     [self loadLaunchConfiguration];
