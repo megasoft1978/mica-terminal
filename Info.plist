@@ -10,7 +10,7 @@
 	<key>CFBundleName</key><string>Mica</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>CFBundleShortVersionString</key><string>0.1.0</string>
-	<key>CFBundleVersion</key><string>28</string>
+	<key>CFBundleVersion</key><string>29</string>
 	<key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
 	<key>ATSApplicationFontsPath</key><string>Fonts</string>
 	<key>LSMinimumSystemVersion</key><string>14.0</string>

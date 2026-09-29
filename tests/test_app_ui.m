@@ -66,6 +66,20 @@ static NSString *MicaUITestVoiceFile(NSString *directory, MicaSession *session, 
         [NSString stringWithFormat:@"%d.%@", (int)mica_session_pid(session), suffix]];
 }
 
+static NSString *MicaUITestCaptureZLEBuffer(NSString *directory, MicaSession *session) {
+    NSString *path = MicaUITestVoiceFile(directory, session, @"buffer");
+    [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+    static const char chord[] = { 0x18, 0x02 };
+    mica_session_write(session, chord, sizeof(chord));
+    for (int attempt = 0; attempt < 100; attempt++) {
+        mica_session_poll(session, 0);
+        if ([[NSFileManager defaultManager] fileExistsAtPath:path]) break;
+        usleep(10000);
+    }
+    NSString *buffer = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+    return [buffer stringByTrimmingCharactersInSet:NSCharacterSet.newlineCharacterSet];
+}
+
 static NSUInteger MicaUITestCountText(MicaSession *session, NSString *text) {
     NSUInteger count = 0;
     const char *needle = text.UTF8String;
@@ -593,16 +607,21 @@ static int MicaRunUISelfTest(void) {
         // exercise that boundary directly so this test is independent of the
         // machine's physical keyboard layout.
         [voiceDelegate selectTabAtIndex:0];
-        MicaUITestInsertComposedText(voiceDelegate, @"@#@@");
-        BOOL atTyped = NO;
-        for (int attempt = 0; attempt < 200 && !atTyped; attempt++) {
+        mica_session_write(voiceTargetTab.session, "\x15", 1); // zsh: Ctrl-U
+        for (int attempt = 0; attempt < 20; attempt++) {
             mica_session_poll(voiceTargetTab.session, 0);
-            atTyped = MicaUITestFindText(voiceTargetTab.session, @"@#@@", NULL, NULL);
-            if (!atTyped) usleep(10000);
+            MicaUITestRunLoopFor(0.01);
         }
+        MicaUITestInsertComposedText(voiceDelegate, @"@#@@");
+        NSString *composedBuffer = voiceTestDirectoryReady
+            ? MicaUITestCaptureZLEBuffer(voiceTestDirectory, voiceTargetTab.session) : nil;
+        BOOL atTyped = [composedBuffer isEqualToString:@"@#@@"];
         MicaUITestRecord(report, &allPassed, atTyped,
-            [NSString stringWithFormat:@"@ and # can be typed with Shift and with left Option composing (screen=%@)",
-                MicaUITestScreenTail(voiceTargetTab.session)]);
+            [NSString stringWithFormat:@"composed punctuation reaches the captured shell buffer (buffer=%@)",
+                composedBuffer ?: @"<missing>"]);
+        if (voiceTestDirectoryReady)
+            [[NSFileManager defaultManager] removeItemAtPath:
+                MicaUITestVoiceFile(voiceTestDirectory, voiceTargetTab.session, @"buffer") error:nil];
         mica_session_write(voiceTargetTab.session, "\x15", 1); // zsh: Ctrl-U
         for (int attempt = 0; attempt < 20; attempt++) {
             mica_session_poll(voiceTargetTab.session, 0);
@@ -624,15 +643,15 @@ static int MicaRunUISelfTest(void) {
         MicaUITestSendFlags(voiceDelegate, 0, 58);
         mica_session_write(voiceTargetTab.session, "\x15", 1); // zsh: Ctrl-U
         MicaUITestInsertComposedText(voiceDelegate, @"mica_late_option_text");
-        BOOL lateAtTyped = NO;
-        for (int attempt = 0; attempt < 200 && !lateAtTyped; attempt++) {
-            mica_session_poll(voiceTargetTab.session, 0);
-            lateAtTyped = MicaUITestFindText(voiceTargetTab.session, @"mica_late_option_text", NULL, NULL);
-            if (!lateAtTyped) usleep(10000);
-        }
+        NSString *lateBuffer = voiceTestDirectoryReady
+            ? MicaUITestCaptureZLEBuffer(voiceTestDirectory, voiceTargetTab.session) : nil;
+        BOOL lateAtTyped = [lateBuffer isEqualToString:@"mica_late_option_text"];
         MicaUITestRecord(report, &allPassed, lateAtTyped && pushToTalkProbe.pushToTalkStarts == startsBefore + 1,
-            [NSString stringWithFormat:@"a character key after a long left Option hold leaves text input available (typed=%d starts=%lu)",
-                lateAtTyped, (unsigned long)(pushToTalkProbe.pushToTalkStarts - startsBefore)]);
+            [NSString stringWithFormat:@"a character key after a long left Option hold leaves text input available (buffer=%@ starts=%lu)",
+                lateBuffer ?: @"<missing>", (unsigned long)(pushToTalkProbe.pushToTalkStarts - startsBefore)]);
+        if (voiceTestDirectoryReady)
+            [[NSFileManager defaultManager] removeItemAtPath:
+                MicaUITestVoiceFile(voiceTestDirectory, voiceTargetTab.session, @"buffer") error:nil];
 
         // The Option-composition checks above intentionally typed into this prompt.
         // Clear that line so the transcript routing assertion starts from an empty buffer.
