@@ -26,7 +26,7 @@ CPPFLAGS := -Iinclude $(VTERM_CFLAGS)
 CORE := src/session.c
 POMODORO := src/pomodoro.c
 
-.PHONY: all app test test-voice validate preflight clean run memory desktop-apps install-desktop-apps new-instance
+.PHONY: all app sign dist test test-voice validate preflight clean run memory desktop-apps install-desktop-apps new-instance
 
 all: app
 
@@ -120,6 +120,17 @@ install-desktop-apps: app
 
 new-instance: app
 	python3 scripts/install-desktop-apps.py --new-instance --base-app "$(APP)" --project-icon-tool "$(PROJECT_ICON_TOOL)"
+
+# SIGN_ID defaults to ad-hoc ("-"); pass a Developer ID identity for distribution.
+SIGN_ID ?= -
+
+sign: app
+	codesign --force --options runtime --timestamp=none --entitlements Mica.entitlements --sign "$(SIGN_ID)" $(APP_VOICE_HELPER)
+	codesign --force --options runtime --timestamp=none --entitlements Mica.entitlements --sign "$(SIGN_ID)" $(APP)
+	codesign --verify --deep --strict $(APP)
+
+dist: sign
+	ditto -c -k --keepParent $(APP) $(BUILD)/Mica.zip
 
 clean:
 	rm -rf $(BUILD)

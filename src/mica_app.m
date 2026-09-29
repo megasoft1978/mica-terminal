@@ -1894,6 +1894,13 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         return;
     }
     NSString *characters = control ? event.charactersIgnoringModifiers : event.characters;
+    // On layouts where Option composes ASCII punctuation (@ # [ ] { } on Italian, German,
+    // Spanish), send that character as typed instead of an ESC-prefixed Meta key.
+    if (option && !control && characters.length == 1) {
+        unichar composed = [characters characterAtIndex:0];
+        if (composed >= 0x21 && composed <= 0x7e &&
+            ![characters isEqualToString:event.charactersIgnoringModifiers]) modifiers &= ~VTERM_MOD_ALT;
+    }
     for (NSUInteger i = 0; i < characters.length; i++) {
         unichar first = [characters characterAtIndex:i];
         uint32_t codepoint = first;
@@ -2399,7 +2406,14 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     if (![NSFileManager.defaultManager createDirectoryAtURL:directory
         withIntermediateDirectories:YES attributes:nil error:&error]) return NO;
     int fd = open(self.pomodoroLockURL.fileSystemRepresentation, O_CREAT | O_RDWR, 0600);
-    if (fd < 0 || flock(fd, LOCK_EX) != 0) { if (fd >= 0) close(fd); return NO; }
+    if (fd < 0) return NO;
+    // Never block the main thread on another (possibly stopped) Mica instance.
+    BOOL locked = NO;
+    for (int attempt = 0; attempt < 10 && !locked; attempt++) {
+        locked = flock(fd, LOCK_EX | LOCK_NB) == 0;
+        if (!locked) usleep(5000);
+    }
+    if (!locked) { close(fd); return NO; }
     self.pomodoroLockFD = fd;
     self.pomodoroOwnsLock = YES;
     return YES;
@@ -2717,7 +2731,8 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     [self loadLaunchConfiguration];
     [self.window makeFirstResponder:self.terminalView];
     self.pollTimer = [NSTimer timerWithTimeInterval:0.015 target:self selector:@selector(pollSessions:) userInfo:nil repeats:YES];
-    [[NSRunLoop mainRunLoop] addTimer:self.pollTimer forMode:NSRunLoopCommonModes];
+    self.pollTimer.tolerance = 0.005;
+[[NSRunLoop mainRunLoop] addTimer:self.pollTimer forMode:NSRunLoopCommonModes];
 }
 
 - (void)installMenus {
