@@ -608,6 +608,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     NSPoint _selectionEnd;
     uint64_t _selectionHistoryLines;
     MicaTab *_imeTab;
+    MicaTab *_draggingTab;
     NSString *_findQuery;
     long _findRow;
     NSFont *_styledFontBase;
@@ -2110,7 +2111,10 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
             return;
         }
         NSInteger index = [self tabIndexAtPoint:point];
-        if (index != NSNotFound) [self.owner selectTabAtIndex:index];
+        if (index != NSNotFound) {
+            [self.owner selectTabAtIndex:index];
+            _draggingTab = self.owner.tabs[(NSUInteger)index];
+        }
         return;
     }
     NSRect terminal = [self terminalRect];
@@ -2177,6 +2181,20 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 }
 
 - (void)mouseDragged:(NSEvent *)event {
+    if (_draggingTab) {
+        // Drag a tab sideways to reorder it; the active tab stays active.
+        NSInteger target = [self tabIndexAtPoint:[self convertPoint:event.locationInWindow fromView:nil]];
+        NSMutableArray<MicaTab *> *tabs = self.owner.tabs;
+        NSUInteger current = [tabs indexOfObjectIdenticalTo:_draggingTab];
+        if (target != NSNotFound && current != NSNotFound && (NSUInteger)target != current) {
+            MicaTab *active = self.owner.activeTab;
+            [tabs removeObjectAtIndex:current];
+            [tabs insertObject:_draggingTab atIndex:(NSUInteger)target];
+            self.owner.activeIndex = (NSInteger)[tabs indexOfObjectIdenticalTo:active];
+            [self setNeedsDisplayInRect:NSMakeRect(0, NSMaxY(self.bounds) - kHeaderHeight, self.bounds.size.width, kHeaderHeight)];
+        }
+        return;
+    }
     if (_mousePressed) {
         NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
         NSPoint cell = [self cellForPoint:point];
@@ -2269,6 +2287,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 }
 
 - (void)mouseUp:(NSEvent *)event {
+    _draggingTab = nil;
     if (_mousePressed) {
         mica_session_mouse(self.owner.activeTab.session, (int)_mouseRow, (int)_mouseCol, 1, false);
         _mousePressed = NO;
@@ -3061,6 +3080,7 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
         @"⌘⇧P  Choose tab",
         @"⌘⇧S  Browse scrollback",
         @"⌘⇧[ / ⌘⇧]  Previous / next tab",
+        @"Drag a tab  Reorder tabs",
         @"⌘+ / ⌘− / ⌘0  Increase / decrease / reset font size",
         @"⌘F / ⌘G / ⇧⌘G  Find in scrollback, next, previous",
         @"⌘K  Clear scrollback",
