@@ -6,4 +6,4 @@
 4. Add or update a test in `tests/` for behavior changes. Tests must not touch user configuration or call the network.
 5. Keep commits small and messages concise.
 
-Note: the repository has no root license yet, so contributions are accepted on the understanding that the owner will choose one.
+Contributions are accepted under the project’s [MIT License](LICENSE).
