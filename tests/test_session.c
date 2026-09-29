@@ -610,6 +610,8 @@ color_checked:
     assert(history_bytes == (MICA_HISTORY_LIMIT_BYTES / (80u * sizeof(VTermScreenCell))) *
                             (80u * sizeof(VTermScreenCell)));
     assert(mica_session_history_lines(history_session) > 0);
+    // Once scrollback is full the monotonic counter keeps growing while the stored count stays capped.
+    assert(mica_session_scrolled_lines(history_session) > mica_session_history_lines(history_session));
     mica_session_resize(history_session, 8, 160);
     history_bytes = mica_session_history_lines(history_session) * 160u * sizeof(VTermScreenCell);
     assert(history_bytes <= MICA_HISTORY_LIMIT_BYTES);
@@ -631,6 +633,31 @@ color_checked:
     assert(screen_contains(resize_history_session, "RIGHT-END"));
     mica_session_destroy(resize_history_session);
     printf("scrollback allocation stays within %u bytes per session\n", MICA_HISTORY_LIMIT_BYTES);
+
+    // The shell environment is built before fork: NO_COLOR is removed, Mica's variables are set,
+    // and a missing locale gets a UTF-8 fallback.
+    char *saved_no_startup = copy_env("MICA_TEST_NO_STARTUP");
+    char *saved_no_color = copy_env("NO_COLOR");
+    char *saved_lang = copy_env("LANG");
+    char *saved_lc_all = copy_env("LC_ALL");
+    char *saved_lc_ctype = copy_env("LC_CTYPE");
+    assert(setenv("MICA_TEST_NO_STARTUP", "1", 1) == 0);
+    assert(setenv("NO_COLOR", "1", 1) == 0);
+    unsetenv("LANG"); unsetenv("LC_ALL"); unsetenv("LC_CTYPE");
+    MicaSession *env_session = mica_session_create("/tmp",
+        "printf 'ENVCHECK[%s][%s][%s][%s]\\n' \"$TERM_PROGRAM\" \"${NO_COLOR-unset}\" \"$COLORTERM\" \"$LANG\"; sleep 1",
+        6, 100);
+    assert(env_session != NULL);
+    for (int i = 0; i < 300 && !screen_contains(env_session, "ENVCHECK["); i++)
+        mica_session_poll(env_session, 10);
+    assert(screen_contains(env_session, "ENVCHECK[Mica][unset][truecolor][en_US.UTF-8]"));
+    mica_session_destroy(env_session);
+    restore_env("MICA_TEST_NO_STARTUP", saved_no_startup);
+    restore_env("NO_COLOR", saved_no_color);
+    restore_env("LANG", saved_lang);
+    restore_env("LC_ALL", saved_lc_all);
+    restore_env("LC_CTYPE", saved_lc_ctype);
+    printf("child shell environment is prepared before fork\n");
 
     char profile_template[] = "/tmp/mica-profile-test-XXXXXX";
     char *profile_dir = mkdtemp(profile_template);
