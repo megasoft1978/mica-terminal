@@ -2,6 +2,10 @@
 
 Owner of judgement: Claude (reviews each cycle). Worker: Codex (`codex exec`, GPT 6 Luna, medium effort). The worker fixes and iterates until each item's acceptance checks pass, then writes a short report; the reviewer reads only the report and the diff and either accepts or sends corrections as the next cycle.
 
+## Token budget (reviewer is Claude Sonnet 5.5)
+
+The worker does the expensive reading, editing and test iteration; the reviewer never reads the worker's log (it is megabytes). Per cycle the reviewer reads only `scripts/review-cycle.sh <n>` (report, diff summary, one PASS/FAIL line per check, about 80 lines), then opens individual hunks only for risky areas (threads, memory, parsing). Corrections go into the next cycle's plan section, not into chat. Waiting uses one background wait on the report file, not polling.
+
 ## Rules for the worker (hard limits)
 
 - Work only in this repository. Never run `git push`, never create tags or releases, never run `make notarize`/`make dmg`/`make dist`/signing, never touch `/Applications`, `~/Desktop` launchers or the keychain, never handle passwords or tokens.
