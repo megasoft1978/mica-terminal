@@ -65,7 +65,7 @@ Run `make new-instance` to create a project launcher. To skip the prompts, run `
 
 ## Built with and credits
 
-Mica’s terminal session core is C, its macOS interface uses AppKit, and terminal escape sequences are parsed by [libvterm](https://github.com/neovim/libvterm) (MIT). Local speech recognition uses [FluidAudio](https://github.com/FluidInference/FluidAudio) (Apache-2.0), Apple Core ML and AVFoundation, and [Parakeet Ultra by Moondream](https://huggingface.co/moondream/parakeet-ultra), based on NVIDIA Parakeet TDT 0.6B v3 and distributed as a Core ML conversion by FluidInference (CC BY 4.0). See [voice/THIRD_PARTY_NOTICES.md](voice/THIRD_PARTY_NOTICES.md) and [voice/ThirdPartyLicenses](voice/ThirdPartyLicenses/) for model and dependency notices. Mica itself is released under the [MIT License](LICENSE).
+Mica’s terminal session core is C, its macOS interface uses AppKit, and terminal escape sequences are parsed by [libvterm](https://github.com/neovim/libvterm) (MIT). The terminal font is [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) (SIL Open Font License 1.1, see `fonts/OFL.txt`). Local speech recognition uses [FluidAudio](https://github.com/FluidInference/FluidAudio) (Apache-2.0), Apple Core ML and AVFoundation, and [Parakeet Ultra by Moondream](https://huggingface.co/moondream/parakeet-ultra), based on NVIDIA Parakeet TDT 0.6B v3 and distributed as a Core ML conversion by FluidInference (CC BY 4.0). See [voice/THIRD_PARTY_NOTICES.md](voice/THIRD_PARTY_NOTICES.md) and [voice/ThirdPartyLicenses](voice/ThirdPartyLicenses/) for model and dependency notices. Mica itself is released under the [MIT License](LICENSE).
 
 ## Build and contribute
 

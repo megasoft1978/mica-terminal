@@ -12,6 +12,7 @@
 	<key>CFBundleShortVersionString</key><string>0.0.1</string>
 	<key>CFBundleVersion</key><string>23</string>
 	<key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
+	<key>ATSApplicationFontsPath</key><string>Fonts</string>
 	<key>LSMinimumSystemVersion</key><string>14.0</string>
 	<key>NSHumanReadableCopyright</key><string>© 2026 Mica Terminal</string>
 	<key>NSHighResolutionCapable</key><true/>

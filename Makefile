@@ -12,6 +12,7 @@ VOICE_MODULE_CACHE := $(abspath $(BUILD)/swift-module-cache)
 VOICE_BINARY := $(BUILD)/mica-voice
 APP_VOICE_HELPER := $(APP)/Contents/Helpers/mica-voice
 APP_THIRD_PARTY_NOTICES := $(APP)/Contents/Resources/THIRD_PARTY_NOTICES.md
+APP_FONTS := $(APP)/Contents/Resources/Fonts/JetBrainsMono-Regular.ttf
 APP_LAUNCHER_SCRIPT := $(APP)/Contents/Resources/Scripts/install-desktop-apps.py
 APP_ICON_TOOL := $(APP)/Contents/Helpers/mica-project-icon
 VOICE_SWIFT_SOURCES := $(shell find voice/Sources -type f -not -name '.*')
@@ -34,7 +35,7 @@ POMODORO := src/pomodoro.c
 
 all: app
 
-app: $(APP_LAUNCHER_SCRIPT) $(APP_ICON_TOOL) $(APP_BIN) $(APP_ICON) $(PROJECT_ICON_TOOL) $(VOICE_BINARY) $(APP_VOICE_HELPER) $(APP_THIRD_PARTY_NOTICES)
+app: $(APP_FONTS) $(APP_LAUNCHER_SCRIPT) $(APP_ICON_TOOL) $(APP_BIN) $(APP_ICON) $(PROJECT_ICON_TOOL) $(VOICE_BINARY) $(APP_VOICE_HELPER) $(APP_THIRD_PARTY_NOTICES)
 
 $(APP_BIN): Makefile $(VTERM_STATIC) src/mica_app.m src/mica_voice_controller.m src/mica_voice_controller.h src/mica_diagnostics.m src/mica_diagnostics.h $(CORE) $(POMODORO) include/mica.h include/mica_pomodoro.h Info.plist
 	@mkdir -p $(dir $@)
@@ -53,6 +54,11 @@ $(VOICE_BINARY): voice/Package.swift voice/Package.resolved $(VOICE_SWIFT_SOURCE
 		--scratch-path "$(VOICE_SCRATCH)" -c release --show-bin-path); \
 	cp "$$bin_dir/mica-voice" "$@"
 	@chmod 755 "$@"
+
+# JetBrains Mono (SIL OFL 1.1) is bundled so the terminal looks the same on every Mac.
+$(APP_FONTS): $(wildcard fonts/*)
+	@mkdir -p $(dir $@)
+	cp fonts/*.ttf fonts/OFL.txt $(dir $@)
 
 # Bundled so "New Project Launcher…" works from a downloaded app, not only from a source checkout.
 $(APP_LAUNCHER_SCRIPT): scripts/install-desktop-apps.py scripts/build-macos-icon.sh scripts/png-to-icns.py
