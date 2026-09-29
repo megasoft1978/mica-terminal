@@ -51,7 +51,7 @@ iTerm2 plus Wispr Flow is about 770 MB before you add a timer. Dictation adds a 
 ## Install
 
 1. [Download Mica.dmg](https://github.com/megasoft1978/mica-terminal/releases/latest/download/Mica.dmg) (Apple silicon, macOS 14 or later) and drag Mica to Applications.
-2. The first time, open System Settings → Privacy & Security and choose **Open Anyway** (macOS 15 and later; earlier versions also allow Control-click → Open). Releases are ad-hoc signed until they are notarized with a Developer ID.
+2. Mica is signed with a Developer ID and notarized by Apple, so it opens normally. Alpha builds may still change quickly.
 3. Mica asks for the microphone only when you start dictation. Checksums are in `SHA256SUMS.txt` on the [release page](https://github.com/megasoft1978/mica-terminal/releases/latest).
 
 ### Build from source
