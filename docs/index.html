@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#f3f5f8" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0b0f14" media="(prefers-color-scheme: dark)">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; font-src 'self'; style-src 'sha256-zuHtESyke/2vTdh/fiDFqbMpMC8DzSmw5gFmmT69syE='; script-src 'sha256-obQLhE2id96/7pWU+OVxA2Il4k1t4IAuXtnh2TzQdyE='; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; font-src 'self'; style-src 'sha256-JTPFpgrJ49j1qE/LiOv28q4IHrgt6uSDAafKJLJwRao='; script-src 'sha256-obQLhE2id96/7pWU+OVxA2Il4k1t4IAuXtnh2TzQdyE='; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
   <title>Mica — a native Mac terminal for your projects</title>
   <meta name="description" content="Mica is a native macOS terminal that keeps each project's shells and coding agents together, and shows you when one needs you.">
@@ -115,6 +115,12 @@
       .sheet.two { animation-delay: .08s; } .sheet.three { animation-delay: .16s; }
       @keyframes settle { from { opacity: 0; transform: translateY(24px) scale(.98); } }
     }
+    @media (max-width: 600px) {
+      /* Show the left part of the window at a readable size instead of a tiny full view. */
+      .window img { width: 172%; max-width: none; }
+      .lights { display: none; }
+      .themes button { min-height: 40px; }
+    }
     @media (max-width: 860px) {
       .install, .row, .row.flip { grid-template-columns: 1fr; gap: 28px; }
       .row.flip .shot { order: 0; }
@@ -168,8 +174,7 @@
           <h2>Build it in four commands.</h2>
           <p>You need the Xcode command line tools and Homebrew. Mica links its one C dependency into the app, so the finished bundle runs on its own.</p>
         </div>
-        <div class="code" role="group" aria-label="Build instructions">
-          <button class="copy" type="button" data-copy="brew install libvterm pkg-config&#10;git clone https://github.com/megasoft1978/mica-terminal.git&#10;cd mica-terminal&#10;make app &amp;&amp; open build/Mica.app">Copy</button><span class="c"># the terminal parsing library</span>
+        <div class="code" role="group" aria-label="Build instructions"><button class="copy" type="button" data-copy="brew install libvterm pkg-config&#10;git clone https://github.com/megasoft1978/mica-terminal.git&#10;cd mica-terminal&#10;make app &amp;&amp; open build/Mica.app">Copy</button><span class="c"># the terminal parsing library</span>
 brew install libvterm pkg-config
 git clone https://github.com/megasoft1978/mica-terminal.git
 cd mica-terminal
