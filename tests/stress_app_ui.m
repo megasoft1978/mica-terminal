@@ -66,15 +66,27 @@ static void Act(MicaAppDelegate *delegate) {
     case 15: Key(delegate, @"c", NSEventModifierFlagControl, 8); break;
     case 16: Key(delegate, @"\uF700", 0, 126); break;
     case 17: {
-        NSPoint a = NSMakePoint(Between(0, (int)size.width), Between(0, (int)size.height));
-        NSPoint b = NSMakePoint(Between(0, (int)size.width), Between(0, (int)size.height));
+        // Keep drag selection inside the terminal grid. Random points over the
+        // header can open AppKit's blocking tab overflow menu in this harness.
+        NSRect terminal = [view terminalRect];
+        NSPoint a = NSMakePoint(Between((int)NSMinX(terminal) + 2, (int)NSMaxX(terminal) - 2),
+                                Between((int)NSMinY(terminal) + 2, (int)NSMaxY(terminal) - 2));
+        NSPoint b = NSMakePoint(Between((int)NSMinX(terminal) + 2, (int)NSMaxX(terminal) - 2),
+                                Between((int)NSMinY(terminal) + 2, (int)NSMaxY(terminal) - 2));
         Mouse(delegate, NSEventTypeLeftMouseDown, a, 0, 1);
         Mouse(delegate, NSEventTypeLeftMouseDragged, b, 0, 1);
         Mouse(delegate, NSEventTypeLeftMouseUp, b, 0, 1);
         break;
     }
-    case 18: Mouse(delegate, NSEventTypeLeftMouseDown, NSMakePoint(Between(0, (int)size.width), size.height - 10), 0, Between(1, 2));
-             Mouse(delegate, NSEventTypeLeftMouseUp, NSMakePoint(Between(0, (int)size.width), size.height - 10), 0, 1); break;
+    case 18: {
+        NSRect firstTab = [view tabRectAtIndex:0];
+        if (!NSIsEmptyRect(firstTab)) {
+            NSPoint point = NSMakePoint(NSMidX(firstTab), NSMidY(firstTab));
+            Mouse(delegate, NSEventTypeLeftMouseDown, point, 0, Between(1, 2));
+            Mouse(delegate, NSEventTypeLeftMouseUp, point, 0, 1);
+        }
+        break;
+    }
     case 19: if (view.hasTextSelection) [view copySelection:nil]; break;
     case 20: [view clearSelection]; [view setNeedsDisplay:YES]; break;
     case 21: {

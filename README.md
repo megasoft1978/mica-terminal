@@ -11,6 +11,12 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/megasoft1978/mica-terminal/releases/latest"><img src="https://img.shields.io/github/v/release/megasoft1978/mica-terminal?label=release" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/macOS-14%2B%20%C2%B7%20Apple%20silicon-555" alt="macOS 14 or later, Apple silicon">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
+</p>
+
+<p align="center">
   <a href="https://megasoft1978.github.io/mica-terminal/">Website</a> ·
   <a href="https://github.com/megasoft1978/mica-terminal/releases/latest/download/Mica.dmg"><strong>Download</strong></a> ·
   <a href="https://github.com/megasoft1978/mica-terminal/releases/latest">Release notes</a> ·
@@ -24,7 +30,7 @@
   </picture>
 </p>
 
-<p align="center"><sub>The real Mica view, rendered from a sample project. macOS 14 or later.</sub></p>
+<p align="center"><sub>The real Mica view, rendered from a sample project.</sub></p>
 
 ## Why it is light
 
@@ -63,6 +69,20 @@ git clone https://github.com/megasoft1978/mica-terminal.git
 cd mica-terminal
 make app && open build/Mica.app
 ```
+
+### Dictation, live
+
+<p align="center"><img src="docs/assets/crop-dictation-dark.png" alt="The status bar while dictating: microphone level, elapsed time and the last few words you said" width="620"></p>
+
+The microphone starts recording the moment you hold <kbd>⌥</kbd>, so nothing you say is lost while the model loads. The strip shows a live level, the time, and the last few words as they are recognized.
+
+## Privacy and questions
+
+- **What leaves my Mac?** Nothing you say or type. Recognition runs locally through Core ML. The only network traffic is the one-time 630 MB speech model download; there are no accounts, analytics or telemetry.
+- **Microphone permission?** Asked once, when you first dictate. Audio is processed in memory and not saved.
+- **Is the download safe?** It is signed with a Developer ID and notarized by Apple. Check it with `shasum -a 256 -c SHA256SUMS.txt` next to the downloaded files.
+- **Intel Macs?** Not yet; this alpha is built and tested on Apple silicon.
+- **Codex, Claude Code, lazygit?** Ordinary programs in a zsh tab. Mica shows on the tab when an agent is working or waiting for you.
 
 ## Keys worth knowing
 

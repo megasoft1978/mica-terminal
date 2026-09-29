@@ -87,6 +87,8 @@ int main(int argc, const char *argv[]) {
         [voice setValue:@(MicaVoiceControllerStateListening) forKey:@"state"];
         [voice setValue:@"Change the tab widths so all five tabs fit in the window and then run the tests again" forKey:@"transcript"];
         [voice setValue:@(6.0) forKey:@"elapsedSeconds"];
+        [voice setValue:@(0.7) forKey:@"audioLevel"];
+        [voice setValue:@NO forKey:@"hasProgress"];
         SaveViewImage(main.terminalView, out, @"05-dictation-listening");
         [voice setValue:@(MicaVoiceControllerStateFailed) forKey:@"state"];
         [voice setValue:@"Microphone access is off. Enable Mica in System Settings → Privacy & Security → Microphone." forKey:@"statusText"];

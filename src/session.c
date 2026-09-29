@@ -1269,14 +1269,25 @@ static void release_sync_hold(MicaSession *session) {
 
 static void hold_sync_bytes(MicaSession *session, const char *bytes, size_t length) {
     if (!length) return;
-    if (session->sync_hold_length + length > MICA_SYNC_HOLD_LIMIT) {
+    // Keep this arithmetic bounded even if a future caller supplies a much
+    // larger chunk. The previous add-then-compare could wrap size_t and let
+    // the subsequent memcpy run past the fixed synchronized-frame limit.
+    if (session->sync_hold_length > MICA_SYNC_HOLD_LIMIT ||
+        length > MICA_SYNC_HOLD_LIMIT - session->sync_hold_length) {
         release_sync_hold(session);
         vterm_input_write(session->vt, bytes, length);
         return;
     }
-    if (session->sync_hold_length + length > session->sync_hold_capacity) {
+    size_t required = session->sync_hold_length + length;
+    if (required > session->sync_hold_capacity) {
         size_t capacity = session->sync_hold_capacity ? session->sync_hold_capacity : 16384;
-        while (capacity < session->sync_hold_length + length) capacity *= 2;
+        while (capacity < required) {
+            if (capacity > MICA_SYNC_HOLD_LIMIT / 2) {
+                capacity = MICA_SYNC_HOLD_LIMIT;
+                break;
+            }
+            capacity *= 2;
+        }
         char *grown = realloc(session->sync_hold, capacity);
         if (!grown) { vterm_input_write(session->vt, bytes, length); return; }
         session->sync_hold = grown;

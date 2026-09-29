@@ -103,6 +103,11 @@ int main(int argc, char **argv) {
     run_case("sync frames with clears and scrolling",
         "perl -e '$|=1; for $i (1..600){ print \"\\e[?2026h\\e[2J\\e[H\"; print \"row $_\\n\" for 1..int(rand(60)); "
         "print \"\\e[?2026l\"; print \"after $i\\n\" x int(rand(3)); }'; sleep 1", 800);
+    // Regression for sync_hold lifetime: force scrollback reallocations while one large synchronized frame
+    // is still buffered, then append and release the frame. This caught history_push freeing sync_hold.
+    run_case("sync hold survives scrollback growth",
+        "perl -e '$|=1; print \"\\e[?2026h\"; for(1..12000){ print \"sync-scroll-$_\\n\"; } "
+        "print \"\\e[?2026l\"'; sleep 1", 3000);
     // A frame that never ends and grows past the hold limit must be released, not grow without bound.
     run_case("unterminated oversized sync frame",
         "perl -e '$|=1; print \"\\e[?2026h\"; print \"x\" x 65536, \"\\n\" for 1..90'; sleep 1", 600);

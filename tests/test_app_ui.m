@@ -627,6 +627,14 @@ static int MicaRunUISelfTest(void) {
             [NSString stringWithFormat:@"a character key after a long left Option hold types instead of dictating (typed=%d starts=%lu)",
                 lateAtTyped, (unsigned long)(pushToTalkProbe.pushToTalkStarts - startsBefore)]);
 
+        // The Option-composition checks above intentionally typed into this prompt.
+        // Clear that line so the transcript routing assertion starts from an empty buffer.
+        mica_session_write(voiceTargetTab.session, "\x15", 1); // zsh: Ctrl-U
+        for (int attempt = 0; attempt < 20; attempt++) {
+            mica_session_poll(voiceTargetTab.session, 0);
+            MicaUITestRunLoopFor(0.01);
+        }
+
         char rawHelperTemplate[] = "/tmp/mica-voice-raw-XXXXXX";
         char rawCallsTemplate[] = "/tmp/mica-voice-raw-calls-XXXXXX";
         int rawHelperFD = mkstemp(rawHelperTemplate);
@@ -709,7 +717,7 @@ static int MicaRunUISelfTest(void) {
         }
         BOOL explicitReturnExecutes = NO;
         if (routedToCapturedTab && wasNotSubmittedAutomatically) {
-            mica_session_key(voiceTargetTab.session, VTERM_KEY_ENTER, VTERM_MOD_NONE);
+            MicaUITestSendKey(voiceDelegate, @"\r", 0, 36);
             for (int attempt = 0; attempt < 300; attempt++) {
                 mica_session_poll(voiceTargetTab.session, 0);
                 if ([[NSFileManager defaultManager] fileExistsAtPath:targetExecutionPath]) {
