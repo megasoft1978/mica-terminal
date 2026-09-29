@@ -23,6 +23,8 @@ CFLAGS ?= -O2
 C_WARNINGS := -Wall -Wextra -Wpedantic
 OBJC_WARNINGS := -Wall -Wextra -Wno-deprecated-declarations
 CPPFLAGS := -Iinclude $(VTERM_CFLAGS)
+# Link libvterm statically into the app so the bundle runs signed (hardened runtime) and on Macs without Homebrew.
+VTERM_STATIC := $(shell $(PKG_CONFIG) --variable=libdir vterm 2>/dev/null)/libvterm.a
 CORE := src/session.c
 POMODORO := src/pomodoro.c
 
@@ -32,10 +34,10 @@ all: app
 
 app: $(APP_BIN) $(APP_ICON) $(PROJECT_ICON_TOOL) $(VOICE_BINARY) $(APP_VOICE_HELPER) $(APP_THIRD_PARTY_NOTICES)
 
-$(APP_BIN): src/mica_app.m src/mica_voice_controller.m src/mica_voice_controller.h src/mica_diagnostics.m src/mica_diagnostics.h $(CORE) $(POMODORO) include/mica.h include/mica_pomodoro.h Info.plist
+$(APP_BIN): Makefile $(VTERM_STATIC) src/mica_app.m src/mica_voice_controller.m src/mica_voice_controller.h src/mica_diagnostics.m src/mica_diagnostics.h $(CORE) $(POMODORO) include/mica.h include/mica_pomodoro.h Info.plist
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(OBJC_WARNINGS) -fobjc-arc $(CPPFLAGS) \
-		-framework Cocoa -framework AVFoundation -framework UserNotifications $(CORE) $(POMODORO) src/mica_diagnostics.m src/mica_voice_controller.m src/mica_app.m $(VTERM_LIBS) -o $@
+		-framework Cocoa -framework AVFoundation -framework UserNotifications $(CORE) $(POMODORO) src/mica_diagnostics.m src/mica_voice_controller.m src/mica_app.m $(VTERM_STATIC) -o $@
 	@mkdir -p $(APP)/Contents
 	@cp Info.plist $(APP)/Contents/Info.plist
 	@touch $(APP)
