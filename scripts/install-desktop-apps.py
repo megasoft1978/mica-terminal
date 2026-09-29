@@ -364,13 +364,22 @@ def create_instance_from_prompts(
     manifest: Path,
     project_icon_tool: Path,
     register: bool = True,
+    name: str | None = None,
+    folder: str | None = None,
+    command: str | None = None,
 ) -> dict:
     cwd = Path.cwd().resolve()
     default_name = cwd.name or "Mica Project"
-    name = input(f"Name for this Mica instance [{default_name}]: ").strip() or default_name
-    folder_text = input(f"Project folder [{cwd}]: ").strip()
-    project_dir = Path(folder_text).expanduser() if folder_text else cwd
-    command = input("Startup command (optional; leave blank for a shell): ").strip()
+    # Any of name/folder/command given on the command line makes the run non-interactive.
+    if name is not None or folder is not None or command is not None:
+        name = (name or default_name).strip() or default_name
+        project_dir = Path(folder).expanduser() if folder else cwd
+        command = (command or "").strip()
+    else:
+        name = input(f"Name for this Mica instance [{default_name}]: ").strip() or default_name
+        folder_text = input(f"Project folder [{cwd}]: ").strip()
+        project_dir = Path(folder_text).expanduser() if folder_text else cwd
+        command = input("Startup command (optional; leave blank for a shell): ").strip()
 
     existing = []
     if manifest.is_file():
@@ -412,6 +421,9 @@ def main() -> int:
     parser.add_argument("--backups", type=Path, default=DEFAULT_BACKUPS)
     parser.add_argument("--project-icon-tool", type=Path, default=DEFAULT_PROJECT_ICON_TOOL)
     parser.add_argument("--new-instance", action="store_true", help="create a project layout and Desktop app interactively")
+    parser.add_argument("--name", help="with --new-instance: project name (skips the prompts)")
+    parser.add_argument("--folder", help="with --new-instance: project folder (skips the prompts)")
+    parser.add_argument("--command", help="with --new-instance: optional startup command (skips the prompts)")
     parser.add_argument("--no-register", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--install", action="store_true", help="install lightweight launchers and migrate matched shell scripts")
     args = parser.parse_args()
@@ -425,7 +437,8 @@ def main() -> int:
         project_icon_tool = args.project_icon_tool.expanduser().resolve()
         if args.new_instance:
             project = create_instance_from_prompts(
-                layouts, output, base_app, manifest, project_icon_tool, register=not args.no_register
+                layouts, output, base_app, manifest, project_icon_tool, register=not args.no_register,
+                name=args.name, folder=args.folder, command=args.command,
             )
             print(f"created {project['app_path']}")
             print(f"layout: {project['layout_path']}")

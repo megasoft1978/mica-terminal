@@ -261,6 +261,34 @@ def main() -> None:
         assert json.loads(manifest.read_text(encoding="utf-8"))[0]["launch_script"] is None
         assert "created " in create.stdout and "opens a zsh shell" in create.stdout
 
+        # The same launcher can be created without prompts, which is how a GUI would drive it.
+        flag_root = root / "flag-run"
+        flag_desktop = flag_root / "Desktop"
+        flag_desktop.mkdir(parents=True)
+        flag_run = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "install-desktop-apps.py"),
+                "--new-instance",
+                "--no-register",
+                "--name", "Flag Project",
+                "--folder", str(project_folder),
+                "--command", "codex",
+                "--layouts", str(flag_root / "layouts"),
+                "--output", str(flag_desktop),
+                "--manifest", str(flag_root / "desktop-apps.json"),
+                "--base-app", str(base_app),
+                "--project-icon-tool", str(icon_tool),
+            ],
+            stdin=subprocess.DEVNULL,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        flag_layout = (flag_root / "layouts" / "flag-project.mica").read_text(encoding="utf-8")
+        assert flag_layout.endswith(f"Shell\t{project_folder.resolve()}\tcodex\n"), flag_layout
+        assert (flag_desktop / "flag-project.app").is_dir() and "created " in flag_run.stdout
+
         conflict = subprocess.run(
             [
                 sys.executable,

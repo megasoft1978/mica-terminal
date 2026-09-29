@@ -59,7 +59,7 @@ The first dictation use downloads the local speech model (about 630 MB). Mica re
 
 ### Create a project launcher
 
-Run `make new-instance` to create a project launcher. Use **Mica → Settings…** (`⌘,`) or **Project → Project Settings…** to edit its name and tabs. A `.mica` layout can also define named tabs, folders, and optional commands.
+Run `make new-instance` to create a project launcher. To skip the prompts, run `python3 scripts/install-desktop-apps.py --new-instance --name "My Project" --folder ~/code/my-project --command codex`. Use **Mica → Settings…** (`⌘,`) or **Project → Project Settings…** to edit its name and tabs. A `.mica` layout can also define named tabs, folders, and optional commands.
 
 ## Built with and credits
 
