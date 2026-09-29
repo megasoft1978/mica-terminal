@@ -1087,7 +1087,7 @@ static int MicaRunUISelfTest(void) {
         NSRect thirdTabRect = [delegate.terminalView tabRectAtIndex:2];
         BOOL equalTabWidths = fabs(firstTabRect.size.width - secondTabRect.size.width) < 0.01 &&
             fabs(secondTabRect.size.width - thirdTabRect.size.width) < 0.01 &&
-            fabs(firstTabRect.origin.x) < 0.01 &&
+            fabs(firstTabRect.origin.x - [delegate.terminalView tabsLeadingInset]) < 0.01 &&
             fabs(NSMaxX(firstTabRect) - NSMinX(secondTabRect)) < 0.01 &&
             fabs(NSMaxX(secondTabRect) - NSMinX(thirdTabRect)) < 0.01 &&
             fabs(NSMaxX(thirdTabRect) - delegate.terminalView.bounds.size.width) > 0.01 &&
@@ -1112,10 +1112,10 @@ static int MicaRunUISelfTest(void) {
         CGFloat lineHeightForDamage = ceil(delegate.terminalView.terminalFont.ascender -
             delegate.terminalView.terminalFont.descender + delegate.terminalView.terminalFont.leading + 1.0);
         NSRect mappedDirtyRect = [delegate.terminalView dirtyRectForRows:testDirtyRows];
-        BOOL rowDamageMappingWorks = NSPointInRect(NSMakePoint(5, NSMaxY(terminalAreaForDamage) - lineHeightForDamage * 1.5), mappedDirtyRect) &&
-            NSPointInRect(NSMakePoint(5, NSMaxY(terminalAreaForDamage) - lineHeightForDamage * 2.5), mappedDirtyRect) &&
-            !NSPointInRect(NSMakePoint(5, NSMaxY(terminalAreaForDamage) - lineHeightForDamage * 0.5), mappedDirtyRect) &&
-            !NSPointInRect(NSMakePoint(5, NSMaxY(terminalAreaForDamage) - lineHeightForDamage * 3.5), mappedDirtyRect);
+        BOOL rowDamageMappingWorks = NSPointInRect(NSMakePoint(15, NSMaxY(terminalAreaForDamage) - lineHeightForDamage * 1.5), mappedDirtyRect) &&
+            NSPointInRect(NSMakePoint(15, NSMaxY(terminalAreaForDamage) - lineHeightForDamage * 2.5), mappedDirtyRect) &&
+            !NSPointInRect(NSMakePoint(15, NSMaxY(terminalAreaForDamage) - lineHeightForDamage * 0.5), mappedDirtyRect) &&
+            !NSPointInRect(NSMakePoint(15, NSMaxY(terminalAreaForDamage) - lineHeightForDamage * 3.5), mappedDirtyRect);
         MicaUITestRecord(report, &allPassed, rowDamageMappingWorks,
                          @"PTY dirty rows map to only their terminal display rows");
 
@@ -2115,7 +2115,7 @@ static int MicaRunUISelfTest(void) {
         NSDictionary *gridAttrs = @{ NSFontAttributeName: exitDelegate.terminalView.terminalFont };
         CGFloat exitCharWidth = [@"M" sizeWithAttributes:gridAttrs].width;
         NSInteger expectedRemainingCols = (NSInteger)floor(
-            exitDelegate.terminalView.bounds.size.width / MAX(1, exitCharWidth));
+            [exitDelegate.terminalView terminalRect].size.width / MAX(1, exitCharWidth));
         BOOL remainingTabResized = shellExitClosedTab &&
             mica_session_cols(exitDelegate.activeTab.session) == expectedRemainingCols;
         MicaUITestRecord(report, &allPassed, shellExitClosedTab && remainingTabResized,

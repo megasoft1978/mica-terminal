@@ -15,6 +15,8 @@
 
 static const CGFloat kHeaderHeight = 28.0;
 static const CGFloat kStatusHeight = 32.0;
+static const CGFloat kTerminalPaddingX = 10.0;   // breathing room between the window edge and the first column
+static const CGFloat kTrafficLightInset = 78.0;  // tab strip starts after the window buttons in the merged title bar
 static NSTimeInterval gLastVoiceAnimationAt = 0;
 static const NSTimeInterval kAgentActivityQuietInterval = 2.5;
 static const CGFloat kFontSizeDefault = 16.0;
@@ -388,6 +390,9 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (NSRect)cellRectAtRow:(NSInteger)row col:(NSInteger)col;
 - (NSColor *)colorForVTermColor:(VTermColor)color isForeground:(BOOL)isForeground;
 - (NSRect)dictationStatusRect;
+- (NSRect)terminalHitRect;
+- (CGFloat)tabsLeadingInset;
+- (BOOL)windowIsActive;
 - (void)drawDictationStatusBar:(MicaVoiceController *)voice inRect:(NSRect)status;
 - (void)openHyperlinkID:(uint32_t)hyperlinkID forTab:(MicaTab *)tab;
 - (void)cancelLeftOptionTracking;
@@ -958,8 +963,25 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 }
 
 - (NSRect)terminalRect {
+    return NSMakeRect(kTerminalPaddingX, kStatusHeight, MAX(0, self.bounds.size.width - 2 * kTerminalPaddingX),
+                      MAX(0, self.bounds.size.height - kHeaderHeight - kStatusHeight));
+}
+
+// The full-width band the terminal occupies, padding included, for hit-testing drops and clicks.
+// False when another window or app has focus; tests always count as active so renders stay deterministic.
+- (BOOL)windowIsActive {
+    if (getenv("MICA_TEST_NO_STARTUP")) return YES;
+    return self.window.isKeyWindow || self.window == nil;
+}
+
+- (NSRect)terminalHitRect {
     return NSMakeRect(0, kStatusHeight, self.bounds.size.width,
                       MAX(0, self.bounds.size.height - kHeaderHeight - kStatusHeight));
+}
+
+// Room reserved at the left of the tab strip for the traffic lights (none in full screen).
+- (CGFloat)tabsLeadingInset {
+    return (self.window.styleMask & NSWindowStyleMaskFullScreen) ? 8.0 : kTrafficLightInset;
 }
 
 - (NSRect)pomodoroControlRect {
@@ -1100,7 +1122,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 - (NSRect)cellRectAtRow:(NSInteger)row col:(NSInteger)col {
     NSRect area = [self terminalRect];
     CGFloat top = NSMaxY(area);
-    return NSMakeRect(col * _charWidth, top - (row + 1) * _lineHeight, _charWidth, _lineHeight);
+    return NSMakeRect(NSMinX(area) + col * _charWidth, top - (row + 1) * _lineHeight, _charWidth, _lineHeight);
 }
 
 - (NSString *)labelForTab:(MicaTab *)tab active:(BOOL)active {
@@ -1176,16 +1198,17 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 - (NSRect)tabRectAtIndex:(NSUInteger)index {
     NSUInteger count = self.owner.tabs.count;
     if (index >= count || count == 0) return NSZeroRect;
-    NSRect header = NSMakeRect(0, NSMaxY(self.bounds) - kHeaderHeight,
-                               self.bounds.size.width - [self projectBadgeWidth], kHeaderHeight);
+    CGFloat inset = [self tabsLeadingInset];
+    NSRect header = NSMakeRect(inset, NSMaxY(self.bounds) - kHeaderHeight,
+                               MAX(0, self.bounds.size.width - [self projectBadgeWidth] - inset), kHeaderHeight);
     NSRange visible = [self visibleTabRange];
     if (index < visible.location || index >= NSMaxRange(visible)) return NSZeroRect;
     CGFloat tabWidth = MIN(header.size.width / (CGFloat)count, kTabMaximumWidth);
-    CGFloat x = index * tabWidth;
+    CGFloat x = NSMinX(header) + index * tabWidth;
     if ([self hasTabOverflow]) {
         CGFloat tabsWidth = MAX(0, header.size.width - kTabOverflowWidth);
         tabWidth = visible.length ? MIN(tabsWidth / (CGFloat)visible.length, kTabMaximumWidth) : 0;
-        x = (index - visible.location) * tabWidth;
+        x = NSMinX(header) + (index - visible.location) * tabWidth;
     }
     return NSMakeRect(x, NSMinY(header), tabWidth, header.size.height);
 }
@@ -1200,7 +1223,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 
 - (NSRange)visibleTabRange {
     NSUInteger count = self.owner.tabs.count;
-    CGFloat width = MAX(0, self.bounds.size.width - [self projectBadgeWidth]);
+    CGFloat width = MAX(0, self.bounds.size.width - [self projectBadgeWidth] - [self tabsLeadingInset]);
     if (count == 0) return NSMakeRange(0, 0);
     if (width <= 0 || count * kTabMinimumWidth <= width) return NSMakeRange(0, count);
     NSUInteger capacity = (NSUInteger)floor(MAX(0, width - kTabOverflowWidth) / kTabMinimumWidth);
@@ -1347,7 +1370,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 
 - (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
     NSPoint point = [self convertPoint:sender.draggingLocation fromView:nil];
-    if (!NSPointInRect(point, [self terminalRect]) ||
+    if (!NSPointInRect(point, [self terminalHitRect]) ||
         [self fileURLsFromPasteboard:sender.draggingPasteboard].count == 0)
         return NSDragOperationNone;
     return NSDragOperationCopy;
@@ -1364,7 +1387,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 - (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
     [self.owner wakePollTimer];
     NSPoint point = [self convertPoint:sender.draggingLocation fromView:nil];
-    if (!NSPointInRect(point, [self terminalRect])) return NO;
+    if (!NSPointInRect(point, [self terminalHitRect])) return NO;
     return [self insertFileURLs:[self fileURLsFromPasteboard:sender.draggingPasteboard]];
 }
 
@@ -1701,7 +1724,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 - (NSPoint)cellForPoint:(NSPoint)point {
     CGFloat top = NSMaxY([self terminalRect]);
     NSInteger row = (NSInteger)floor((top - point.y) / MAX(_lineHeight, 1));
-    NSInteger col = (NSInteger)floor(point.x / MAX(_charWidth, 1));
+    NSInteger col = (NSInteger)floor((point.x - NSMinX([self terminalRect])) / MAX(_charWidth, 1));
     return NSMakePoint(MIN(MAX(0, col), MAX(0, _cols - 1)), MIN(MAX(0, row), MAX(0, _rows - 1)));
 }
 
@@ -1756,8 +1779,8 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
                 NSMidY(tabRect))];
             NSDictionary *tabAttrs = @{
                 NSFontAttributeName: tabFont,
-                NSForegroundColorAttributeName: active ? NSColor.labelColor
-                    : [NSColor.labelColor colorWithAlphaComponent:0.72],
+                NSForegroundColorAttributeName: [NSColor.labelColor colorWithAlphaComponent:
+                    ([self windowIsActive] ? (active ? 1.0 : 0.72) : (active ? 0.6 : 0.42))],
                 NSParagraphStyleAttributeName: tabParagraphStyle
             };
             if (textRect.size.width > 0) {
@@ -1816,7 +1839,7 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     for (NSInteger row = 0; row < _rows; row++) {
         NSRect rowRect = [self cellRectAtRow:row col:0];
         rowRect.origin.x = 0;
-        rowRect.size.width = [self terminalRect].size.width;
+        rowRect.size.width = self.bounds.size.width;
         if (!NSIntersectsRect(rowRect, dirtyRect)) continue;
         size_t hiddenRows = 0;
         if (mica_session_fold_info_at_view_row(tab.session, (int)row, &hiddenRows)) {
@@ -1946,7 +1969,14 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
                     cursorFill = MicaForegroundColor();
                     cursorGlyph = MicaBackgroundColor();
                 }
-                if (NSIntersectsRect(cursorRect, dirtyRect)) {
+                BOOL cursorFocused = [self windowIsActive];
+                if (NSIntersectsRect(cursorRect, dirtyRect) && !cursorFocused) {
+                    // Unfocused windows show a hollow cursor so it is obvious where typing will not go.
+                    [cursorFill setStroke];
+                    NSBezierPath *outline = [NSBezierPath bezierPathWithRect:NSInsetRect(cursorRect, 0.75, 0.75)];
+                    outline.lineWidth = 1.5;
+                    [outline stroke];
+                } else if (NSIntersectsRect(cursorRect, dirtyRect)) {
                     [cursorFill setFill];
                     NSRectFill(cursorRect);
                     NSString *glyph = [self stringForCell:cursorCell];
@@ -2191,10 +2221,14 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         if (index != NSNotFound) {
             [self.owner selectTabAtIndex:index];
             _draggingTab = self.owner.tabs[(NSUInteger)index];
+        } else if (event.clickCount == 2) {
+            [self.window performZoom:nil];   // double-click empty title area, like any Mac title bar
+        } else {
+            [self.window performWindowDragWithEvent:event];
         }
         return;
     }
-    NSRect terminal = [self terminalRect];
+    NSRect terminal = [self terminalHitRect];
     if (!NSPointInRect(point, terminal)) return;
     if (!self.owner.activeTab.session) return;
     NSPoint cell = [self cellForPoint:point];
@@ -2335,8 +2369,8 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         if (viewRow >= 0 && viewRow < _rows) {
             NSRect rect = [self cellRectAtRow:viewRow col:0];
             CGFloat midY = NSMidY(rect);
-            _selectionStart = NSMakePoint(0.5, midY);
-            _selectionEnd = NSMakePoint(_cols * _charWidth - 0.5, midY);
+            _selectionStart = NSMakePoint(NSMinX([self terminalRect]) + 0.5, midY);
+            _selectionEnd = NSMakePoint(NSMinX([self terminalRect]) + _cols * _charWidth - 0.5, midY);
             _selecting = YES;
             _selectionPending = NO;
             _selectionSession = session;
@@ -3081,6 +3115,10 @@ static NSDictionary *MicaScalarDictionary(id object) {
         backing:NSBackingStoreBuffered defer:NO];
     self.projectName = nil;
     self.window.title = @"Mica Terminal";
+    // One merged title bar: the tab strip sits beside the traffic lights instead of under a second bar.
+    self.window.styleMask |= NSWindowStyleMaskFullSizeContentView;
+    self.window.titlebarAppearsTransparent = YES;
+    self.window.titleVisibility = NSWindowTitleHidden;
     self.window.backgroundColor = NSColor.windowBackgroundColor;
     self.window.minSize = NSMakeSize(600, 300);
     self.window.delegate = self;
@@ -4037,6 +4075,16 @@ static NSDictionary *MicaScalarDictionary(id object) {
     tab.needsAttention = NO;
     [self.terminalView setNeedsDisplay:YES];
 }
+- (void)windowDidBecomeKey:(NSNotification *)notification {
+    (void)notification;
+    [self.terminalView setNeedsDisplay:YES];
+}
+
+- (void)windowDidResignKey:(NSNotification *)notification {
+    (void)notification;
+    [self.terminalView setNeedsDisplay:YES];
+}
+
 - (void)windowDidResize:(NSNotification *)notification {
     (void)notification;
     [self.terminalView scheduleGridResize];
