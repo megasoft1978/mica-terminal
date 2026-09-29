@@ -345,6 +345,8 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @end
 
 @interface MicaTerminalView : NSView <NSTextInputClient>
+// When set, the header row is left unpainted so a vibrancy view behind it shows through.
+@property(nonatomic) BOOL translucentHeader;
 @property(nonatomic, weak) MicaAppDelegate *owner;
 @property(nonatomic, strong) NSFont *terminalFont;
 @property(nonatomic, strong) NSTimer *gridResizeTimer;
@@ -1747,7 +1749,9 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     [self updateTabToolTip];
     [self syncSelectionWithHistory];
     [MicaBackgroundColor() setFill];
-    NSRectFill(NSIntersectionRect(dirtyRect, self.bounds));
+    NSRect paintable = self.bounds;
+    if (self.translucentHeader) paintable.size.height = MAX(0, paintable.size.height - kHeaderHeight);
+    NSRectFill(NSIntersectionRect(dirtyRect, paintable));
     MicaTab *tab = self.owner.activeTab;
     if (!tab.session) {
         [self recordDrawDuration:NSProcessInfo.processInfo.systemUptime - drawStartedAt];
@@ -1756,8 +1760,10 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 
     NSRect header = NSMakeRect(0, NSMaxY(self.bounds) - kHeaderHeight, self.bounds.size.width, kHeaderHeight);
     if (NSIntersectsRect(dirtyRect, header)) {
-        [NSColor.controlBackgroundColor setFill];
-        NSRectFill(header);
+        if (!self.translucentHeader) {
+            [NSColor.controlBackgroundColor setFill];
+            NSRectFill(header);
+        }
         [NSColor.separatorColor setStroke];
         NSBezierPath *headerSeparator = [NSBezierPath bezierPath];
         [headerSeparator moveToPoint:NSMakePoint(0, NSMinY(header) + 0.5)];
@@ -3130,14 +3136,28 @@ static NSDictionary *MicaScalarDictionary(id object) {
     self.window.styleMask |= NSWindowStyleMaskFullSizeContentView;
     self.window.titlebarAppearsTransparent = YES;
     self.window.titleVisibility = NSWindowTitleHidden;
-    self.window.backgroundColor = NSColor.windowBackgroundColor;
+    // A non-opaque window lets the header vibrancy blur what is behind it; the terminal area paints itself opaquely.
+    self.window.opaque = NO;
+    self.window.backgroundColor = NSColor.clearColor;
     self.window.minSize = NSMakeSize(600, 300);
     self.window.delegate = self;
     self.terminalView = [[MicaTerminalView alloc] initWithFrame:self.window.contentView.bounds];
     self.terminalView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     self.terminalView.owner = self;
     self.terminalView.terminalFont = MicaTerminalFont(kFontSizeDefault);
-    [self.window setContentView:self.terminalView];
+    // The title-bar row is a vibrancy view behind the terminal view, which leaves that row unpainted.
+    NSView *container = [[NSView alloc] initWithFrame:self.window.contentView.bounds];
+    NSVisualEffectView *headerBackdrop = [[NSVisualEffectView alloc] initWithFrame:
+        NSMakeRect(0, NSMaxY(container.bounds) - kHeaderHeight, container.bounds.size.width, kHeaderHeight)];
+    headerBackdrop.material = NSVisualEffectMaterialHeaderView;
+    headerBackdrop.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+    headerBackdrop.state = NSVisualEffectStateFollowsWindowActiveState;
+    headerBackdrop.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+    self.terminalView.frame = container.bounds;
+    self.terminalView.translucentHeader = YES;
+    [container addSubview:headerBackdrop];
+    [container addSubview:self.terminalView];
+    [self.window setContentView:container];
     NSURL *voiceHelperURL = [NSBundle.mainBundle.bundleURL URLByAppendingPathComponent:@"Contents/Helpers/mica-voice"];
     self.voiceController = [[MicaVoiceController alloc] initWithHelperURL:voiceHelperURL];
     self.voiceController.delegate = self;
