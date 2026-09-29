@@ -468,6 +468,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)setLightTheme:(BOOL)light;
 - (void)setCursorStyle:(id)sender;
 - (void)openPreferences:(id)sender;
+- (void)refreshPreferencesSizeLabel;
 - (void)newWorktreeTab:(id)sender;
 - (void)postAgentNotification:(NSString *)words forTab:(MicaTab *)tab;
 - (void)startWindowWithArguments:(NSArray<NSString *> *)arguments;
@@ -1121,8 +1122,8 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     CGFloat x = 12;
     MicaUIMode mode = self.owner.uiMode;
     int offset = self.owner.activeTab.session ? mica_session_view_offset(self.owner.activeTab.session) : 0;
-    NSString *modeName = mode == MicaUIModeTab ? @"TAB PICKER" :
-        ((mode == MicaUIModeScroll || offset > 0) ? @"SCROLLBACK" : nil);
+    NSString *modeName = mode == MicaUIModeTab ? @"Tab picker" :
+        ((mode == MicaUIModeScroll || offset > 0) ? @"Scrollback" : nil);
     if (modeName) {
         NSDictionary *attributes = @{NSFontAttributeName: [NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold]};
         x = 12 + [modeName sizeWithAttributes:attributes].width + 18 + 12;
@@ -1543,18 +1544,18 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     int viewOffset = tab.session ? mica_session_view_offset(tab.session) : 0;
     BOOL scrolled = viewOffset > 0;
     BOOL scrollView = mode == MicaUIModeScroll || scrolled;
-    NSString *modeName = mode == MicaUIModeTab ? @"TAB PICKER" : (scrollView ? @"SCROLLBACK" : nil);
+    NSString *modeName = mode == MicaUIModeTab ? @"Tab picker" : (scrollView ? @"Scrollback" : nil);
     NSColor *modeColor = scrollView ? NSColor.systemPurpleColor : NSColor.controlAccentColor;
     NSDictionary *modeAttrs = @{
         NSFontAttributeName: [NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold],
-        NSForegroundColorAttributeName: NSColor.alternateSelectedControlTextColor
+        NSForegroundColorAttributeName: modeColor
     };
     CGFloat contextX = 12;
     if (modeName) {
         NSSize modeSize = [modeName sizeWithAttributes:modeAttrs];
         NSRect badge = NSMakeRect(12, floor((kStatusHeight - 18) / 2), modeSize.width + 18, 18);
-        [modeColor setFill];
-        [[NSBezierPath bezierPathWithRoundedRect:badge xRadius:5 yRadius:5] fill];
+        [[modeColor colorWithAlphaComponent:0.18] setFill];
+        [[NSBezierPath bezierPathWithRoundedRect:badge xRadius:9 yRadius:9] fill];
         NSFont *modeFont = modeAttrs[NSFontAttributeName];
         [modeName drawAtPoint:NSMakePoint(NSMinX(badge) + 9,
             NSMinY(badge) + MicaCenteredTextBaseline(modeFont, badge.size.height)) withAttributes:modeAttrs];
@@ -1721,8 +1722,8 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         MicaCenteredTextBaseline(contextAttrs[NSFontAttributeName], kStatusHeight)) withAttributes:contextAttrs];
     [NSColor.separatorColor setStroke];
     NSBezierPath *contextDivider = [NSBezierPath bezierPath];
-    [contextDivider moveToPoint:NSMakePoint(hintX - 8, 6)];
-    [contextDivider lineToPoint:NSMakePoint(hintX - 8, kStatusHeight - 6)];
+    [contextDivider moveToPoint:NSMakePoint(floor(hintX - 8) + 0.5, 6)];
+    [contextDivider lineToPoint:NSMakePoint(floor(hintX - 8) + 0.5, kStatusHeight - 6)];
     [contextDivider stroke];
 
     CGFloat x = hintX;
@@ -1733,9 +1734,10 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
         x += [part sizeWithAttributes:hintAttrs].width;
         if (index + 1 < hintParts.count) {
             x += 8;
+            [NSColor.separatorColor setStroke];
             NSBezierPath *hintDivider = [NSBezierPath bezierPath];
-            [hintDivider moveToPoint:NSMakePoint(x, 6)];
-            [hintDivider lineToPoint:NSMakePoint(x, kStatusHeight - 6)];
+            [hintDivider moveToPoint:NSMakePoint(floor(x) + 0.5, 6)];
+            [hintDivider lineToPoint:NSMakePoint(floor(x) + 0.5, kStatusHeight - 6)];
             [hintDivider stroke];
             x += 8;
         }
@@ -4180,6 +4182,12 @@ static BOOL MicaValidBranchName(NSString *name) {
 - (void)prefFontSizeChanged:(NSStepper *)sender {
     self.terminalView.terminalFont = MicaTerminalFont(sender.doubleValue);
     [self resizeActiveSession];
+    [self refreshPreferencesSizeLabel];
+}
+
+- (void)refreshPreferencesSizeLabel {
+    NSTextField *value = (NSTextField *)[self.preferencesWindow.contentView viewWithTag:104];
+    value.stringValue = [NSString stringWithFormat:@"%.0f pt", self.terminalView.terminalFont.pointSize];
 }
 
 - (void)openPreferences:(id)sender {
@@ -4189,10 +4197,11 @@ static BOOL MicaValidBranchName(NSString *name) {
         [(NSPopUpButton *)[self.preferencesWindow.contentView viewWithTag:102] selectItemAtIndex:gMicaLightTheme ? 1 : 0];
         [(NSPopUpButton *)[self.preferencesWindow.contentView viewWithTag:103] selectItemAtIndex:gMicaCursorStyle];
         ((NSStepper *)[self.preferencesWindow.contentView viewWithTag:101]).doubleValue = self.terminalView.terminalFont.pointSize;
+        [self refreshPreferencesSizeLabel];
         [self.preferencesWindow makeKeyAndOrderFront:nil];
         return;
     }
-    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 420, 232)
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 460, 248)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
     window.title = @"Mica Settings";
     window.releasedWhenClosed = NO;
@@ -4201,40 +4210,50 @@ static BOOL MicaValidBranchName(NSString *name) {
     for (NSUInteger i = 0; i < labels.count; i++) {
         NSTextField *caption = [NSTextField labelWithString:labels[i]];
         caption.alignment = NSTextAlignmentRight;
-        caption.frame = NSMakeRect(20, 186 - 40 * i, 90, 20);
+        caption.frame = NSMakeRect(20, 202 - 40 * i, 90, 18);
         [content addSubview:caption];
     }
-    NSPopUpButton *theme = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 182 - 0, 200, 26) pullsDown:NO];
+    NSPopUpButton *theme = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 197, 200, 26) pullsDown:NO];
     [theme addItemsWithTitles:@[@"Dark", @"Light"]];
     [theme selectItemAtIndex:gMicaLightTheme ? 1 : 0];
     theme.tag = 102;
     theme.target = self; theme.action = @selector(prefThemeChanged:);
     [content addSubview:theme];
-    NSPopUpButton *cursor = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 142, 200, 26) pullsDown:NO];
+    NSPopUpButton *cursor = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 157, 200, 26) pullsDown:NO];
     [cursor addItemsWithTitles:@[@"Block", @"Bar", @"Underline"]];
     [cursor selectItemAtIndex:gMicaCursorStyle];
     cursor.tag = 103;
     cursor.target = self; cursor.action = @selector(prefCursorChanged:);
     [content addSubview:cursor];
-    NSStepper *stepper = [[NSStepper alloc] initWithFrame:NSMakeRect(122, 102, 19, 27)];
+    NSTextField *sizeValue = [NSTextField labelWithString:@""];
+    sizeValue.tag = 104;
+    sizeValue.font = [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightRegular];
+    sizeValue.frame = NSMakeRect(122, 122, 44, 18);
+    [content addSubview:sizeValue];
+    NSStepper *stepper = [[NSStepper alloc] initWithFrame:NSMakeRect(168, 117, 19, 27)];
     stepper.minValue = 8; stepper.maxValue = 28; stepper.increment = 1;
     stepper.doubleValue = self.terminalView.terminalFont.pointSize;
     stepper.tag = 101;
     stepper.target = self; stepper.action = @selector(prefFontSizeChanged:);
     [content addSubview:stepper];
-    NSTextField *sizeLabel = [NSTextField labelWithString:@"Use the stepper, or ⌘+ ⌘− ⌘0 in a terminal."];
-    sizeLabel.textColor = NSColor.secondaryLabelColor;
-    sizeLabel.frame = NSMakeRect(148, 105, 260, 18);
-    [content addSubview:sizeLabel];
+    NSTextField *sizeHint = [NSTextField labelWithString:@"Also ⌘+  ⌘−  ⌘0 in a terminal."];
+    sizeHint.textColor = NSColor.secondaryLabelColor;
+    sizeHint.font = [NSFont systemFontOfSize:11];
+    sizeHint.frame = NSMakeRect(122, 98, 320, 14);
+    [content addSubview:sizeHint];
+    NSBox *rule = [[NSBox alloc] initWithFrame:NSMakeRect(20, 74, 420, 1)];
+    rule.boxType = NSBoxSeparator;
+    [content addSubview:rule];
     NSButton *project = [NSButton buttonWithTitle:@"Project Settings…" target:self action:@selector(openProjectSettings:)];
-    project.frame = NSMakeRect(20, 30, 170, 30);
+    project.frame = NSMakeRect(20, 24, 200, 30);
     project.enabled = self.projectLayoutPath.length > 0;
     NSButton *timer = [NSButton buttonWithTitle:@"Timer Settings…" target:self action:@selector(openPomodoroSettings:)];
-    timer.frame = NSMakeRect(200, 30, 170, 30);
+    timer.frame = NSMakeRect(240, 24, 200, 30);
     [content addSubview:project];
     [content addSubview:timer];
-    [window center];
     self.preferencesWindow = window;
+    [self refreshPreferencesSizeLabel];
+    [window center];
     [window makeKeyAndOrderFront:nil];
 }
 
