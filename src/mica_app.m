@@ -145,18 +145,15 @@ static NSColor *MicaColor(uint32_t rgb) {
     return color;
 }
 
+// The terminal draws on a fixed surface (dark by default, white in the light theme), independent of the system appearance.
+static BOOL gMicaLightTheme = NO;
+
 static NSColor *MicaBackgroundColor(void) {
-    static NSColor *color;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ color = MicaColor(0x1e1e1e); });
-    return color;
+    return MicaColor(gMicaLightTheme ? 0xffffff : 0x1e1e1e);
 }
 
 static NSColor *MicaForegroundColor(void) {
-    static NSColor *color;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ color = MicaColor(0xd4d4d4); });
-    return color;
+    return MicaColor(gMicaLightTheme ? 0x24292f : 0xd4d4d4);
 }
 
 static NSFont *MicaTerminalFont(CGFloat size) {
@@ -452,6 +449,8 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)updateWindowTitle;
 - (void)pollSessions:(NSTimer *)timer;
 - (void)wakePollTimer;
+- (void)setLightTheme:(BOOL)light;
+- (void)toggleLightTheme:(id)sender;
 - (void)handleClipboardWrite:(NSString *)text fromTab:(MicaTab *)tab;
 - (void)loadLaunchConfiguration;
 - (void)loadLaunchConfigurationFromArguments:(NSArray<NSString *> *)arguments bundleInfo:(NSDictionary *)bundleInfo;
@@ -3045,6 +3044,9 @@ static NSDictionary *MicaScalarDictionary(id object) {
     [self installMenus];
     self.uiMode = MicaUIModeNormal;
     [self loadLaunchConfiguration];
+    if (!getenv("MICA_TEST_NO_STARTUP") && [NSUserDefaults.standardUserDefaults boolForKey:@"MicaLightTheme"])
+        [self setLightTheme:YES];
+    else self.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     // Show the window only after the project name restored its saved frame, so it never jumps.
     [self.window makeKeyAndOrderFront:nil];
     [self.window makeFirstResponder:self.terminalView];
@@ -3107,6 +3109,12 @@ static NSDictionary *MicaScalarDictionary(id object) {
                 NSEventModifierFlagCommand | NSEventModifierFlagOption).target = self.terminalView;
     editRoot.submenu = editMenu;
     [main addItem:editRoot];
+    NSMenuItem *viewRoot = [[NSMenuItem alloc] initWithTitle:@"View" action:nil keyEquivalent:@""];
+    NSMenu *viewMenu = [[NSMenu alloc] initWithTitle:@"View"];
+    AddMenuItem(viewMenu, @"Light Terminal Theme", @selector(toggleLightTheme:), @"l",
+                NSEventModifierFlagCommand | NSEventModifierFlagOption).target = self;
+    viewRoot.submenu = viewMenu;
+    [main addItem:viewRoot];
     NSMenuItem *windowRoot = [[NSMenuItem alloc] initWithTitle:@"Window" action:nil keyEquivalent:@""];
     NSMenu *windowMenu = [[NSMenu alloc] initWithTitle:@"Window"];
     AddMenuItem(windowMenu, @"Minimize", @selector(performMiniaturize:), @"m", NSEventModifierFlagCommand);
@@ -3147,6 +3155,7 @@ static NSDictionary *MicaScalarDictionary(id object) {
         @"⌘+ / ⌘− / ⌘0  Increase / decrease / reset font size",
         @"⌘F / ⌘G / ⇧⌘G  Find in scrollback, next, previous",
         @"⌘K  Clear scrollback",
+        @"⌥⌘L  Toggle the light terminal theme",
         @"⌘-click  Open an OSC 8 web link",
         @"Hold left ⌥  Dictate; release to finish",
         @"Esc  Cancel dictation or return to live terminal"
@@ -3257,6 +3266,7 @@ static NSDictionary *MicaScalarDictionary(id object) {
         [alert runModal];
         return;
     }
+    if (gMicaLightTheme) mica_session_set_light_theme(tab.session, true);
     MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"session started tab=%@ folder=%@ pid=%d command_prefilled=%d",
         tab.name, tab.cwd, (int)mica_session_pid(tab.session), command.length > 0]);
     if (tab.session) {
@@ -3478,6 +3488,24 @@ static NSDictionary *MicaScalarDictionary(id object) {
             [NSPasteboard.generalPasteboard setString:pending forType:NSPasteboardTypeString];
         }
     }];
+}
+
+- (void)setLightTheme:(BOOL)light {
+    gMicaLightTheme = light;
+    for (MicaTab *tab in self.tabs)
+        if (tab.session) mica_session_set_light_theme(tab.session, light);
+    // Chrome text uses system colors, so pin the window to the appearance that matches the terminal surface.
+    self.window.appearance = [NSAppearance appearanceNamed:light ? NSAppearanceNameAqua : NSAppearanceNameDarkAqua];
+    [self.terminalView setNeedsDisplay:YES];
+    NSMenuItem *item = [[NSApp.mainMenu itemWithTitle:@"View"].submenu itemWithTitle:@"Light Terminal Theme"];
+    item.state = light ? NSControlStateValueOn : NSControlStateValueOff;
+}
+
+- (void)toggleLightTheme:(id)sender {
+    (void)sender;
+    BOOL light = !gMicaLightTheme;
+    [self setLightTheme:light];
+    if (!getenv("MICA_TEST_NO_STARTUP")) [NSUserDefaults.standardUserDefaults setBool:light forKey:@"MicaLightTheme"];
 }
 
 - (void)restartPollTimerWithInterval:(NSTimeInterval)interval {

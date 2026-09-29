@@ -664,6 +664,21 @@ color_checked:
     mica_session_destroy(bracketed_session);
     printf("bracketed paste mode is tracked\n");
 
+    // Switching to the light theme repaints existing ANSI colours from the light palette.
+    MicaSession *theme_session = mica_session_create("/tmp", "printf '\\033[31mRED\\033[0m'; sleep 2", 6, 80);
+    assert(theme_session != NULL);
+    for (int i = 0; i < 300 && !screen_contains(theme_session, "RED"); i++)
+        mica_session_poll(theme_session, 10);
+    MicaCell red_cell;
+    assert(mica_session_get_cell(theme_session, 0, 0, &red_cell));
+    VTermColor dark_red = red_cell.fg;
+    mica_session_set_light_theme(theme_session, true);
+    assert(mica_session_get_cell(theme_session, 0, 0, &red_cell));
+    assert(VTERM_COLOR_IS_RGB(&red_cell.fg) && red_cell.fg.rgb.red == 0xcf && red_cell.fg.rgb.green == 0x22);
+    assert(!(VTERM_COLOR_IS_RGB(&dark_red) && dark_red.rgb.red == 0xcf));
+    mica_session_destroy(theme_session);
+    printf("light theme swaps the ANSI palette\n");
+
     // A missing start folder falls back to the nearest existing parent, decided before fork.
     MicaSession *missing_folder_session = mica_session_create("/tmp/mica-no-such-folder-xyz/sub", "pwd; sleep 1", 6, 100);
     assert(missing_folder_session != NULL);

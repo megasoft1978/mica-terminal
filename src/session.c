@@ -37,6 +37,14 @@ static const uint32_t mica_ansi_palette[16] = {
     0x82aaff, 0xc792ea, 0x89ddff, 0xffffff,
 };
 
+// Light theme: dark-on-white with ANSI colours darkened for contrast on a white background.
+static const uint32_t mica_ansi_palette_light[16] = {
+    0x24292f, 0xcf222e, 0x116329, 0x7d4e00,
+    0x0550ae, 0x8250df, 0x1b7c83, 0x6e7781,
+    0x57606a, 0xa40e26, 0x1a7f37, 0x9a6700,
+    0x218bff, 0xa475f9, 0x3192aa, 0x8c959f,
+};
+
 typedef struct {
     size_t start;
     size_t end;
@@ -290,16 +298,16 @@ static void adjust_folds_after_history_pop(MicaSession *session) {
     }
 }
 
-static void configure_terminal_colors(MicaSession *session) {
+static void configure_terminal_colors(MicaSession *session, bool light) {
     for (int index = 0; index < 16; index++) {
-        uint32_t rgb = mica_ansi_palette[index];
+        uint32_t rgb = light ? mica_ansi_palette_light[index] : mica_ansi_palette[index];
         VTermColor color;
         vterm_color_rgb(&color, (uint8_t)(rgb >> 16), (uint8_t)(rgb >> 8), (uint8_t)rgb);
         vterm_state_set_palette_color(session->state, index, &color);
     }
     VTermColor foreground, background;
-    vterm_color_rgb(&foreground, 0xd4, 0xd4, 0xd4);
-    vterm_color_rgb(&background, 0x1e, 0x1e, 0x1e);
+    if (light) { vterm_color_rgb(&foreground, 0x24, 0x29, 0x2f); vterm_color_rgb(&background, 0xff, 0xff, 0xff); }
+    else { vterm_color_rgb(&foreground, 0xd4, 0xd4, 0xd4); vterm_color_rgb(&background, 0x1e, 0x1e, 0x1e); }
     vterm_state_set_default_colors(session->state, &foreground, &background);
 }
 
@@ -1285,7 +1293,7 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
     vterm_screen_enable_altscreen(session->screen, 1);
     vterm_output_set_callback(session->vt, output_callback, session);
     vterm_screen_reset(session->screen, 1);
-    configure_terminal_colors(session);
+    configure_terminal_colors(session, false);
     vterm_input_write(session->vt, "\x1b[0m", 4);
 
     const char *locale_hint = (!getenv("LANG") && !getenv("LC_ALL") && !getenv("LC_CTYPE")) ? "en_US.UTF-8" : NULL;
@@ -1755,6 +1763,12 @@ bool mica_session_find(MicaSession *session, const char *query, bool backward, l
         return true;
     }
     return false;
+}
+
+void mica_session_set_light_theme(MicaSession *session, bool light) {
+    if (!session) return;
+    configure_terminal_colors(session, light);
+    session->revision++;
 }
 
 void mica_session_clear_scrollback(MicaSession *session) {
