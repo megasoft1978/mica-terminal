@@ -119,6 +119,11 @@ int main(int argc, char **argv) {
     run_case("full-screen program churn",
         "perl -e '$|=1; for $i (1..400){ print \"\\e[?1049h\\e[?25l\\e[?2026h\\e[H\\e[2J\"; print \"TUI \" x int(rand(200)); "
         "print \"\\e[?2026l\"; print \"\\e[?1049l\" if rand()<.5; }'; sleep 1", 800);
+    // A large scrollback allowance with heavy output, resizes and searches in between (ring growth and reflow paths).
+    mica_set_history_limit_lines(20000);
+    run_case("large scrollback",
+        "perl -e '$|=1; for(1..30000){ print \"line $_ \" . (\"x\" x int(rand(150))) . \"\\n\" }'; sleep 1", 1200);
+    mica_set_history_limit_lines(MICA_HISTORY_LIMIT_BYTES / (80u * sizeof(VTermScreenCell)));
     // Session churn: create and destroy quickly.
     for (int i = 0; i < 25; i++) {
         MicaSession *session = mica_session_create("/tmp", "printf 'hi\\n'; sleep 5", between(1, 30), between(1, 100));

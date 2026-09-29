@@ -58,7 +58,7 @@ iTerm2 plus Wispr Flow is about 770 MB before you add a timer. Dictation adds a 
 - **Agents stay ordinary programs.** Run Codex, Claude Code, `lazygit` or anything else in a normal `zsh` tab. Mica reads the visible screen for signs of work or a question and shows it on the tab, and posts a notification when a program asks for attention.
 - **Good dictation that stays on your Mac.** Hold left <kbd>⌥</kbd>, speak, edit the text, press Return. It uses NVIDIA’s Parakeet speech model through Core ML; Mica downloads the 630 MB model in the background on first launch, with progress in the status bar, so dictation is ready when you need it. Nothing you say is sent anywhere.
 - **A focus timer that follows you.** One timer shared by every Mica window, with a notification when a period ends.
-- **Still a real terminal.** Search scrollback, Command-click links, drag tabs, choose a cursor and a dark, light or system-following theme. If a program over SSH asks to set your clipboard, Mica asks you first.
+- **Still a real terminal.** Choose how much scrollback to keep (650 lines by default, up to 20,000 with its memory cost shown in Settings), search it, Command-click links, drag tabs, choose a cursor and a dark, light or system-following theme. If a program over SSH asks to set your clipboard, Mica asks you first.
 
 ## Install
 

@@ -559,6 +559,10 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)openPreferences:(id)sender;
 - (void)prefShortcutChanged:(NSButton *)sender;
 - (void)applyStoredShortcutPreference;
+- (NSInteger)storedScrollbackLines;
++ (NSInteger)scrollbackIndexForLines:(NSInteger)lines;
+- (void)applyStoredScrollbackPreference;
+- (void)prefScrollbackChanged:(NSPopUpButton *)sender;
 - (void)refreshPreferencesSizeLabel;
 - (void)newWorktreeTab:(id)sender;
 - (void)postAgentNotification:(NSString *)words forTab:(MicaTab *)tab;
@@ -3671,6 +3675,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     if (!getenv("MICA_TEST_NO_STARTUP")) {
         [self loadStoredThemePreference];
         [self applyStoredShortcutPreference];
+        [self applyStoredScrollbackPreference];
         [NSApp addObserver:self forKeyPath:@"effectiveAppearance" options:NSKeyValueObservingOptionNew context:NULL];
         self.observesSystemAppearance = YES;
     } else {
@@ -4581,6 +4586,30 @@ static BOOL MicaValidBranchName(NSString *name) {
     value.stringValue = [NSString stringWithFormat:@"%.0f pt", self.terminalView.terminalFont.pointSize];
 }
 
+// Scrollback allowance in lines at 80 columns. Measured footprint per busy tab: about 5 MB / 16 MB / 40 MB / 160 MB.
+// 0 means the built-in allowance (2 MiB of cells, about 650 lines), which keeps a busy tab small.
+static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
+
+- (NSInteger)storedScrollbackLines {
+    NSInteger lines = [[self micaDefaults] integerForKey:@"MicaScrollbackLines"];
+    return lines > 0 ? lines : 0;
+}
+
+- (void)applyStoredScrollbackPreference {
+    NSInteger lines = [self storedScrollbackLines];
+    mica_set_history_limit_lines(lines > 0 ? (size_t)lines : MICA_HISTORY_LIMIT_BYTES / (80u * sizeof(VTermScreenCell)));
+}
+
+- (void)prefScrollbackChanged:(NSPopUpButton *)sender {
+    NSInteger index = MAX(0, MIN(3, sender.indexOfSelectedItem));
+    [[self micaDefaults] setInteger:kScrollbackChoices[index] forKey:@"MicaScrollbackLines"];
+    [self applyStoredScrollbackPreference];
+}
+
++ (NSInteger)scrollbackIndexForLines:(NSInteger)lines {
+    return lines <= 0 ? 0 : (lines <= 2000 ? 1 : (lines <= 5000 ? 2 : 3));
+}
+
 - (void)applyStoredShortcutPreference {
     MicaSetGlobalShortcutEnabled([[self micaDefaults] boolForKey:@"MicaGlobalShortcut"]);
 }
@@ -4604,11 +4633,15 @@ static BOOL MicaValidBranchName(NSString *name) {
         ((NSStepper *)[self.preferencesWindow.contentView viewWithTag:101]).doubleValue = self.terminalView.terminalFont.pointSize;
         ((NSButton *)[self.preferencesWindow.contentView viewWithTag:105]).state =
             [[self micaDefaults] boolForKey:@"MicaGlobalShortcut"] ? NSControlStateValueOn : NSControlStateValueOff;
+        {
+            [(NSPopUpButton *)[self.preferencesWindow.contentView viewWithTag:106]
+                selectItemAtIndex:[MicaAppDelegate scrollbackIndexForLines:[self storedScrollbackLines]]];
+        }
         [self refreshPreferencesSizeLabel];
         [self.preferencesWindow makeKeyAndOrderFront:nil];
         return;
     }
-    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 460, 292)
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 460, 336)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
     window.title = @"Mica Settings";
     window.releasedWhenClosed = NO;
@@ -4617,16 +4650,16 @@ static BOOL MicaValidBranchName(NSString *name) {
     for (NSUInteger i = 0; i < labels.count; i++) {
         NSTextField *caption = [NSTextField labelWithString:labels[i]];
         caption.alignment = NSTextAlignmentRight;
-        caption.frame = NSMakeRect(20, 246 - 40 * i, 90, 18);
+        caption.frame = NSMakeRect(20, 290 - 40 * i, 90, 18);
         [content addSubview:caption];
     }
-    NSPopUpButton *theme = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 241, 200, 26) pullsDown:NO];
+    NSPopUpButton *theme = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 285, 200, 26) pullsDown:NO];
     [theme addItemsWithTitles:@[@"Dark", @"Light", @"System"]];
     [theme selectItemAtIndex:gMicaFollowSystemTheme ? 2 : (gMicaLightTheme ? 1 : 0)];
     theme.tag = 102;
     theme.target = self; theme.action = @selector(prefThemeChanged:);
     [content addSubview:theme];
-    NSPopUpButton *cursor = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 201, 200, 26) pullsDown:NO];
+    NSPopUpButton *cursor = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 245, 200, 26) pullsDown:NO];
     [cursor addItemsWithTitles:@[@"Block", @"Bar", @"Underline"]];
     [cursor selectItemAtIndex:gMicaCursorStyle];
     cursor.tag = 103;
@@ -4635,9 +4668,9 @@ static BOOL MicaValidBranchName(NSString *name) {
     NSTextField *sizeValue = [NSTextField labelWithString:@""];
     sizeValue.tag = 104;
     sizeValue.font = [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightRegular];
-    sizeValue.frame = NSMakeRect(122, 166, 44, 18);
+    sizeValue.frame = NSMakeRect(122, 210, 44, 18);
     [content addSubview:sizeValue];
-    NSStepper *stepper = [[NSStepper alloc] initWithFrame:NSMakeRect(168, 161, 19, 27)];
+    NSStepper *stepper = [[NSStepper alloc] initWithFrame:NSMakeRect(168, 205, 19, 27)];
     stepper.minValue = 8; stepper.maxValue = 28; stepper.increment = 1;
     stepper.doubleValue = self.terminalView.terminalFont.pointSize;
     stepper.tag = 101;
@@ -4646,8 +4679,19 @@ static BOOL MicaValidBranchName(NSString *name) {
     NSTextField *sizeHint = [NSTextField labelWithString:@"Also ⌘+  ⌘−  ⌘0 in a terminal."];
     sizeHint.textColor = MicaSecondaryLabelColor(1.0);
     sizeHint.font = [NSFont systemFontOfSize:11];
-    sizeHint.frame = NSMakeRect(122, 142, 320, 14);
+    sizeHint.frame = NSMakeRect(122, 186, 320, 14);
     [content addSubview:sizeHint];
+    NSTextField *scrollbackCaption = [NSTextField labelWithString:@"Scrollback"];
+    scrollbackCaption.alignment = NSTextAlignmentRight;
+    scrollbackCaption.frame = NSMakeRect(20, 154, 90, 18);
+    [content addSubview:scrollbackCaption];
+    NSPopUpButton *scrollback = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 149, 200, 26) pullsDown:NO];
+    [scrollback addItemsWithTitles:@[@"650 lines · about 5 MB", @"2,000 lines · about 16 MB", @"5,000 lines · about 40 MB", @"20,000 lines · about 160 MB"]];
+    [scrollback selectItemAtIndex:[MicaAppDelegate scrollbackIndexForLines:[self storedScrollbackLines]]];
+    scrollback.tag = 106;
+    scrollback.frame = NSMakeRect(122, 149, 260, 26);
+    scrollback.target = self; scrollback.action = @selector(prefScrollbackChanged:);
+    [content addSubview:scrollback];
     NSButton *shortcut = [NSButton checkboxWithTitle:@"Show Mica with a global shortcut (⌃⌥Space)" target:self
                                               action:@selector(prefShortcutChanged:)];
     shortcut.frame = NSMakeRect(120, 100, 320, 20);

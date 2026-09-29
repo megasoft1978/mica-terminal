@@ -1843,6 +1843,27 @@ static int MicaRunUISelfTest(void) {
             MicaUITestRecord(report, &allPassed, offByDefault && enabledPersists && relaunchRegisters && disableUnregisters,
                 [NSString stringWithFormat:@"the global shortcut is off by default, persists, re-registers on launch and unregisters when disabled (default=%d on=%d relaunch=%d off=%d)",
                     offByDefault, enabledPersists, relaunchRegisters, disableUnregisters]);
+            // Scrollback allowance: 5,000 lines by default, 1,000 / 5,000 / 20,000 selectable, persisted and applied live.
+            NSString *scrollSuite = [NSString stringWithFormat:@"mica-scrollback-%d", getpid()];
+            NSUserDefaults *scrollDefaults = [[NSUserDefaults alloc] initWithSuiteName:scrollSuite];
+            [scrollDefaults removePersistentDomainForName:scrollSuite];
+            gMicaDefaultsOverride = scrollDefaults;
+            MicaAppDelegate *scrollDelegate = [MicaAppDelegate new];
+            size_t savedLimit = mica_history_limit_bytes();
+            [scrollDelegate applyStoredScrollbackPreference];
+            BOOL scrollDefaultOk = mica_history_limit_bytes() <= MICA_HISTORY_LIMIT_BYTES && mica_history_limit_bytes() > MICA_HISTORY_LIMIT_BYTES - 80u * sizeof(VTermScreenCell);
+            NSPopUpButton *scrollPopUp = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+            [scrollPopUp addItemsWithTitles:@[@"a", @"b", @"c", @"d"]];
+            [scrollPopUp selectItemAtIndex:3]; [scrollDelegate prefScrollbackChanged:scrollPopUp];
+            BOOL scrollLongOk = mica_history_limit_bytes() == 20000u * 80u * sizeof(VTermScreenCell) &&
+                [scrollDefaults integerForKey:@"MicaScrollbackLines"] == 20000;
+            [scrollPopUp selectItemAtIndex:1]; [scrollDelegate prefScrollbackChanged:scrollPopUp];
+            BOOL scrollShortOk = mica_history_limit_bytes() == 2000u * 80u * sizeof(VTermScreenCell) - 0;
+            mica_set_history_limit_lines(savedLimit / (80u * sizeof(VTermScreenCell)));
+            gMicaDefaultsOverride = nil; [scrollDefaults removePersistentDomainForName:scrollSuite];
+            MicaUITestRecord(report, &allPassed, scrollDefaultOk && scrollLongOk && scrollShortOk,
+                [NSString stringWithFormat:@"the scrollback allowance defaults to the built-in 2 MiB and follows the Settings choice (default=%d long=%d short=%d)",
+                    scrollDefaultOk, scrollLongOk, scrollShortOk]);
             BOOL oldContrast = gMicaTestIncreaseContrast;
             gMicaTestIncreaseContrast = YES;
             double darkContrast = MicaContrastRatio(MicaSecondaryLabelColor(1), MicaBackgroundColor());

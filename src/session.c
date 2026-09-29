@@ -379,10 +379,22 @@ static VTermScreenCell *allocate_history(size_t capacity, int cols) {
     return calloc(capacity * (size_t)cols, sizeof(VTermScreenCell));
 }
 
+static size_t gHistoryLimitBytes = MICA_HISTORY_LIMIT_BYTES;
+
+// The scrollback allowance is expressed as lines at 80 columns (a line costs columns x sizeof(cell)); memory is only
+// allocated as output arrives, so a larger allowance does not raise idle memory.
+void mica_set_history_limit_lines(size_t lines_at_80_columns) {
+    if (lines_at_80_columns < 100) lines_at_80_columns = 100;
+    if (lines_at_80_columns > 100000) lines_at_80_columns = 100000;
+    gHistoryLimitBytes = lines_at_80_columns * 80u * sizeof(VTermScreenCell);
+}
+
+size_t mica_history_limit_bytes(void) { return gHistoryLimitBytes; }
+
 static size_t history_limit_lines(int cols) {
     if (cols <= 0 || (size_t)cols > SIZE_MAX / sizeof(VTermScreenCell)) return 0;
     size_t bytes_per_line = (size_t)cols * sizeof(VTermScreenCell);
-    return MICA_HISTORY_LIMIT_BYTES / bytes_per_line;
+    return gHistoryLimitBytes / bytes_per_line;
 }
 
 static bool write_startup_file(const char *directory, const char *name, const char *contents) {

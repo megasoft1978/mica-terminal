@@ -15,12 +15,17 @@ Reducing this would mean changing how the screen buffer stores rows (for example
 
 To repeat the measurement, build a small program against `src/session.c` that runs the command in a `MicaSession` and polls until a marker line appears.
 
-## Scrollback capacity (open)
+## Scrollback capacity
 
-History remains capped at 2 MiB. `history_push` stores complete `VTermScreenCell` rows, while `mica_session_get_cell` reads those cells for rendering and hyperlink ids; resize/reflow and history growth copy rows, `find_row_text` reads them for search, and fold bookkeeping tracks history row positions. Increasing capacity safely needs a separate measurement and storage pass.
+Settings → Scrollback chooses how much history a session may keep. Memory is allocated only as output arrives, so idle memory does not change; the choice caps the worst case for a tab that has produced a lot of output. Measured on this Mac (80 columns, 60,000 lines of output, growth in phys_footprint per busy tab):
 
-Staged design for a later high-effort cycle:
+| Setting | Lines kept | Extra memory per busy tab |
+| --- | ---: | ---: |
+| 650 lines (default) | 650 | about 5 MB |
+| 2,000 lines | 2,000 | about 16 MB |
+| 5,000 lines | 5,000 | about 41 MB |
+| 20,000 lines | 20,000 | about 162 MB |
 
-1. Measure actual used columns and per-line cell/attribute distributions on agent output, and record idle plus worst-case history memory.
-2. Trim trailing blank cells per history line while preserving cursor, search, resize/reflow and rendering semantics.
-3. Add an attribute table if measured cell attributes still dominate, with explicit limits and tests for hyperlink ids, folds, search and resize.
+At 200 columns the same 5,000-line setting keeps 2,000 lines (about 31 MB), because a line costs more. A history cell is a full `VTermScreenCell` (about 40 bytes), plus 4 bytes for its hyperlink id. Memory is not returned to the system until the tab closes.
+
+Why not simply raise the default: at about 8 KB per 80-column line, a 20,000-line history costs more than the whole idle app. The next step is compact storage (trim trailing blank cells per line, then an attribute table); the code that reads history cells is `history_push`, `mica_session_get_cell`, resize/reflow and growth, `find_row_text`, hyperlink-id reads and fold bookkeeping. Compact storage could allow several times the lines at the same cost.

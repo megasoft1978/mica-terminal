@@ -660,6 +660,31 @@ color_checked:
     mica_session_scroll(resize_history_session, INT_MAX);
     assert(screen_contains(resize_history_session, "RIGHT-END"));
     mica_session_destroy(resize_history_session);
+    // A larger allowance keeps early output reachable and searchable; a smaller one drops it. Restore the default after.
+    mica_set_history_limit_lines(5000);
+    MicaSession *long_history = mica_session_create("/tmp",
+        "perl -e 'printf(\"LINE-%05d\\n\", $_) for 1..4000'; sleep 3", 24, 80);
+    assert(long_history != NULL);
+    for (int i = 0; i < 600 && !screen_contains(long_history, "LINE-04000"); i++) mica_session_poll(long_history, 10);
+    for (int i = 0; i < 30; i++) mica_session_poll(long_history, 10);
+    assert(mica_session_history_lines(long_history) >= 3900);
+    long cursor_match = -1;
+    assert(mica_session_find(long_history, "LINE-00001", true, &cursor_match));
+    mica_session_scroll(long_history, 1000000);
+    assert(screen_contains(long_history, "LINE-00001") || mica_session_scrolled_lines(long_history) > 3900);
+    mica_session_destroy(long_history);
+    mica_set_history_limit_lines(1000);
+    MicaSession *short_history = mica_session_create("/tmp",
+        "perl -e 'printf(\"LINE-%05d\\n\", $_) for 1..4000'; sleep 3", 24, 80);
+    assert(short_history != NULL);
+    for (int i = 0; i < 600 && !screen_contains(short_history, "LINE-04000"); i++) mica_session_poll(short_history, 10);
+    for (int i = 0; i < 30; i++) mica_session_poll(short_history, 10);
+    assert(mica_session_history_lines(short_history) <= 1000);
+    long dropped = -1;
+    assert(!mica_session_find(short_history, "LINE-00001", true, &dropped));
+    mica_session_destroy(short_history);
+    mica_set_history_limit_lines(MICA_HISTORY_LIMIT_BYTES / (80u * sizeof(VTermScreenCell)));
+    printf("the scrollback allowance can grow to thousands of lines and shrink again\n");
     printf("scrollback allocation stays within %u bytes per session\n", MICA_HISTORY_LIMIT_BYTES);
 
     // A forged command marker (no per-session secret) must not change tab state.
