@@ -8,6 +8,16 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+static double MicaUITestLinear(double value) { return value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4); }
+static double MicaContrastRatio(NSColor *foreground, NSColor *background) {
+    NSColor *a = [foreground colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+    NSColor *b = [background colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+    if (!a || !b) return 0;
+    double la = 0.2126 * MicaUITestLinear(a.redComponent) + 0.7152 * MicaUITestLinear(a.greenComponent) + 0.0722 * MicaUITestLinear(a.blueComponent);
+    double lb = 0.2126 * MicaUITestLinear(b.redComponent) + 0.7152 * MicaUITestLinear(b.greenComponent) + 0.0722 * MicaUITestLinear(b.blueComponent);
+    return (MAX(la, lb) + 0.05) / (MIN(la, lb) + 0.05);
+}
+
 @interface MicaVoiceController (MicaVoiceTestHooks)
 - (void)launchHelperWithArguments:(NSArray<NSString *> *)arguments
                         inputData:(NSData *)inputData
@@ -1741,6 +1751,66 @@ static int MicaRunUISelfTest(void) {
             MicaUITestRecord(report, &allPassed, preferencesOffer && lightApplied && systemLightApplied && systemDarkApplied &&
                 [delegate.window.appearance.name isEqualToString:NSAppearanceNameDarkAqua],
                 @"Theme offers Dark, Light and System; System follows both appearance changes live");
+            NSString *suiteName = [NSString stringWithFormat:@"mica-theme-relaunch-%d", getpid()];
+            NSUserDefaults *isolatedDefaults = [[NSUserDefaults alloc] initWithSuiteName:suiteName];
+            [isolatedDefaults removePersistentDomainForName:suiteName];
+            gMicaDefaultsOverride = isolatedDefaults;
+            [themePopUp selectItemAtIndex:1]; [delegate prefThemeChanged:themePopUp];
+            MicaAppDelegate *freshDelegate = [MicaAppDelegate new];
+            [freshDelegate loadStoredThemePreference];
+            BOOL lightSurvives = !gMicaFollowSystemTheme && gMicaLightTheme;
+            [themePopUp selectItemAtIndex:2]; [delegate prefThemeChanged:themePopUp];
+            freshDelegate = [MicaAppDelegate new]; [freshDelegate loadStoredThemePreference];
+            BOOL systemSurvives = gMicaFollowSystemTheme;
+            [themePopUp selectItemAtIndex:0]; [delegate prefThemeChanged:themePopUp];
+            freshDelegate = [MicaAppDelegate new]; [freshDelegate loadStoredThemePreference];
+            BOOL darkSurvives = !gMicaFollowSystemTheme && !gMicaLightTheme;
+            gMicaDefaultsOverride = nil; [isolatedDefaults removePersistentDomainForName:suiteName];
+            MicaUITestRecord(report, &allPassed, lightSurvives && systemSurvives && darkSurvives,
+                [NSString stringWithFormat:@"Dark, Light and System theme settings load in a fresh delegate from an isolated defaults suite (light=%d system=%d dark=%d mode=%@)",
+                    lightSurvives, systemSurvives, darkSurvives, [isolatedDefaults stringForKey:@"MicaThemeMode"]]);
+            BOOL oldContrast = gMicaTestIncreaseContrast;
+            gMicaTestIncreaseContrast = YES;
+            double darkContrast = MicaContrastRatio(MicaSecondaryLabelColor(1), MicaBackgroundColor());
+            [delegate setLightTheme:YES];
+            double lightContrast = MicaContrastRatio(MicaSecondaryLabelColor(1), MicaBackgroundColor());
+            double darkSeparator = MicaContrastRatio(MicaSeparatorColor(), MicaBackgroundColor());
+            [delegate setLightTheme:NO]; gMicaTestIncreaseContrast = oldContrast;
+            MicaUITestRecord(report, &allPassed, darkContrast >= 4.5 && lightContrast >= 4.5 && darkSeparator >= 4.5,
+                [NSString stringWithFormat:@"simulated Increase Contrast ratios meet 4.5:1 (dark %.2f, light %.2f, separator %.2f)",
+                    darkContrast, lightContrast, darkSeparator]);
+            NSMutableArray *savedControllers = [MicaControllers() mutableCopy];
+            [MicaControllers() removeAllObjects];
+            MicaAppDelegate *stateOwner = [MicaAppDelegate new];
+            stateOwner.tabs = [NSMutableArray array];
+            MicaTab *savedTab = [MicaTab new]; savedTab.name = @"Remembered"; savedTab.cwd = @"/tmp"; savedTab.command = @"printf MICA_RESTORED";
+            [stateOwner.tabs addObject:savedTab]; [MicaControllers() addObject:stateOwner];
+            NSString *statePath = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                [NSString stringWithFormat:@"mica-state-%d.json", getpid()]];
+            gMicaSessionStateURLOverride = [NSURL fileURLWithPath:statePath];
+            [stateOwner saveSessionState];
+            NSDictionary *savedState = [stateOwner readSessionState].firstObject;
+            BOOL stateRoundTrips = [savedState[@"tabs"] count] == 1 &&
+                [savedState[@"tabs"][0][@"name"] isEqual:@"Remembered"] &&
+                [savedState[@"tabs"][0][@"cwd"] isEqual:@"/tmp"] &&
+                [savedState[@"tabs"][0][@"command"] isEqual:@"printf MICA_RESTORED"];
+            MicaAppDelegate *restoredStateOwner = [MicaAppDelegate new];
+            restoredStateOwner.tabs = [NSMutableArray array]; restoredStateOwner.activeIndex = 0;
+            [restoredStateOwner loadLaunchConfigurationFromArguments:@[@"mica"] bundleInfo:@{}];
+            BOOL restoredSession = restoredStateOwner.tabs.count == 1 &&
+                [restoredStateOwner.activeTab.name isEqual:@"Remembered"] &&
+                [restoredStateOwner.activeTab.cwd isEqual:@"/tmp"] &&
+                [restoredStateOwner.activeTab.command isEqual:@"printf MICA_RESTORED"];
+            for (NSValue *value in [restoredStateOwner detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
+            [@"{" writeToFile:statePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            BOOL corruptIgnored = [stateOwner readSessionState].count == 0;
+            [[NSMutableData dataWithLength:256 * 1024 + 1] writeToFile:statePath atomically:YES];
+            BOOL oversizedIgnored = [stateOwner readSessionState].count == 0;
+            [NSFileManager.defaultManager removeItemAtPath:statePath error:nil];
+            gMicaSessionStateURLOverride = nil;
+            [MicaControllers() removeAllObjects]; [MicaControllers() addObjectsFromArray:savedControllers];
+            MicaUITestRecord(report, &allPassed, stateRoundTrips && restoredSession && corruptIgnored && oversizedIgnored,
+                @"session state restores configured tab metadata and safely ignores corrupt or oversized JSON");
             [preferences close];
 
             // Git branch detection reads .git/HEAD directly: plain repo, linked worktree, detached HEAD, no repo.

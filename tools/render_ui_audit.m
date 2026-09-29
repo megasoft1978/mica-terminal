@@ -93,6 +93,27 @@ int main(int argc, const char *argv[]) {
         [voice setValue:@(MicaVoiceControllerStateFailed) forKey:@"state"];
         [voice setValue:@"Microphone access is off. Enable Mica in System Settings → Privacy & Security → Microphone." forKey:@"statusText"];
         SaveViewImage(main.terminalView, out, @"06-dictation-failed");
+        NSArray<NSNumber *> *dictationWidths = @[@480, @600, @800, @1600];
+        NSArray<NSDictionary *> *dictationStates = @[
+            @{@"name":@"preparing", @"state":@(MicaVoiceControllerStatePreparing), @"words":@""},
+            @{@"name":@"listening-0", @"state":@(MicaVoiceControllerStateListening), @"words":@""},
+            @{@"name":@"listening-3", @"state":@(MicaVoiceControllerStateListening), @"words":@"change the tab widths"},
+            @{@"name":@"listening-40", @"state":@(MicaVoiceControllerStateListening), @"words":[@"recent words " stringByPaddingToLength:320 withString:@" current phrase" startingAtIndex:0]},
+            @{@"name":@"failed", @"state":@(MicaVoiceControllerStateFailed), @"words":@""},
+            @{@"name":@"denied", @"state":@(MicaVoiceControllerStateFailed), @"words":@""}
+        ];
+        for (NSNumber *width in dictationWidths) for (NSDictionary *state in dictationStates) {
+            MicaAppDelegate *sample = MakeWindow(width.doubleValue, 360, @[@"Shell"], @"Fieldnote");
+            MicaVoiceController *sampleVoice = [[MicaVoiceController alloc] initWithHelperURL:[NSURL fileURLWithPath:@"/nonexistent"]];
+            sample.voiceController = sampleVoice;
+            [sampleVoice setValue:state[@"state"] forKey:@"state"];
+            [sampleVoice setValue:state[@"words"] forKey:@"transcript"];
+            [sampleVoice setValue:[state[@"name"] isEqual:@"denied"]
+                ? @"Microphone access was denied. Enable Mica in System Settings → Privacy & Security → Microphone."
+                : @"I didn’t catch any speech. Hold left Option and speak a little longer." forKey:@"statusText"];
+            NSString *imageName = [NSString stringWithFormat:@"dictation-%@-%@-%@", gMicaLightTheme ? @"light" : @"dark", width, state[@"name"]];
+            SaveViewImage(sample.terminalView, out, imageName);
+        }
         [voice setValue:@(MicaVoiceControllerStateIdle) forKey:@"state"];
 
         MicaAppDelegate *narrow = MakeWindow(620, 380, tabs, @"Fieldnote");
@@ -113,6 +134,19 @@ int main(int argc, const char *argv[]) {
         SaveViewImage(crowded.terminalView, out, @"08-dark-many-tabs");
 
         gMicaLightTheme = YES;
+        for (NSNumber *width in dictationWidths) for (NSDictionary *state in dictationStates) {
+            MicaAppDelegate *sample = MakeWindow(width.doubleValue, 360, @[@"Shell"], @"Fieldnote");
+            [sample setLightTheme:YES];
+            MicaVoiceController *sampleVoice = [[MicaVoiceController alloc] initWithHelperURL:[NSURL fileURLWithPath:@"/nonexistent"]];
+            sample.voiceController = sampleVoice;
+            [sampleVoice setValue:state[@"state"] forKey:@"state"];
+            [sampleVoice setValue:state[@"words"] forKey:@"transcript"];
+            [sampleVoice setValue:[state[@"name"] isEqual:@"denied"]
+                ? @"Microphone access was denied. Enable Mica in System Settings → Privacy & Security → Microphone."
+                : @"I didn’t catch any speech. Hold left Option and speak a little longer." forKey:@"statusText"];
+            NSString *imageName = [NSString stringWithFormat:@"dictation-light-%@-%@", width, state[@"name"]];
+            SaveViewImage(sample.terminalView, out, imageName);
+        }
         MicaAppDelegate *light = MakeWindow(1100, 440, tabs, @"Fieldnote");
         [light setLightTheme:YES];
         Scene(light);

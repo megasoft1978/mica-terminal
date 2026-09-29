@@ -154,6 +154,12 @@ static NSColor *MicaColor(uint32_t rgb) {
 // The terminal draws on a fixed surface (dark by default, white in the light theme), independent of the system appearance.
 static BOOL gMicaLightTheme = NO;
 static BOOL gMicaFollowSystemTheme = NO;
+static BOOL gMicaTestIncreaseContrast = NO;
+static NSUserDefaults *gMicaDefaultsOverride;
+static NSURL *gMicaSessionStateURLOverride;
+static BOOL MicaIncreaseContrastEnabled(void) {
+    return gMicaTestIncreaseContrast || NSWorkspace.sharedWorkspace.accessibilityDisplayShouldIncreaseContrast;
+}
 static NSURL *MicaMicrophoneSettingsURL(void) {
     return [NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"];
 }
@@ -168,13 +174,13 @@ static NSColor *MicaForegroundColor(void) {
 }
 
 static NSColor *MicaSeparatorColor(void) {
-    return NSWorkspace.sharedWorkspace.accessibilityDisplayShouldIncreaseContrast
-        ? [NSColor.labelColor colorWithAlphaComponent:0.55] : NSColor.separatorColor;
+    return MicaIncreaseContrastEnabled()
+        ? MicaColor(gMicaLightTheme ? 0x595959 : 0xbdbdbd) : NSColor.separatorColor;
 }
 
 static NSColor *MicaSecondaryLabelColor(CGFloat alpha) {
-    return NSWorkspace.sharedWorkspace.accessibilityDisplayShouldIncreaseContrast
-        ? NSColor.labelColor : [NSColor.secondaryLabelColor colorWithAlphaComponent:alpha];
+    return MicaIncreaseContrastEnabled()
+        ? MicaColor(gMicaLightTheme ? 0x595959 : 0xbdbdbd) : [NSColor.secondaryLabelColor colorWithAlphaComponent:alpha];
 }
 
 static NSFont *MicaTerminalFont(CGFloat size) {
@@ -392,6 +398,9 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, assign) NSUInteger drawingStatsCount;
 @property(nonatomic, assign) NSTimeInterval drawingStatsTotalDuration;
 @property(nonatomic, assign) NSTimeInterval drawingStatsMaximumDuration;
+@property(nonatomic, assign) NSRect dictationLabelTextRect;
+@property(nonatomic, assign) NSRect dictationWordsTextRect;
+@property(nonatomic, assign) NSRect dictationHintTextRect;
 #if defined(MICA_APP_NO_MAIN)
 @property(nonatomic, copy) NSString *testClipboardText;
 @property(nonatomic, strong) NSData *testClipboardImage;
@@ -446,6 +455,8 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, copy) NSString *projectName;
 @property(nonatomic, strong) NSImage *baseApplicationIcon;
 @property(nonatomic, copy) NSString *projectLayoutPath;
+@property(nonatomic) BOOL explicitLayoutLaunch;
+@property(nonatomic, copy) NSArray<NSDictionary *> *savedTabsForWindow;
 @property(nonatomic, strong) id projectSettingsController;
 @property(nonatomic, strong) NSTimer *pollTimer;
 @property(nonatomic, assign) NSTimeInterval lastSlowPollLogAt;
@@ -517,6 +528,11 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)handleClipboardWrite:(NSString *)text fromTab:(MicaTab *)tab;
 - (void)loadLaunchConfiguration;
 - (void)loadLaunchConfigurationFromArguments:(NSArray<NSString *> *)arguments bundleInfo:(NSDictionary *)bundleInfo;
+- (NSUserDefaults *)micaDefaults;
+- (void)loadStoredThemePreference;
+- (NSURL *)sessionStateURL;
+- (void)saveSessionState;
+- (NSArray<NSDictionary *> *)readSessionState;
 - (void)startPushToTalk;
 - (void)finishPushToTalk;
 - (void)beginDictationForActiveTab;
@@ -1945,10 +1961,14 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     }
     if (hintWidth) {
         NSRect hintRect = NSMakeRect(status.size.width - hintWidth - 14, NSMinY(status), hintWidth, status.size.height);
+        self.dictationHintTextRect = hintRect;
         MicaDrawCenteredLine(keyHint, hintRect, hintAttrs, NSTextAlignmentRight);
-    }
+    } else self.dictationHintTextRect = NSZeroRect;
     NSRect transcriptRect = NSMakeRect(transcriptX, NSMinY(status),
         MAX(0, status.size.width - transcriptX - rightReserve), status.size.height);
+    self.dictationLabelTextRect = NSMakeRect(38, NSMinY(status),
+        MAX(0, MIN(statusWidth, status.size.width - 38)), status.size.height);
+    self.dictationWordsTextRect = transcriptRect;
     MicaDrawCenteredLine(MicaHeadTruncatedText(text, transcriptRect.size.width, transcriptAttrs),
                          transcriptRect, transcriptAttrs, NSTextAlignmentLeft);
     if (!NSIsEmptyRect(settingsButton)) {
@@ -3525,7 +3545,18 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         if (arguments) [pendingArguments addObject:arguments];
     }
     [pending removeAllObjects];
+    BOOL launchedFromProjectLayout = pendingArguments.count > 0;
+    NSArray<NSDictionary *> *savedWindows = (!launchedFromProjectLayout &&
+        NSProcessInfo.processInfo.arguments.count <= 1 && !getenv("MICA_TEST_NO_STARTUP"))
+        ? [self readSessionState] : @[];
     [self startWindowWithArguments:pendingArguments.firstObject];
+    if (savedWindows.count > 1 && !self.explicitLayoutLaunch) {
+        for (NSUInteger index = 1; index < savedWindows.count; index++) {
+            MicaAppDelegate *restored = [MicaAppDelegate new];
+            restored.savedTabsForWindow = savedWindows[index][@"tabs"];
+            [restored startWindowWithArguments:@[@"mica", @"--new-window"]];
+        }
+    }
     for (NSUInteger index = 1; index < pendingArguments.count; index++)
         [self openProjectWindowWithArguments:pendingArguments[index]];
 }
@@ -3574,18 +3605,14 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     self.uiMode = MicaUIModeNormal;
     if (arguments) [self loadLaunchConfigurationFromArguments:arguments bundleInfo:NSBundle.mainBundle.infoDictionary];
     else [self loadLaunchConfiguration];
-    if (!getenv("MICA_TEST_NO_STARTUP")) {
+    if (!getenv("MICA_TEST_NO_STARTUP") || gMicaDefaultsOverride) {
         gMicaCursorStyle = [NSUserDefaults.standardUserDefaults integerForKey:@"MicaCursorStyle"];
         NSMenu *viewMenu = [NSApp.mainMenu itemWithTitle:@"View"].submenu;
         for (NSMenuItem *entry in viewMenu.itemArray)
             if (entry.action == @selector(setCursorStyle:)) entry.state = entry.tag == gMicaCursorStyle ? NSControlStateValueOn : NSControlStateValueOff;
     }
     if (!getenv("MICA_TEST_NO_STARTUP")) {
-        NSString *themeMode = [NSUserDefaults.standardUserDefaults stringForKey:@"MicaThemeMode"];
-        gMicaFollowSystemTheme = [themeMode isEqualToString:@"system"];
-        BOOL light = gMicaFollowSystemTheme ? [self systemAppearanceIsLight] :
-            ([themeMode isEqualToString:@"light"] || (!themeMode && [NSUserDefaults.standardUserDefaults boolForKey:@"MicaLightTheme"]));
-        [self setLightTheme:light];
+        [self loadStoredThemePreference];
         [NSApp addObserver:self forKeyPath:@"effectiveAppearance" options:NSKeyValueObservingOptionNew context:NULL];
         self.observesSystemAppearance = YES;
     } else {
@@ -3842,10 +3869,16 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         NSFileManager.defaultManager.currentDirectoryPath);
     NSString *projectName = configuration[@"projectName"];
     self.projectLayoutPath = configuration[@"layoutPath"];
+    self.explicitLayoutLaunch = self.projectLayoutPath.length > 0;
     self.projectName = projectName.length ? projectName : nil;
     [self updateWindowTitle];
     [self configurePomodoro];
     NSArray<NSDictionary *> *tabSpecs = configuration[@"tabs"];
+    if (self.savedTabsForWindow.count) tabSpecs = self.savedTabsForWindow;
+    else if (!self.explicitLayoutLaunch && (!getenv("MICA_TEST_NO_STARTUP") || gMicaSessionStateURLOverride)) {
+        NSArray *saved = [self readSessionState];
+        if (saved.count) tabSpecs = saved.firstObject[@"tabs"];
+    }
     MicaDiagnosticsLog(@"launch", [NSString stringWithFormat:@"configuration project=%@ layout=%d tabs=%lu",
         self.projectName ?: @"Mica Terminal", [configuration[@"layoutLoaded"] boolValue],
         (unsigned long)tabSpecs.count]);
@@ -3856,11 +3889,20 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         // that entry into the regular lazygit shell command.
         if ([command isEqualToString:@"mica-git"]) command = @"lazygit";
         [tabIndexMap addObject:@(self.tabs.count)];
-        [self addTabWithName:spec[@"name"] cwd:spec[@"cwd"] command:command
+        NSString *cwd = spec[@"cwd"];
+        BOOL isDirectory = NO;
+        if (![[NSFileManager defaultManager] fileExistsAtPath:cwd isDirectory:&isDirectory] || !isDirectory)
+            cwd = NSHomeDirectory();
+        [self addTabWithName:spec[@"name"] cwd:cwd command:command
                    prefilled:[spec[@"prefilled"] boolValue]];
     }
     if (self.tabs.count == 0) {
         NSString *cwd = configuration[@"cwd"] ?: NSFileManager.defaultManager.currentDirectoryPath;
+        if (!self.explicitLayoutLaunch && (!getenv("MICA_TEST_NO_STARTUP") || gMicaSessionStateURLOverride)) {
+            NSArray *saved = [self readSessionState];
+            NSString *savedCwd = [saved.firstObject[@"tabs"] firstObject][@"cwd"];
+            if (savedCwd.length) cwd = savedCwd;
+        }
         [self addTabWithName:@"Shell" cwd:cwd command:nil prefilled:NO];
     }
     if ([configuration[@"layoutLoaded"] boolValue] && self.tabs.count > 1) {
@@ -3881,6 +3923,65 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     }
     [self updateWindowTitle];
     [self.terminalView setNeedsDisplay:YES];
+}
+
+- (NSUserDefaults *)micaDefaults { return gMicaDefaultsOverride ?: NSUserDefaults.standardUserDefaults; }
+
+- (void)loadStoredThemePreference {
+    NSString *themeMode = [[self micaDefaults] stringForKey:@"MicaThemeMode"];
+    gMicaFollowSystemTheme = [themeMode isEqualToString:@"system"];
+    BOOL light = gMicaFollowSystemTheme ? [self systemAppearanceIsLight] :
+        ([themeMode isEqualToString:@"light"] || (!themeMode && [[self micaDefaults] boolForKey:@"MicaLightTheme"]));
+    [self setLightTheme:light];
+}
+
+- (NSURL *)sessionStateURL {
+    if (gMicaSessionStateURLOverride) return gMicaSessionStateURLOverride;
+    NSURL *support = [NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory
+        inDomains:NSUserDomainMask].firstObject;
+    return [[support URLByAppendingPathComponent:@"Mica" isDirectory:YES]
+        URLByAppendingPathComponent:@"sessions.json"];
+}
+
+- (NSArray<NSDictionary *> *)readSessionState {
+    NSData *data = [NSData dataWithContentsOfURL:[self sessionStateURL] options:NSDataReadingMappedIfSafe error:nil];
+    if (!data.length || data.length > 256 * 1024) return @[];
+    id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![json isKindOfClass:NSDictionary.class] || ![json[@"windows"] isKindOfClass:NSArray.class]) return @[];
+    NSArray *windows = json[@"windows"];
+    if (windows.count > 32) return @[];
+    for (id window in windows) {
+        if (![window isKindOfClass:NSDictionary.class] || ![window[@"tabs"] isKindOfClass:NSArray.class] ||
+            [window[@"tabs"] count] > 32) return @[];
+        for (id tab in window[@"tabs"]) {
+            if (![tab isKindOfClass:NSDictionary.class] || ![tab[@"name"] isKindOfClass:NSString.class] ||
+                ![tab[@"cwd"] isKindOfClass:NSString.class] ||
+                (tab[@"command"] && ![tab[@"command"] isKindOfClass:NSString.class])) return @[];
+        }
+    }
+    return windows;
+}
+
+- (void)saveSessionState {
+    if (getenv("MICA_TEST_NO_STARTUP") && !gMicaSessionStateURLOverride) return;
+    NSMutableArray *windows = [NSMutableArray array];
+    for (MicaAppDelegate *controller in MicaControllers()) {
+        if (controller.explicitLayoutLaunch) continue;
+        NSMutableArray *tabs = [NSMutableArray array];
+        for (MicaTab *tab in controller.tabs) {
+            NSMutableDictionary *record = [@{@"name":tab.name ?: @"Terminal",
+                @"cwd":tab.cwd ?: NSHomeDirectory()} mutableCopy];
+            if (tab.command.length) record[@"command"] = tab.command;
+            [tabs addObject:record];
+        }
+        if (tabs.count) [windows addObject:@{@"tabs":tabs}];
+    }
+    NSURL *url = [self sessionStateURL];
+    [NSFileManager.defaultManager createDirectoryAtURL:url.URLByDeletingLastPathComponent
+        withIntermediateDirectories:YES attributes:nil error:nil];
+    NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"version":@1,@"windows":windows}
+        options:NSJSONWritingSortedKeys error:nil];
+    if (data.length && data.length <= 256 * 1024) [data writeToURL:url options:NSDataWritingAtomic error:nil];
 }
 
 - (void)addTabWithName:(NSString *)name cwd:(NSString *)cwd command:(NSString *)command prefilled:(BOOL)prefilled {
@@ -4379,10 +4480,10 @@ static BOOL MicaValidBranchName(NSString *name) {
 - (void)prefThemeChanged:(NSPopUpButton *)sender {
     NSInteger selection = sender.indexOfSelectedItem;
     gMicaFollowSystemTheme = selection == 2;
-    if (!getenv("MICA_TEST_NO_STARTUP")) {
+    if (!getenv("MICA_TEST_NO_STARTUP") || gMicaDefaultsOverride) {
         NSString *mode = gMicaFollowSystemTheme ? @"system" : (selection == 1 ? @"light" : @"dark");
-        [NSUserDefaults.standardUserDefaults setObject:mode forKey:@"MicaThemeMode"];
-        [NSUserDefaults.standardUserDefaults setBool:selection == 1 forKey:@"MicaLightTheme"];
+        [[self micaDefaults] setObject:mode forKey:@"MicaThemeMode"];
+        [[self micaDefaults] setBool:selection == 1 forKey:@"MicaLightTheme"];
     }
     [self setLightTheme:gMicaFollowSystemTheme ? [self systemAppearanceIsLight] : selection == 1];
 }
@@ -4471,7 +4572,7 @@ static BOOL MicaValidBranchName(NSString *name) {
     (void)sender;
     BOOL light = !gMicaLightTheme;
     [self setLightTheme:light];
-    if (!getenv("MICA_TEST_NO_STARTUP")) [NSUserDefaults.standardUserDefaults setBool:light forKey:@"MicaLightTheme"];
+    if (!getenv("MICA_TEST_NO_STARTUP") || gMicaDefaultsOverride) [[self micaDefaults] setBool:light forKey:@"MicaLightTheme"];
 }
 
 - (void)restartPollTimerWithInterval:(NSTimeInterval)interval {
@@ -4798,6 +4899,7 @@ static BOOL MicaValidBranchName(NSString *name) {
     (void)sender;
     if (self.terminationCleanupStarted) return NSTerminateLater;
     if (![self confirmEndingRunningCommandsFor:@"Quit Mica"]) return NSTerminateCancel;
+    [self saveSessionState];
     self.terminationCleanupStarted = YES;
     MicaDiagnosticsLog(@"app", @"application termination requested");
     NSMutableArray<NSValue *> *sessions = [NSMutableArray array];
@@ -4863,6 +4965,10 @@ static BOOL MicaValidBranchName(NSString *name) {
         self.observesSystemAppearance = NO;
     }
     NSMutableArray<MicaAppDelegate *> *controllers = MicaControllers();
+    if (controllers.count > 1 && [controllers containsObject:self]) {
+        [controllers removeObject:self];
+        [self saveSessionState];
+    }
     if (![controllers containsObject:self] || controllers.count <= 1) return;   // last window: quitting cleans up
     [self teardownWindow];
     [controllers removeObject:self];
@@ -4872,6 +4978,7 @@ static BOOL MicaValidBranchName(NSString *name) {
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
     (void)notification;
+    [self saveSessionState];
     MicaDiagnosticsLog(@"app", @"application is terminating");
 }
 - (void)applicationWillResignActive:(NSNotification *)notification {

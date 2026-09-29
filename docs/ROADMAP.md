@@ -11,6 +11,7 @@ A verified list of what would make Mica better at its job (one light app for the
 - The status bar keeps the timer and a readable folder suffix visible at 600 px and 800 px, dropping shortcut hints first.
 - A denied microphone offers a button to open System Settings → Privacy & Security → Microphone.
 - Settings can follow macOS appearance live, while Dark remains the first-run default; Increase Contrast strengthens separators and secondary text.
+- Ordinary tabs reopen after quitting with their names, working folders and configured startup commands; project layout windows continue to load from their layout files.
 - The activity indicator stops spinning when macOS Reduce Motion is on.
 - Developer ID signing now uses Apple's secure timestamp, which notarization requires.
 - Stale claims in the README, site and docs were corrected against the code.
@@ -20,13 +21,12 @@ A verified list of what would make Mica better at its job (one light app for the
 | # | Gap | Evidence | Effort |
 | --- | --- | --- | --- |
 | 1 | Notarized build and an update path | No Developer ID certificate on the development Mac, so `make notarize` has never run end to end; no releases, no updater | Needs your certificate |
-| 2 | Tabs and folders do not survive quitting | Quit destroys all sessions; only the window frame is restored | Medium |
-| 3 | Status sidebar with per-tab branch, agent state and last notification | Data exists (branch, activity, notification text); no UI | Medium |
-| 4 | Scrollback is short for agent output | 2 MiB cap over 40-byte cells is about 650 lines at 80 columns and 260 at 200 columns | Medium (compact cell storage) |
-| 5 | zsh only | The shell is `/bin/zsh -l -i` and `$SHELL` is ignored; the shell hooks are zsh | Medium |
-| 6 | Split panes | Layout, focus and resize code assume one grid per tab | Large |
-| 7 | Quick terminal on a global hotkey | Not present | Medium |
-| 8 | Vertical status sidebar, glass on the tab strip | See UI-REVIEW.md | Large |
+| 2 | Status sidebar with per-tab branch, agent state and last notification | Data exists (branch, activity, notification text); no UI | Medium |
+| 3 | Scrollback is short for agent output | 2 MiB cap over 40-byte cells is about 650 lines at 80 columns and 260 at 200 columns | Medium (compact cell storage) |
+| 4 | zsh only | The shell is `/bin/zsh -l -i` and `$SHELL` is ignored; the shell hooks are zsh | Medium |
+| 5 | Split panes | Layout, focus and resize code assume one grid per tab | Large |
+| 6 | Quick terminal on a global hotkey | Not present | Medium |
+| 7 | Vertical status sidebar, glass on the tab strip | See UI-REVIEW.md | Large |
 
 ## Known limits worth stating
 
