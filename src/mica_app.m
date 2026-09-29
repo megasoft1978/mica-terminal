@@ -414,6 +414,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, strong) MicaVoiceController *voiceController;
 @property(nonatomic, strong) MicaTab *voiceTargetTab;
 @property(nonatomic) NSInteger lastVoiceState;
+@property(nonatomic, copy) NSString *appliedIconProjectName;
 @property(nonatomic, assign) NSInteger attentionRequest;
 @property(nonatomic, assign) NSInteger focusDurationMinutes;
 @property(nonatomic, assign) NSInteger breakDurationMinutes;
@@ -599,6 +600,8 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     NSPoint _selectionEnd;
     size_t _selectionHistoryLines;
     MicaTab *_imeTab;
+    NSFont *_styledFontBase;
+    NSFont *__strong _styledFonts[4];
     NSString *_markedText;
     MicaSession *_selectionSession;
     CGFloat _charWidth;
@@ -802,9 +805,19 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
 }
 
 - (NSFont *)fontForCell:(MicaCell)cell {
-    NSFontTraitMask traits = (cell.attrs.bold ? NSBoldFontMask : 0) |
-        (cell.attrs.italic ? NSItalicFontMask : 0);
-    return MicaTerminalFontWithTraits(self.terminalFont, traits);
+    if (!cell.attrs.bold && !cell.attrs.italic) return self.terminalFont;
+    // Four prebuilt variants avoid a string-keyed cache lookup for every styled cell.
+    if (_styledFontBase != self.terminalFont) {
+        _styledFontBase = self.terminalFont;
+        for (int i = 0; i < 4; i++) _styledFonts[i] = nil;
+    }
+    int slot = (cell.attrs.bold ? 1 : 0) | (cell.attrs.italic ? 2 : 0);
+    if (!_styledFonts[slot]) {
+        NSFontTraitMask traits = (cell.attrs.bold ? NSBoldFontMask : 0) |
+            (cell.attrs.italic ? NSItalicFontMask : 0);
+        _styledFonts[slot] = MicaTerminalFontWithTraits(self.terminalFont, traits);
+    }
+    return _styledFonts[slot];
 }
 
 - (void)drawTextRun:(NSString *)text row:(NSInteger)row startCol:(NSInteger)col
@@ -1744,7 +1757,8 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
             }
             BOOL hasBackground = selected || cell.attrs.reverse || !VTERM_COLOR_IS_DEFAULT_BG(&cell.bg);
             NSRect cellRect = [self cellRectAtRow:row col:col];
-            if (hasBackground) { [bg setFill]; NSRectFill(cellRect); }
+            // Snap to device pixels so adjacent colored cells meet without hairline seams on Retina.
+            if (hasBackground) { [bg setFill]; NSRectFill([self backingAlignedRect:cellRect options:NSAlignAllEdgesNearest]); }
             if (CellIsContinuation(cell) || col <= skipGlyphThroughCol) continue;
             NSString *baseGlyph = [self stringForCell:cell];
             uint32_t firstCodepoint = cell.chars[0];
@@ -2795,7 +2809,14 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     if (self.window) self.window.title = [self windowTitleForTab:self.activeTab];
     if (!self.baseApplicationIcon)
         self.baseApplicationIcon = [NSImage imageNamed:NSImageNameApplicationIcon];
-    NSApp.applicationIconImage = MicaProjectApplicationIcon(self.baseApplicationIcon, self.projectName);
+    // Rebuilding the Dock icon on every tab change allocates and flickers; only redo it when the project changes.
+    if (!self.appliedIconProjectName || ![self.appliedIconProjectName isEqualToString:self.projectName ?: @""]) {
+        self.appliedIconProjectName = self.projectName ?: @"";
+        NSApp.applicationIconImage = MicaProjectApplicationIcon(self.baseApplicationIcon, self.projectName);
+    }
+    // Each project window remembers where it was last placed.
+    if (self.window && self.projectName.length && !getenv("MICA_TEST_NO_STARTUP") && !self.window.frameAutosaveName.length)
+        [self.window setFrameAutosaveName:[@"MicaWindow-" stringByAppendingString:self.projectName]];
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
@@ -3429,6 +3450,25 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     }
 }
 
+- (BOOL)windowShouldClose:(NSWindow *)sender {
+    // Closing the window ends every shell; confirm when a command is still running.
+    if (getenv("MICA_TEST_NO_STARTUP")) return YES;
+    NSMutableArray<NSString *> *running = [NSMutableArray array];
+    for (MicaTab *tab in self.tabs) {
+        if (tab.currentCommand.length) [running addObject:tab.currentCommand.lastPathComponent.length
+            ? tab.currentCommand.lastPathComponent : tab.currentCommand];
+    }
+    if (!running.count) return YES;
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = @"Close this window?";
+    alert.informativeText = [NSString stringWithFormat:@"%@ still running. Closing ends it.",
+        running.count == 1 ? [NSString stringWithFormat:@"“%@” is", running[0]]
+                           : [NSString stringWithFormat:@"%lu commands are", (unsigned long)running.count]];
+    [alert addButtonWithTitle:@"Cancel"];
+    [alert addButtonWithTitle:@"Close Window"];
+    (void)sender;
+    return [alert runModal] == NSAlertSecondButtonReturn;
+}
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender { (void)sender; return YES; }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
     (void)sender;
