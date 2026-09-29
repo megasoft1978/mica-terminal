@@ -1,0 +1,49 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check tag matches version
+        run: |
+          v=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)
+          [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != Info.plist $v"; exit 1; }
+      - name: Test
+        run: make test
+      - name: Import Developer ID certificate (optional)
+        env:
+          CERT_P12: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          if [ -n "$CERT_P12" ]; then
+            echo "$CERT_P12" | base64 --decode > cert.p12
+            security create-keychain -p ci ci.keychain
+            security default-keychain -s ci.keychain
+            security unlock-keychain -p ci ci.keychain
+            security import cert.p12 -k ci.keychain -P "$CERT_PASSWORD" -T /usr/bin/codesign
+            security set-key-partition-list -S apple-tool:,apple: -s -k ci ci.keychain
+            echo "SIGN_ID=$(security find-identity -v -p codesigning ci.keychain | sed -n 's/.*"\(Developer ID Application.*\)"/\1/p' | head -1)" >> "$GITHUB_ENV"
+          fi
+      - name: Build (signed and notarized when secrets exist, otherwise ad-hoc)
+        env:
+          APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.NOTARY_APP_PASSWORD }}
+        run: |
+          if [ -n "$SIGN_ID" ] && [ -n "$APPLE_ID" ]; then
+            xcrun notarytool store-credentials mica-notary --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
+            make notarize SIGN_ID="$SIGN_ID"
+          else
+            make dmg
+          fi
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" build/Mica.dmg build/Mica.zip build/SHA256SUMS.txt \
+            --title "Mica ${GITHUB_REF_NAME#v}" --generate-notes

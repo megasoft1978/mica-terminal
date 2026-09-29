@@ -169,6 +169,16 @@ sign: app
 dist: sign
 	ditto -c -k --keepParent $(APP) $(BUILD)/Mica.zip
 
+# Drag-to-Applications disk image; Mica.dmg is the stable asset name the README and site link to.
+dmg: dist
+	@rm -rf $(BUILD)/dmg && mkdir -p $(BUILD)/dmg
+	cp -R $(APP) $(BUILD)/dmg/
+	ln -s /Applications $(BUILD)/dmg/Applications
+	rm -f $(BUILD)/Mica.dmg
+	hdiutil create -volname "Mica" -srcfolder $(BUILD)/dmg -fs HFS+ -format UDZO -ov $(BUILD)/Mica.dmg
+	@if [ "$(SIGN_ID)" != "-" ]; then codesign --force --timestamp --sign "$(SIGN_ID)" $(BUILD)/Mica.dmg; fi
+	cd $(BUILD) && shasum -a 256 Mica.dmg Mica.zip > SHA256SUMS.txt
+
 # Needs a Developer ID Application certificate and a notarytool keychain profile; see docs/RELEASING.md.
 NOTARY_PROFILE ?= mica-notary
 
@@ -176,6 +186,9 @@ notarize: dist
 	xcrun notarytool submit $(BUILD)/Mica.zip --keychain-profile "$(NOTARY_PROFILE)" --wait
 	xcrun stapler staple $(APP)
 	ditto -c -k --keepParent $(APP) $(BUILD)/Mica.zip
+	$(MAKE) dmg SIGN_ID="$(SIGN_ID)"
+	xcrun notarytool submit $(BUILD)/Mica.dmg --keychain-profile "$(NOTARY_PROFILE)" --wait
+	xcrun stapler staple $(BUILD)/Mica.dmg
 	spctl --assess --type execute --verbose $(APP)
 
 # Sanitizer builds: the session tests and the fuzz/stress test run under AddressSanitizer + UBSan.

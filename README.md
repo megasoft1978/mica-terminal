@@ -12,8 +12,8 @@
 
 <p align="center">
   <a href="https://megasoft1978.github.io/mica-terminal/">Website</a> ·
-  <a href="#build-it">Build it</a> ·
-  <a href="https://github.com/megasoft1978/mica-terminal/releases">Releases</a> ·
+  <a href="https://github.com/megasoft1978/mica-terminal/releases/latest/download/Mica.dmg"><strong>Download</strong></a> ·
+  <a href="https://github.com/megasoft1978/mica-terminal/releases/latest">Release notes</a> ·
   <a href="LICENSE">MIT license</a>
 </p>
 
@@ -48,7 +48,13 @@ iTerm2 plus Wispr Flow is about 770 MB before you add a timer. Dictation adds a 
 - **A focus timer that follows you.** One timer shared by every Mica window, with a notification when a period ends.
 - **Still a real terminal.** Search scrollback, Command-click links, drag tabs, choose a cursor and a light or dark theme. If a program over SSH asks to set your clipboard, Mica asks you first.
 
-## Build it
+## Install
+
+1. [Download Mica.dmg](https://github.com/megasoft1978/mica-terminal/releases/latest/download/Mica.dmg) (Apple silicon, macOS 14 or later) and drag Mica to Applications.
+2. The first time, open System Settings → Privacy & Security and choose **Open Anyway** (macOS 15 and later; earlier versions also allow Control-click → Open). Releases are ad-hoc signed until they are notarized with a Developer ID.
+3. Mica asks for the microphone only when you start dictation. Checksums are in `SHA256SUMS.txt` on the [release page](https://github.com/megasoft1978/mica-terminal/releases/latest).
+
+### Build from source
 
 You need Xcode’s command line tools (Swift 6). The terminal parsing library is in the repository; the first build also fetches the speech package over the network.
 
@@ -57,8 +63,6 @@ git clone https://github.com/megasoft1978/mica-terminal.git
 cd mica-terminal
 make app && open build/Mica.app
 ```
-
-There is no packaged download yet. A build from `make dist` is ad-hoc signed, so on another Mac open System Settings → Privacy & Security and choose Open Anyway once (macOS 15 and later; earlier versions also allow Control-click → Open). Mica asks for the microphone only when you start dictation.
 
 ## Keys worth knowing
 
@@ -93,7 +97,7 @@ make test       # PTY, UI, launcher and fixture checks; never sends prompts to a
 make sanitize   # session tests and a fuzzer under AddressSanitizer and UBSan
 make stress     # thousands of random UI actions under the sanitizers
 make validate   # tests, build, helper build and bundle checks
-make dist       # ad-hoc sign and zip (SIGN_ID="Developer ID Application: …" to override)
+make dmg        # ad-hoc sign, build Mica.dmg, Mica.zip and checksums (SIGN_ID="Developer ID Application: …" to override)
 ```
 
 More: [what is left](docs/ROADMAP.md) · [how it compares](docs/COMPETITORS.md) · [stability testing](docs/STABILITY.md) · [UI plan](docs/UI-REVIEW.md) · [releasing](docs/RELEASING.md) · [agent notifications](docs/AGENT-NOTIFICATIONS.md) · [contributing](CONTRIBUTING.md) · [security](SECURITY.md)
