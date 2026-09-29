@@ -196,7 +196,7 @@
           <li><span class="name">iTerm2 <small>terminal only</small></span><span class="track"><i class="bar b126"></i></span><span class="value">126 MB</span></li>
           <li><span class="name">Wispr Flow <small>voice typing only</small></span><span class="track"><i class="bar b645"></i></span><span class="value">645 MB</span></li>
         </ul>
-        <p class="memory-note"><strong>iTerm2 plus Wispr Flow is about 770 MB</strong> before you add a timer. Measured idle with one window each, on the same Mac. Voice typing adds a 76 MB helper only while you speak, then it exits. Very large windows cost more in every app, and each project window is its own process; the <a href="https://github.com/megasoft1978/mica-terminal/blob/main/docs/MEMORY-BASELINE.md">measurements page</a> has the method and the cases where Mica does not win.</p>
+        <p class="memory-note"><strong>iTerm2 plus Wispr Flow is about 770 MB</strong> before you add a timer. Measured idle with one window each, on the same Mac. Voice typing adds a helper of about 35 MB only while you speak, then it exits, and Mica shows its own memory live in the status bar. Very large windows cost more in every app, and each project window is its own process; the <a href="https://github.com/megasoft1978/mica-terminal/blob/main/docs/MEMORY-BASELINE.md">measurements page</a> has the method and the cases where Mica does not win.</p>
       </section>
     </div>
 
@@ -234,7 +234,7 @@ make app &amp;&amp; open build/Mica.app</div>
           <h3>Speak, then read it back.</h3>
           <p>Hold left <kbd>⌥</kbd>, say what you want to run, and release. Your words appear in the prompt for you to edit before you press Return. Recognition runs on your Mac with NVIDIA’s Parakeet model. The first use downloads 630 MB, and the recognizer only occupies memory while you are speaking.</p>
         </div>
-        <div class="shot"><img src="assets/crop-hints-dark.png" width="1200" height="100" alt="Status bar shortcut hints: ⌘/ Shortcuts, ⌥ Dictate, ⌘1–8 Switch tab, ⌘T New tab, ⌘Q Quit." loading="lazy"></div>
+        <div class="shot"><img src="assets/crop-hints-dark.png" width="1200" height="100" alt="Status bar shortcut hints (⌘/ Shortcuts, ⌥ Dictate, ⌘1–8 Switch tab, ⌘T New tab, ⌘Q Quit) and a live memory readout showing 58 MB." loading="lazy"></div>
       </div>
 
       <div class="row flip">

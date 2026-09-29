@@ -7,6 +7,8 @@
 
 #import <CommonCrypto/CommonDigest.h>
 #import <fcntl.h>
+#import <libproc.h>
+#import <sys/resource.h>
 #import <mach/mach_time.h>
 #import <sys/file.h>
 #import <sys/sysctl.h>
@@ -424,6 +426,8 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, strong) MicaVoiceController *voiceController;
 @property(nonatomic, strong) MicaTab *voiceTargetTab;
 @property(nonatomic) NSInteger lastVoiceState;
+@property(nonatomic, copy) NSString *memoryLabel;
+@property(nonatomic) NSTimeInterval memoryCheckedAt;
 @property(nonatomic) BOOL clipboardPromptShowing;
 @property(nonatomic) NSTimeInterval clipboardCooldownUntil;
 @property(nonatomic) NSUInteger idlePollTicks;
@@ -499,6 +503,22 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (instancetype)initWithOwner:(MicaAppDelegate *)owner;
 - (void)save:(id)sender;
 @end
+
+// Apple's physical footprint for a process: the same number Activity Monitor calls Memory.
+static uint64_t MicaFootprintBytes(pid_t pid) {
+    if (pid <= 0) return 0;
+    struct rusage_info_v4 info;
+    if (proc_pid_rusage(pid, RUSAGE_INFO_V4, (rusage_info_t *)&info) != 0) return 0;
+    return info.ri_phys_footprint;
+}
+
+// "58 MB", or "58 + 36 MB" while the speech helper is running. Nothing else is hidden: this is everything
+// Mica (window, shells' bookkeeping, timer) and its dictation helper occupy right now.
+static NSString *MicaMemoryLabel(uint64_t appBytes, uint64_t helperBytes) {
+    double app = appBytes / 1048576.0, helper = helperBytes / 1048576.0;
+    return helperBytes ? [NSString stringWithFormat:@"%.0f + %.0f MB", app, helper]
+                       : [NSString stringWithFormat:@"%.0f MB", app];
+}
 
 static NSMenuItem *AddMenuItem(NSMenu *menu, NSString *title, SEL selector, NSString *key, NSEventModifierFlags modifiers) {
     // Menu titles go through the localization table so translations can be dropped in as .lproj/Localizable.strings.
@@ -1581,7 +1601,16 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
     };
     NSFont *hintFont = hintAttrs[NSFontAttributeName];
     CGFloat hintWidth = 0;
-    CGFloat hintRight = self.bounds.size.width - 12;
+    // Live memory readout on the far right; hints use the space that is left.
+    NSString *memoryText = self.owner.memoryLabel ?: MicaMemoryLabel(MicaFootprintBytes(getpid()), 0);
+    NSDictionary *memoryAttrs = @{
+        NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:11.5 weight:NSFontWeightMedium],
+        NSForegroundColorAttributeName: [NSColor.labelColor colorWithAlphaComponent:0.70]
+    };
+    CGFloat memoryWidth = [memoryText sizeWithAttributes:memoryAttrs].width;
+    MicaDrawCenteredLine(memoryText, NSMakeRect(self.bounds.size.width - 12 - memoryWidth, 0, memoryWidth, kStatusHeight),
+                         memoryAttrs, NSTextAlignmentRight);
+    CGFloat hintRight = self.bounds.size.width - 12 - memoryWidth - 18;
     // Drop trailing hints that would run over the context text at narrow widths.
     while (hintParts.count > 1) {
         hintWidth = (hintParts.count - 1) * 16;
@@ -3204,6 +3233,21 @@ static NSDictionary *MicaScalarDictionary(id object) {
     [self.window makeKeyAndOrderFront:nil];
     [self.window makeFirstResponder:self.terminalView];
     [self restartPollTimerWithInterval:0.015];
+    // Measurement aid: MICA_DEBUG_DICTATE="<start-after-seconds> <hold-seconds>" runs one real dictation hold
+    // (real microphone, real helper) and the poll loop logs the app and helper memory once a second.
+    const char *debugDictate = getenv("MICA_DEBUG_DICTATE");
+    if (debugDictate) {
+        double startAfter = 5, hold = 10;
+        sscanf(debugDictate, "%lf %lf", &startAfter, &hold);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(startAfter * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            MicaDiagnosticsLog(@"memory", @"debug dictation hold begins");
+            [self startPushToTalk];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(hold * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [self finishPushToTalk];
+                MicaDiagnosticsLog(@"memory", @"debug dictation hold ends");
+            });
+        });
+    }
 }
 
 - (void)installMenus {
@@ -3986,6 +4030,23 @@ static BOOL MicaValidBranchName(NSString *name) {
 - (void)pollSessions:(NSTimer *)timer {
     (void)timer;
     BOOL redraw = NO;
+    // Live memory readout: refreshed every 2 s (1 s while dictating, and logged so it can be audited).
+    {
+        NSTimeInterval nowForMemory = NSProcessInfo.processInfo.systemUptime;
+        pid_t helperPID = [self.voiceController helperProcessIdentifier];
+        if (nowForMemory - self.memoryCheckedAt >= (helperPID ? 1.0 : 2.0)) {
+            self.memoryCheckedAt = nowForMemory;
+            uint64_t appBytes = MicaFootprintBytes(getpid()), helperBytes = MicaFootprintBytes(helperPID);
+            NSString *label = MicaMemoryLabel(appBytes, helperBytes);
+            if (helperPID)
+                MicaDiagnosticsLog(@"memory", [NSString stringWithFormat:@"app=%.1f MB helper=%.1f MB total=%.1f MB",
+                    appBytes / 1048576.0, helperBytes / 1048576.0, (appBytes + helperBytes) / 1048576.0]);
+            if (![label isEqualToString:self.memoryLabel]) {
+                self.memoryLabel = label;
+                [self.terminalView setNeedsDisplayInRect:NSMakeRect(0, 0, self.terminalView.bounds.size.width, kStatusHeight)];
+            }
+        }
+    }
     // Idle backoff: after ~5 s without output, poll at 50 ms instead of 15 ms.
     BOOL justWoke = NO;
     if (self.pollSawOutput) { self.pollSawOutput = NO; justWoke = self.pollIsSlow; [self wakePollTimer]; }

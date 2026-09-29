@@ -16,7 +16,23 @@ Measured 2026-09-29 on an Apple silicon Mac (macOS 26.6). Each app was launched 
 
 The stack this replaces on the same Mac: **iTerm2 + Wispr Flow ≈ 770 MB**, before any timer app. Mica covers all three jobs in less than a tenth of that.
 
-Dictation adds a helper process only while you are dictating (about 76 MB) and it exits afterwards, so the idle number above stays the number you live with.
+Dictation adds a helper process only while you are dictating and it exits afterwards, so the idle number above stays the number you live with. While it recognizes speech the helper measures **about 30–37 MB**, so Mica plus a live dictation is roughly **95 MB** in total (see below).
+
+## Memory while dictating
+
+Measured with `scripts/measure-dictation-memory.py`, which starts the app's real helper, speaks a 7-second sentence into it in real time through macOS `say`, then adds 3 seconds of silence, sampling `phys_footprint` throughout. Three runs on 2026-09-29:
+
+| Phase | Helper footprint |
+| --- | ---: |
+| Starting (models already compiled and cached) | 4–5 MB, ready in about 0.5 s |
+| Listening and recognizing | 29–37 MB |
+| Peak in any run | 37 MB |
+
+The transcript was correct in every run apart from "Mica" written as "Micah". Add the app's own footprint (about 58 MB) and the microphone capture inside the app, and a dictation costs about 95 MB in total. An earlier figure of 76 MB came from the helper's peak *resident size*, which counts shared system pages; the footprint above is what Activity Monitor shows as Memory.
+
+The status bar shows Mica's own number live at bottom right ("58 MB", or "58 + 36 MB" while the helper is running), taken from the same `phys_footprint` counter. While dictating, the app also writes a line per second to its diagnostic log (Help → Open Diagnostic Logs) so the total can be audited. Setting `MICA_DEBUG_DICTATE="5 10"` runs one real microphone dictation hold for measuring in place.
+
+The one time memory is higher is the first dictation after an app update, when Core ML rebuilds its compiled model cache (peak resident size near 600 MB for about half a minute). Mica does that in the background shortly after launch.
 
 ## What makes the difference
 
@@ -30,7 +46,7 @@ Dictation adds a helper process only while you are dictating (about 76 MB) and i
 
 - **Window size dominates.** Every app pays roughly 2–3 times the window's pixel area, four bytes per pixel, for its drawing buffers. A maximized window on a 5160 × 2160 display costs about 120 MB in any terminal. Mica processes running maximized on that display measure 140–190 MB each.
 - **One process per project window.** A project launcher starts its own Mica process, so each extra window repeats the roughly 55 MB base that iTerm2 pays once. With several windows open, iTerm2 plus its windows can be smaller than several Mica processes. Sharing one process between project windows is the largest remaining memory saving.
-- **First dictation after an update.** Core ML rebuilds its compiled model cache once per app build; that step peaks near 600 MB for about half a minute. Mica now does it in the background shortly after launch instead of on the first key press.
+- **First dictation after an update.** Core ML rebuilds its compiled model cache once per app build; that step peaks near 600 MB (resident size) for about half a minute. Mica now does it in the background shortly after launch instead of on the first key press.
 - **Terminal-only apps are close.** Alacritty and kitty are within 15–25 MB of Mica and do not include dictation or a timer.
 
 ## Repeating the measurement

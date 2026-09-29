@@ -61,6 +61,8 @@ int main(int argc, const char *argv[]) {
         for (int i = 0; i < 8; i++) { [delegate pollSessions:nil]; RunLoopFor(0.15); }
         delegate.activeTab.cwd = @"/Users/me/code/fieldnote";
 
+        // The readout would show this render tool's own footprint; show the measured idle figure for the sample instead.
+        delegate.memoryLabel = @"58 MB";
         SaveView(delegate, [outputDirectory stringByAppendingPathComponent:@"mica-dark.png"]);
         [delegate setLightTheme:YES];
         RunLoopFor(0.3);

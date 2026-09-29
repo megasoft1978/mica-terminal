@@ -34,4 +34,6 @@ typedef NS_ENUM(NSInteger, MicaVoiceControllerState) {
 // After an app update Core ML recompiles the speech model on first use (about 30 s). Run that once in
 // the background, only when the model is already downloaded, and only once per helper build.
 - (void)prewarmSpeechModelIfNeeded;
+// Process id of the running speech helper, or 0 when none is running (used for the live memory readout).
+- (pid_t)helperProcessIdentifier;
 @end

@@ -66,6 +66,11 @@
     BOOL _audioFinishRequested;
 }
 
+- (pid_t)helperProcessIdentifier {
+    NSTask *task = self.process;
+    return task.isRunning ? task.processIdentifier : 0;
+}
+
 - (void)prewarmSpeechModelIfNeeded {
     NSString *path = self.helperURL.path;
     if (![NSFileManager.defaultManager isExecutableFileAtPath:path]) return;
