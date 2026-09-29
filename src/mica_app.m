@@ -149,6 +149,7 @@ static NSColor *MicaColor(uint32_t rgb) {
 
 // The terminal draws on a fixed surface (dark by default, white in the light theme), independent of the system appearance.
 static BOOL gMicaLightTheme = NO;
+static NSInteger gMicaCursorStyle = 0;   // 0 block, 1 bar, 2 underline
 
 static NSColor *MicaBackgroundColor(void) {
     return MicaColor(gMicaLightTheme ? 0xffffff : 0x1e1e1e);
@@ -455,6 +456,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)pollSessions:(NSTimer *)timer;
 - (void)wakePollTimer;
 - (void)setLightTheme:(BOOL)light;
+- (void)setCursorStyle:(id)sender;
 - (void)toggleLightTheme:(id)sender;
 - (void)handleClipboardWrite:(NSString *)text fromTab:(MicaTab *)tab;
 - (void)loadLaunchConfiguration;
@@ -1976,6 +1978,12 @@ static NSString *MicaTruncatedPath(NSString *path, CGFloat width, NSDictionary *
                     NSBezierPath *outline = [NSBezierPath bezierPathWithRect:NSInsetRect(cursorRect, 0.75, 0.75)];
                     outline.lineWidth = 1.5;
                     [outline stroke];
+                } else if (NSIntersectsRect(cursorRect, dirtyRect) && gMicaCursorStyle != 0) {
+                    // Bar and underline cursors leave the glyph readable and only mark its position.
+                    [cursorFill setFill];
+                    NSRectFill(gMicaCursorStyle == 1
+                        ? NSMakeRect(NSMinX(cursorRect), NSMinY(cursorRect), 2.0, cursorRect.size.height)
+                        : NSMakeRect(NSMinX(cursorRect), NSMinY(cursorRect), cursorRect.size.width, 2.0));
                 } else if (NSIntersectsRect(cursorRect, dirtyRect)) {
                     [cursorFill setFill];
                     NSRectFill(cursorRect);
@@ -3138,6 +3146,12 @@ static NSDictionary *MicaScalarDictionary(id object) {
     [self installMenus];
     self.uiMode = MicaUIModeNormal;
     [self loadLaunchConfiguration];
+    if (!getenv("MICA_TEST_NO_STARTUP")) {
+        gMicaCursorStyle = [NSUserDefaults.standardUserDefaults integerForKey:@"MicaCursorStyle"];
+        NSMenu *viewMenu = [NSApp.mainMenu itemWithTitle:@"View"].submenu;
+        for (NSMenuItem *entry in viewMenu.itemArray)
+            if (entry.action == @selector(setCursorStyle:)) entry.state = entry.tag == gMicaCursorStyle ? NSControlStateValueOn : NSControlStateValueOff;
+    }
     if (!getenv("MICA_TEST_NO_STARTUP") && [NSUserDefaults.standardUserDefaults boolForKey:@"MicaLightTheme"])
         [self setLightTheme:YES];
     else self.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
@@ -3211,6 +3225,14 @@ static NSDictionary *MicaScalarDictionary(id object) {
     NSMenu *viewMenu = [[NSMenu alloc] initWithTitle:@"View"];
     AddMenuItem(viewMenu, @"Light Terminal Theme", @selector(toggleLightTheme:), @"l",
                 NSEventModifierFlagCommand | NSEventModifierFlagOption).target = self;
+    [viewMenu addItem:NSMenuItem.separatorItem];
+    NSString *cursorTitles[] = { @"Block Cursor", @"Bar Cursor", @"Underline Cursor" };
+    for (NSInteger style = 0; style < 3; style++) {
+        NSMenuItem *cursorItem = AddMenuItem(viewMenu, cursorTitles[style], @selector(setCursorStyle:), @"", 0);
+        cursorItem.target = self;
+        cursorItem.tag = style;
+        cursorItem.state = style == gMicaCursorStyle ? NSControlStateValueOn : NSControlStateValueOff;
+    }
     viewRoot.submenu = viewMenu;
     [main addItem:viewRoot];
     NSMenuItem *windowRoot = [[NSMenuItem alloc] initWithTitle:@"Window" action:nil keyEquivalent:@""];
@@ -3721,6 +3743,14 @@ static NSDictionary *MicaScalarDictionary(id object) {
     [self.terminalView setNeedsDisplay:YES];
     NSMenuItem *item = [[NSApp.mainMenu itemWithTitle:@"View"].submenu itemWithTitle:@"Light Terminal Theme"];
     item.state = light ? NSControlStateValueOn : NSControlStateValueOff;
+}
+
+- (void)setCursorStyle:(id)sender {
+    NSMenuItem *item = [sender isKindOfClass:NSMenuItem.class] ? sender : nil;
+    gMicaCursorStyle = item ? item.tag : 0;
+    if (!getenv("MICA_TEST_NO_STARTUP")) [NSUserDefaults.standardUserDefaults setInteger:gMicaCursorStyle forKey:@"MicaCursorStyle"];
+    for (NSMenuItem *entry in item.menu.itemArray) entry.state = entry.tag == gMicaCursorStyle ? NSControlStateValueOn : NSControlStateValueOff;
+    [self.terminalView setNeedsDisplay:YES];
 }
 
 - (void)toggleLightTheme:(id)sender {

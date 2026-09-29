@@ -56,6 +56,7 @@ The first dictation use downloads the local speech model (about 630 MB). Mica re
 | Find in scrollback / next / previous | `⌘F` / `⌘G` / `⇧⌘G` |
 | Clear scrollback | `⌘K` |
 | Light / dark terminal theme | `⌥⌘L` |
+| Cursor shape (block, bar, underline) | **View** menu |
 
 ### Create a project launcher
 
