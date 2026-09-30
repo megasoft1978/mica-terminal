@@ -23,8 +23,9 @@ Mica already has a computer-wide focus/break timer, a persistent phase and count
 - Be Focused treats start, pause and skip as first-class timer actions, with optional auto-start, a daily interval goal, custom durations, and reports ([App Store listing](https://apps.apple.com/gb/app/be-focused-pomodoro-timer/id973134470?mt=12)).
 - Session connects a running focus timer to a distraction-reduction workflow, including updating and restoring Slack status ([Session](https://www.stayinsession.com/)).
 - Small menu-bar timers like FocusTimer make the remaining time glanceable without requiring the full app window ([FocusTimer](https://focus.braunf.com/)).
+- Apple exposes named [custom accessibility actions](https://developer.apple.com/documentation/appkit/nsaccessibilitycustomaction) through VoiceOver's Actions rotor. Mica now exposes ending the active phase there and in the Focus menu, alongside its accessible start/pause/resume and reset controls.
 
-For Mica, the best fit is to keep the timer visible but quiet: make its phase, remaining time and actions more legible and accessible; add an optional skip/next-phase action and a small local completed-focus count; keep auto-start opt-in. Task planning, app blocking and gamified rewards add scope and would distract from Mica's terminal-first workflow.
+For Mica, the best fit is to keep the timer visible but quiet: make its phase, remaining time and actions more legible and accessible; show a small completed-focus count; and let users independently choose whether focus and break intervals start automatically. Mica keeps today's automatic transitions as the default. Task planning, app blocking and gamified rewards add scope and would distract from Mica's terminal-first workflow.
 
 ## Memory (idle, one window, this Mac)
 
@@ -56,7 +57,7 @@ Method and caveats: [MEMORY-BASELINE.md](MEMORY-BASELINE.md). cmux, Warp, Ghostt
 | Split panes | Not done. Large: the layout, focus and resize code all assume one grid per tab |
 | Restore windows after quitting | Implemented in the current session work for ordinary tabs and project layout windows; child processes and scrollback do not survive a quit |
 | Diff review and merge or PR flow | Not done. Large; the alternative is to run `lazygit` or `gh` in a tab, which already works |
-| Quick terminal on a global hotkey | Not done. Medium |
+| Bring Mica forward on a global hotkey | Done, opt-in ⌃⌥Space; a dedicated drop-down terminal is still open |
 | Agent notifications with text, click to return to the tab | Done (OSC 9/99/777 become macOS notifications when Mica is in the background) |
 | Scriptable control (a `mica` command for agents to set a tab's status) | Partly: OSC 9/99/777 and `scripts/claude-notify.sh` |
 | Import of Ghostty or iTerm themes | Not done |
@@ -73,7 +74,7 @@ Method and caveats: [MEMORY-BASELINE.md](MEMORY-BASELINE.md). cmux, Warp, Ghostt
 ## Suggested order
 
 1. **Memory-efficient scrollback** — measure retained rows and bytes, trim blank cells per line, then share attribute storage. Maintain the current hard cap and add latency/memory regression checks.
-2. **Pomodoro timer UI** — clarify phase/time/action hierarchy and VoiceOver labels, add an optional skip/next action and completed-focus count, and keep automatic phase changes opt-in. The status bar already keeps the timer visible and the model/state synchronize across windows.
+2. **Pomodoro timer UI** — the status strip shows phase, countdown and completed-focus count, with enough width reserved for the visible label. VoiceOver and the timer menu expose the same count, and skip is available through the menu and VoiceOver action. Settings now offer separate automatic starts for focus and break intervals, both on by default. Be Focused also lists completed intervals and optional auto-start in its [Mac App Store description](https://apps.apple.com/us/app/be-focused-pomodoro-timer/id973134470?mt=12).
 3. **Optional agent/project sidebar** — show project, branch, folder, agent state and unread notification with clear focus/attention styling; use existing state and keep it off when a user prefers the full-width terminal.
 4. **Command landmarks** — make shell start/finish events robust and use them for jump-to-command/output and clearer state; preserve raw PTY behavior when hooks are absent.
 5. **Session restoration quality** — test several restored project windows and ordinary windows end to end; distinguish startup commands from surviving processes. Current implementation restores window metadata and launches fresh sessions; it does not resume the previous PTY process or scrollback.
@@ -92,3 +93,25 @@ Method and caveats: [MEMORY-BASELINE.md](MEMORY-BASELINE.md). cmux, Warp, Ghostt
 - [Conductor and the parallel-agent ecosystem](https://rustman.org/wiki/conductor-parallel-agents/), [Conductor vs Superset](https://defract.dev/blog/conductor-vs-superset), [Best tools for managing parallel agents](https://nimbalyst.com/blog/best-agent-management-tools-2026/)
 - [Git worktrees with Claude Code](https://www.developersdigest.tech/blog/git-worktrees-claude-code-parallel-agents-guide)
 - [Ghostty configuration reference](https://ghostty.org/docs/config/reference)
+
+### Reading while output continues
+
+[Ghostty’s scroll-to-bottom reference](https://ghostty.org/docs/config/reference#scroll-to-bottom) distinguishes keyboard input from incoming output; its documented default returns to the bottom on keystrokes but does not do so on output. Mica now preserves a retained reading row even when its history ring wraps, with a PTY regression covering replacement, eventual eviction and return to live output. Alternate-screen applications that redraw existing screen cells remain a separate behavior; this regression covers ordinary scrolling output.
+
+### Accessible timer progress
+
+[Apple’s AppKit accessibility guidance](https://developer.apple.com/library/archive/documentation/Accessibility/Conceptual/AccessibilityMacOSX/EnhancingtheAccessibilityofStandardAppKitControls.html) calls for meaningful control labels and explicit context for assistive clients. Mica’s timer label now includes the completed-focus count alongside phase, remaining time and its action. Automated UI checks cover zero and singular counts through a shared two-window timer transition; manual VoiceOver verification remains outstanding.
+
+### Retained-history reflow
+
+The [Neovim libvterm screen implementation](https://github.com/neovim/neovim/blob/master/src/nvim/vterm/screen.c) reflows the rows held by libvterm's live grid. Its [terminal integration](https://github.com/neovim/neovim/blob/master/src/nvim/terminal.c) stores scrollback in the Neovim buffer and serves rows back through the push/pop callbacks, so that buffer participates in resize. Mica keeps a separate bounded ring of compact cells and hyperlink IDs. A faithful width reflow must group rows by continuation flags, carry a logical line across the ring/live-grid boundary, preserve cells and links as history rows move back to the screen, and remap the scroll anchor and search cursor. AppKit selection uses view coordinates; Mica now clears it after a successful grid-size change, while a future history projection must keep that policy or rebase coordinates. Any transform also needs to enforce the existing per-session history byte cap during allocation. The current callbacks expose cells and continuation but no hyperlink metadata or target row for pop, so an extension or a separate display projection is needed before implementing this without losing links or breaking live-grid alignment.
+
+### Wrapped links after scrolling
+
+The original `mica_session_row_continues` reported no continuation while viewing history, because the vendored 0.3.3 scrollback callback supplied cells without line metadata. Reading `vterm_state_get_lineinfo` inside that callback cannot recover it reliably: `state.c` moves line metadata before the screen scroll callback runs.
+
+The [Neovim libvterm header](https://github.com/neovim/libvterm/blob/934bc2fbf21800ac3458a499df8820ca5fb45fd3/include/vterm.h) provides the opt-in `sb_pushline4` callback with an explicit continuation flag. Its [state implementation](https://github.com/neovim/libvterm/blob/934bc2fbf21800ac3458a499df8820ca5fb45fd3/src/state.c) invokes an opt-in `premove` hook before updating metadata; the [screen implementation](https://github.com/neovim/libvterm/blob/934bc2fbf21800ac3458a499df8820ca5fb45fd3/src/screen.c) uses that hook to capture departing rows and supplies old line metadata during resize. These sources were inspected locally on 2026-09-30 at commit `934bc2fbf21800ac3458a499df8820ca5fb45fd3`.
+
+The opt-in `premove` and `sb_pushline4` callback portion is now backported, retaining the existing callback fallback. Direct unit tests cover cells and continuation flags, callback opt-in, three damage modes, resize capture, alternate screen and partial scroll regions. Mica now opts into the continuation-aware push callback, retains a bit on each history row, and maps displayed rows through history and folds. Core tests verify history flags and folded barriers; UI tests click both parts of a wrapped URL in scrollback and preserve hard-newline and adjacent-link separation. UI coverage also opens the exact URL from both sides of the history/live boundary and after history-ring replacement. PTY regressions verify continuation flags across the boundary, separation from alternate-screen content, and preservation after ring replacement. A direct resize test found and now guards against losing rows from a wrapped group while shrinking then growing the grid; the fix sends the whole departing group to history before backfill. Width-resize callbacks now retain pushed rows tagged with their original physical width, with a UI regression for a wrapped row moving into scrollback when the grid narrows. Hard newlines, separate adjacent URLs, folded placeholders and alternate-screen rows must not join unrelated text. Resize restores continuation metadata when history is popped into the live grid through Mica's opt-in `sb_popline4` extension; direct regressions cover extended-only callbacks, precedence and legacy fallback, and PTY coverage preserves wrapped and hard-newline flags after height growth. History at a different column width is conservatively excluded from URL joining. Reflowing retained history across column-width changes remains open; do not claim complete resize support.
+
+Do not replace the vendored library wholesale: the inspected fork still contains the `screen_resize failed to update cursor position` abort that Mica already patches out. Preserve every existing safety patch and add a regression for the continuation backport, then run the PTY suite, sanitizers and stress harness.

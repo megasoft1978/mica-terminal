@@ -12,6 +12,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef MICA_SESSION_TESTING
+void mica_session_test_fail_next_history_resize_allocation(void);
+void mica_session_test_fail_next_resize_link_snapshot_allocation(void);
+#endif
+
 static unsigned cleanupStageStarts;
 static unsigned cleanupStageEnds;
 static bool cleanupObservedPTYClose;
@@ -276,6 +281,8 @@ color_checked:
         }
     }
     assert(wide_cell_checked);
+    long unicode_cursor = -1;
+    assert(mica_session_find(unicode_session, "界🙂", true, &unicode_cursor));
     mica_session_destroy(unicode_session);
 
     MicaSession *emoji_session = mica_session_create("/tmp",
@@ -296,7 +303,76 @@ color_checked:
     assert(screen_has_codepoint(emoji_session, 0x1f1f9));
     assert(screen_has_codepoint(emoji_session, 0x2764));
     assert(screen_has_codepoint(emoji_session, 0xfe0f));
+    unicode_cursor = -1;
+    assert(mica_session_find(emoji_session, "👍🏽", true, &unicode_cursor));
+    unicode_cursor = -1;
+    assert(mica_session_find(emoji_session, "👩‍💻", true, &unicode_cursor));
+    unicode_cursor = -1;
+    assert(mica_session_find(emoji_session, "❤️", true, &unicode_cursor));
     mica_session_destroy(emoji_session);
+
+    MicaSession *combining_session = mica_session_create("/tmp",
+        "printf 'ACCENT-cafe\\314\\201-END\\n'; sleep 0.1; printf '\\n\\n\\n\\n\\n\\n'; sleep 1", 6, 80);
+    assert(combining_session != NULL);
+    unicode_cursor = -1;
+    for (int i = 0; i < 200 && !screen_contains(combining_session, "ACCENT-"); i++)
+        mica_session_poll(combining_session, 1);
+    assert(mica_session_find(combining_session, "cafe\xcc\x81-END", true, &unicode_cursor));
+    for (int i = 0; i < 300 && mica_session_history_lines(combining_session) == 0; i++)
+        mica_session_poll(combining_session, 10);
+    assert(mica_session_history_lines(combining_session) > 0);
+    unicode_cursor = -1;
+    assert(mica_session_find(combining_session, "cafe\xcc\x81-END", false, &unicode_cursor));
+    assert(unicode_cursor < (long)mica_session_history_lines(combining_session));
+    mica_session_destroy(combining_session);
+
+    MicaSession *unicode_case_session = mica_session_create("/tmp",
+        "printf 'UNICODE-CAFÉ-Σ-Straße-END\\n'; sleep 0.1; printf '\\n\\n\\n\\n\\n\\n\\n'; sleep 1",
+        6, 80);
+    assert(unicode_case_session != NULL);
+    for (int i = 0; i < 300 && !screen_contains(unicode_case_session, "UNICODE-"); i++)
+        mica_session_poll(unicode_case_session, 10);
+    assert(screen_contains(unicode_case_session, "UNICODE-"));
+    unicode_cursor = -1;
+    assert(mica_session_find(unicode_case_session,
+        "unicode-cafe\xcc\x81-\xcf\x83-strasse-end", true, &unicode_cursor));
+    unicode_cursor = -1;
+    assert(!mica_session_find(unicode_case_session, "cafe", true, &unicode_cursor));
+    unicode_cursor = -1;
+    assert(mica_session_find(unicode_case_session, "STRASSE", true, &unicode_cursor));
+    unicode_cursor = -1;
+    assert(mica_session_find(unicode_case_session, "\xcf\x82", true, &unicode_cursor));
+    for (int i = 0; i < 300 && mica_session_history_lines(unicode_case_session) == 0; i++)
+        mica_session_poll(unicode_case_session, 10);
+    assert(mica_session_history_lines(unicode_case_session) > 0);
+    unicode_cursor = -1;
+    assert(mica_session_find(unicode_case_session,
+        "unicode-cafe\xcc\x81-\xcf\x83-strasse-end", false, &unicode_cursor));
+    assert(unicode_cursor < (long)mica_session_history_lines(unicode_case_session));
+    mica_session_destroy(unicode_case_session);
+
+    MicaSession *long_search_session = mica_session_create("/tmp",
+        "perl -e 'print \"x\" x 1100, \"TAIL-MARKER\\n\"'; sleep 1; printf '\\n\\n\\n\\n\\n\\n'", 6, 1200);
+    assert(long_search_session != NULL);
+    for (int i = 0; i < 300 && !screen_contains(long_search_session, "TAIL-MARKER"); i++)
+        mica_session_poll(long_search_session, 10);
+    assert(screen_contains(long_search_session, "TAIL-MARKER"));
+    char long_query[302];
+    memset(long_query, 'x', 300);
+    long_query[300] = 'Z'; long_query[301] = '\0';
+    unicode_cursor = -1;
+    assert(!mica_session_find(long_search_session, long_query, true, &unicode_cursor));
+    long_query[300] = '\0';
+    assert(mica_session_find(long_search_session, long_query, true, &unicode_cursor));
+    unicode_cursor = -1;
+    assert(mica_session_find(long_search_session, "TAIL-MARKER", true, &unicode_cursor));
+    for (int i = 0; i < 300 && mica_session_command_completion_count(long_search_session) == 0; i++)
+        mica_session_poll(long_search_session, 10);
+    assert(mica_session_command_completion_count(long_search_session) > 0);
+    unicode_cursor = -1;
+    assert(mica_session_find(long_search_session, "TAIL-MARKER", false, &unicode_cursor));
+    assert(unicode_cursor < (long)mica_session_history_lines(long_search_session));
+    mica_session_destroy(long_search_session);
 
     const size_t paste_length = 256 * 1024;
     MicaSession *paste_session = mica_session_create("/tmp",
@@ -572,6 +648,51 @@ color_checked:
     assert(saw_soft_wrap && hard_line_stays_separate);
     mica_session_destroy(wrap_session);
 
+    MicaSession *history_wrap = mica_session_create("/tmp",
+        "printf 'https://example.test/abcdefghijklmnopqrstuvwxyz0123456789\\nHARD-NEWLINE\\n'; "
+        "printf '\\n\\n\\n\\n\\n\\nDONE-WRAP\\n'; sleep 1", 6, 24);
+    assert(history_wrap);
+    for (int i = 0; i < 600 && !screen_contains(history_wrap, "DONE-WRAP"); i++)
+        mica_session_poll(history_wrap, 10);
+    assert(screen_contains(history_wrap, "DONE-WRAP"));
+    mica_session_scroll(history_wrap, INT_MAX);
+    assert(mica_session_row_continues(history_wrap, 1));
+    assert(mica_session_row_continues(history_wrap, 2));
+    assert(!mica_session_row_continues(history_wrap, 3));
+    assert(mica_session_fold_visible_rows(history_wrap, 1, 3));
+    assert(!mica_session_row_continues(history_wrap, 1));
+    assert(!mica_session_row_continues(history_wrap, 2));
+    mica_session_resize(history_wrap, 20, 24);
+    mica_session_scroll(history_wrap, -INT_MAX);
+    assert(screen_contains(history_wrap, "https://example.test/"));
+    assert(mica_session_row_continues(history_wrap, 1));
+    assert(mica_session_row_continues(history_wrap, 2));
+    assert(!mica_session_row_continues(history_wrap, 3));
+    mica_session_destroy(history_wrap);
+
+    // A wrapped line can straddle primary history and live output. Switching
+    // to a separately wrapped alternate screen must break that connection.
+    MicaSession *boundary_wrap = mica_session_create("/tmp",
+        "exec perl -e '$|=1; print \"https://example.test/abcdefghijklmnopqrstuvwxyz0123456789\\nLIVE-READY\\n\"; "
+        "scalar <STDIN>; print \"\\e[?1049h\", \"q\" x 100, \"\\nALT-READY\\n\"; scalar <STDIN>'", 4, 24);
+    assert(boundary_wrap);
+    for (int i = 0; i < 600 && !screen_contains(boundary_wrap, "LIVE-READY"); i++)
+        mica_session_poll(boundary_wrap, 10);
+    assert(screen_contains(boundary_wrap, "LIVE-READY"));
+    assert(mica_session_history_lines(boundary_wrap) == 1);
+    mica_session_scroll(boundary_wrap, 1);
+    assert(mica_session_row_continues(boundary_wrap, 1));
+    assert(mica_session_row_continues(boundary_wrap, 2));
+    assert(!mica_session_row_continues(boundary_wrap, 3));
+    mica_session_scroll(boundary_wrap, -INT_MAX);
+    mica_session_write(boundary_wrap, "go\n", 3);
+    for (int i = 0; i < 600 && !screen_contains(boundary_wrap, "ALT-READY"); i++)
+        mica_session_poll(boundary_wrap, 10);
+    assert(screen_contains(boundary_wrap, "ALT-READY"));
+    mica_session_scroll(boundary_wrap, 1);
+    assert(!mica_session_row_continues(boundary_wrap, 1));
+    mica_session_destroy(boundary_wrap);
+
     MicaSession *scroll_link_session = mica_session_create("/tmp",
         "printf '\\033]8;;https://example.test/scroll\\033\\\\SCROLLED-LINK\\033]8;;\\033\\\\\\n'; "
         "i=1; while [ $i -le 12 ]; do printf 'AFTER-LINK-%02d\\n' $i; i=$((i+1)); done; sleep 1",
@@ -583,16 +704,136 @@ color_checked:
     assert(mica_session_history_lines(scroll_link_session) > 0);
     mica_session_scroll(scroll_link_session, 100);
     bool scrollback_link_preserved = false;
+    int scrollback_link_row = -1, scrollback_link_col = -1;
     for (int row = 0; row < mica_session_rows(scroll_link_session); row++) {
         for (int col = 0; col < mica_session_cols(scroll_link_session); col++) {
             MicaCell cell;
             if (!mica_session_get_cell(scroll_link_session, row, col, &cell) || cell.chars[0] != 'S') continue;
             const char *uri = mica_session_hyperlink_uri(scroll_link_session, cell.hyperlink_id);
-            if (uri && strcmp(uri, "https://example.test/scroll") == 0) scrollback_link_preserved = true;
+            if (uri && strcmp(uri, "https://example.test/scroll") == 0) {
+                scrollback_link_preserved = true;
+                scrollback_link_row = row;
+                scrollback_link_col = col;
+            }
         }
     }
     assert(scrollback_link_preserved);
+#ifdef MICA_SESSION_TESTING
+    mica_session_test_fail_next_history_resize_allocation();
+    assert(!mica_session_resize(scroll_link_session, 4, 160));
+    MicaCell link_after_failed_resize;
+    assert(mica_session_cols(scroll_link_session) == 80);
+    assert(mica_session_get_cell(scroll_link_session, scrollback_link_row, scrollback_link_col,
+        &link_after_failed_resize));
+    const char *link_uri_after_failed_resize = mica_session_hyperlink_uri(
+        scroll_link_session, link_after_failed_resize.hyperlink_id);
+    assert(link_uri_after_failed_resize && strcmp(link_uri_after_failed_resize,
+        "https://example.test/scroll") == 0);
+#endif
+#ifdef MICA_SESSION_TESTING
+    mica_session_test_fail_next_resize_link_snapshot_allocation();
+    assert(!mica_session_resize(scroll_link_session, 4, 100));
+    assert(mica_session_cols(scroll_link_session) == 80);
+    MicaCell link_after_snapshot_failure;
+    assert(mica_session_get_cell(scroll_link_session, scrollback_link_row, scrollback_link_col,
+        &link_after_snapshot_failure));
+    const char *link_uri_after_snapshot_failure = mica_session_hyperlink_uri(
+        scroll_link_session, link_after_snapshot_failure.hyperlink_id);
+    assert(link_uri_after_snapshot_failure && strcmp(link_uri_after_snapshot_failure,
+        "https://example.test/scroll") == 0);
+#endif
+    assert(mica_session_resize(scroll_link_session, 4, 100));
+    mica_session_scroll(scroll_link_session, INT_MAX);
+    bool retained_link_survives_width_change = false;
+    for (int row = 0; row < mica_session_rows(scroll_link_session); row++) {
+        for (int col = 0; col < mica_session_cols(scroll_link_session); col++) {
+            MicaCell cell;
+            if (!mica_session_get_cell(scroll_link_session, row, col, &cell) || cell.chars[0] != 'S') continue;
+            const char *uri = mica_session_hyperlink_uri(scroll_link_session, cell.hyperlink_id);
+            if (uri && strcmp(uri, "https://example.test/scroll") == 0)
+                retained_link_survives_width_change = true;
+        }
+    }
+    assert(retained_link_survives_width_change);
+    assert(mica_session_resize(scroll_link_session, 4, 40));
+    mica_session_scroll(scroll_link_session, INT_MAX);
+    bool retained_link_survives_width_shrink = false;
+    for (int row = 0; row < mica_session_rows(scroll_link_session); row++) {
+        for (int col = 0; col < mica_session_cols(scroll_link_session); col++) {
+            MicaCell cell;
+            if (!mica_session_get_cell(scroll_link_session, row, col, &cell) || cell.chars[0] != 'S') continue;
+            const char *uri = mica_session_hyperlink_uri(scroll_link_session, cell.hyperlink_id);
+            if (uri && strcmp(uri, "https://example.test/scroll") == 0)
+                retained_link_survives_width_shrink = true;
+        }
+    }
+    assert(retained_link_survives_width_shrink);
     mica_session_destroy(scroll_link_session);
+
+    // Rows pushed by libvterm's resize callback keep their corresponding OSC 8
+    // sidecar IDs, even when multiple differently linked rows are captured.
+    MicaSession *resize_link_session = mica_session_create("/tmp",
+        "printf '\\033]8;;https://example.test/resize-first\\033\\\\A_RESIZE_LINK\\033]8;;\\033\\\\'; "
+        "printf '\\033[2;1H\\033]8;;https://example.test/resize-second\\033\\\\B_RESIZE_LINK\\033]8;;\\033\\\\'; "
+        "printf '\\033[3;1HROW-THREE\\033[4;1HRESIZE-READY'; sleep 1",
+        4, 80);
+    assert(resize_link_session != NULL);
+    for (int i = 0; i < 300 && !screen_contains(resize_link_session, "RESIZE-READY"); i++)
+        mica_session_poll(resize_link_session, 10);
+    assert(screen_contains(resize_link_session, "RESIZE-READY"));
+    assert(mica_session_resize(resize_link_session, 2, 80));
+    assert(mica_session_history_lines(resize_link_session) > 0);
+    mica_session_scroll(resize_link_session, INT_MAX);
+    bool resize_pushed_first_link_preserved = false;
+    bool resize_pushed_second_link_preserved = false;
+    for (int row = 0; row < mica_session_rows(resize_link_session); row++) {
+        for (int col = 0; col < mica_session_cols(resize_link_session); col++) {
+            MicaCell cell;
+            if (!mica_session_get_cell(resize_link_session, row, col, &cell)) continue;
+            const char *uri = mica_session_hyperlink_uri(resize_link_session, cell.hyperlink_id);
+            if (cell.chars[0] == 'A' && uri &&
+                strcmp(uri, "https://example.test/resize-first") == 0)
+                resize_pushed_first_link_preserved = true;
+            if (cell.chars[0] == 'B' && uri &&
+                strcmp(uri, "https://example.test/resize-second") == 0)
+                resize_pushed_second_link_preserved = true;
+        }
+    }
+    assert(resize_pushed_first_link_preserved && resize_pushed_second_link_preserved);
+    mica_session_destroy(resize_link_session);
+
+
+    // Scalar history rows share common style/color metadata, while a row with
+    // more styles than the bounded palette falls back without losing data.
+    MicaSession *styled_history = mica_session_create("/tmp",
+        "exec perl -e '$|=1; print \"\\e[1;38;2;12;34;56mA\\e[0m\"; "
+        "print \"\\e[4;48;5;25mB\\e[0m\\n\"; "
+        "for (1..20) { printf(\"\\e[38;2;%d;2;3m%c\", $_, 64 + $_); } "
+        "print \"\\e[0m\\n\"; print \"PAD\\n\" x 10; print \"STYLE-READY\\n\"; sleep 1'",
+        4, 80);
+    assert(styled_history != NULL);
+    for (int i = 0; i < 500 && !screen_contains(styled_history, "STYLE-READY"); i++)
+        mica_session_poll(styled_history, 10);
+    assert(screen_contains(styled_history, "STYLE-READY"));
+    assert(mica_session_history_lines(styled_history) > 0);
+    mica_session_scroll(styled_history, INT_MAX);
+    MicaCell styled_a, styled_b;
+    assert(find_cell_starting_with(styled_history, 'A', &styled_a));
+    assert(styled_a.attrs.bold);
+    assert(VTERM_COLOR_IS_RGB(&styled_a.fg) && styled_a.fg.rgb.red == 12 &&
+        styled_a.fg.rgb.green == 34 && styled_a.fg.rgb.blue == 56);
+    assert(find_cell_starting_with(styled_history, 'B', &styled_b));
+    assert(styled_b.attrs.underline == VTERM_UNDERLINE_SINGLE);
+    bool high_entropy_first = false, high_entropy_last = false;
+    for (int row = 0; row < mica_session_rows(styled_history); row++)
+        for (int col = 0; col < mica_session_cols(styled_history); col++) {
+            MicaCell cell;
+            if (!mica_session_get_cell(styled_history, row, col, &cell) || !VTERM_COLOR_IS_RGB(&cell.fg)) continue;
+            if (cell.chars[0] == 'A' && cell.fg.rgb.red == 1) high_entropy_first = true;
+            if (cell.chars[0] == 'T' && cell.fg.rgb.red == 20) high_entropy_last = true;
+        }
+    assert(high_entropy_first && high_entropy_last);
+    mica_session_destroy(styled_history);
 
     MicaSession *fold_session = mica_session_create("/tmp",
         "i=1; while [ \"$i\" -le 40 ]; do printf 'FOLD-LINE-%04d\\n' \"$i\"; i=$((i+1)); done; sleep 1",
@@ -615,6 +856,27 @@ color_checked:
     assert(mica_session_toggle_fold_at_view_row(fold_session, 1));
     assert(!mica_session_fold_info_at_view_row(fold_session, 1, NULL));
     assert(mica_session_display_history_lines(fold_session) == raw_fold_history);
+#ifdef MICA_SESSION_TESTING
+    assert(mica_session_fold_visible_rows(fold_session, 1, 3));
+    size_t rows_before_failed_resize = mica_session_display_history_lines(fold_session);
+    int fold_row_before_failed_resize = -1;
+    for (int row = 0; row < mica_session_rows(fold_session); row++)
+        if (mica_session_fold_info_at_view_row(fold_session, row, NULL)) {
+            fold_row_before_failed_resize = row;
+            break;
+        }
+    assert(fold_row_before_failed_resize >= 0);
+    mica_session_test_fail_next_history_resize_allocation();
+    assert(!mica_session_resize(fold_session, 6, 160));
+    size_t failed_resize_fold_rows = 0;
+    assert(mica_session_rows(fold_session) == 6 && mica_session_cols(fold_session) == 80);
+    assert(mica_session_display_history_lines(fold_session) == rows_before_failed_resize);
+    assert(mica_session_fold_info_at_view_row(fold_session, fold_row_before_failed_resize, &failed_resize_fold_rows));
+    assert(failed_resize_fold_rows == 2);
+    assert(mica_session_resize(fold_session, 6, 160));
+    assert(mica_session_cols(fold_session) == 160);
+    assert(!mica_session_fold_info_at_view_row(fold_session, 1, NULL));
+#endif
     mica_session_destroy(fold_session);
 
     MicaSession *history_session = mica_session_create("/tmp",
@@ -635,6 +897,11 @@ color_checked:
     find_cursor = -1;
     assert(mica_session_find(history_session, "STRESS-04950", true, &find_cursor));
     assert(mica_session_view_offset(history_session) > 0);
+    find_cursor = -1;
+    // Search must still see default spaces omitted from compact row storage.
+    assert(mica_session_find(history_session, "STRESS-04950    ", true, &find_cursor));
+    find_cursor = -1;
+    assert(mica_session_find(history_session, "STRESS-04950    ", false, &find_cursor));
     find_cursor = -1;
     assert(!mica_session_find(history_session, "no-such-text-anywhere", true, &find_cursor));
     mica_session_clear_scrollback(history_session);
@@ -683,6 +950,138 @@ color_checked:
     long dropped = -1;
     assert(!mica_session_find(short_history, "LINE-00001", true, &dropped));
     mica_session_destroy(short_history);
+    // Reused ring slots must release the larger Unicode representation when
+    // subsequent dense scalar output replaces every retained row.
+    // Odd capacity forces ring slots to alternate between interned and
+    // expanded scalar rows as their sequence numbers wrap.
+    mica_set_history_limit_lines(101);
+    MicaSession *reuse_history = mica_session_create("/tmp",
+        "exec perl -e '$|=1; for (1..300) { print \"e\\xcc\\x81\", \"x\" x 69, \"\\n\"; } "
+        "print \"FULL-READY\\n\"; scalar <STDIN>; "
+        "for (1..300) { print \"e\", \"x\" x 69, \"\\n\"; } "
+        "print \"SCALAR-READY\\n\"; scalar <STDIN>; "
+        "for (1..300) { print \"e\\xcc\\x81\", \"x\" x 69, \"\\n\"; } "
+        "print \"FULL-AGAIN\\n\"; scalar <STDIN>; "
+        "for (1..120) { if ($_ % 2) { printf(\"\\e[1;31mINDEXED-%03d\\e[0m\\n\", $_); } "
+        "else { for my $j (1..20) { printf(\"\\e[38;2;%d;2;3m%c\", $j, 64 + $j); } "
+        "print \"\\e[0m\\n\"; } } print \"PALETTE-READY\\n\"; scalar <STDIN>'", 6, 80);
+    assert(reuse_history != NULL);
+    for (int i = 0; i < 600 && !screen_contains(reuse_history, "FULL-READY"); i++)
+        mica_session_poll(reuse_history, 10);
+    assert(screen_contains(reuse_history, "FULL-READY"));
+    size_t full_history_bytes = mica_session_history_storage_bytes(reuse_history);
+    mica_session_write(reuse_history, "go\n", 3);
+    for (int i = 0; i < 600 && !screen_contains(reuse_history, "SCALAR-READY"); i++)
+        mica_session_poll(reuse_history, 10);
+    assert(screen_contains(reuse_history, "SCALAR-READY"));
+    size_t scalar_history_bytes = mica_session_history_storage_bytes(reuse_history);
+    assert(scalar_history_bytes < full_history_bytes * 65 / 100);
+    mica_session_write(reuse_history, "go\n", 3);
+    for (int i = 0; i < 600 && !screen_contains(reuse_history, "FULL-AGAIN"); i++)
+        mica_session_poll(reuse_history, 10);
+    assert(screen_contains(reuse_history, "FULL-AGAIN"));
+    assert(mica_session_history_storage_bytes(reuse_history) > scalar_history_bytes * 3 / 2);
+    long reused_cursor = -1;
+    assert(mica_session_find(reuse_history, "e\xcc\x81xxx", false, &reused_cursor));
+    assert(reused_cursor < (long)mica_session_history_lines(reuse_history));
+    mica_session_scroll(reuse_history, -INT_MAX);
+    mica_session_write(reuse_history, "go\n", 3);
+    for (int i = 0; i < 1200 && !screen_contains(reuse_history, "PALETTE-READY"); i++)
+        mica_session_poll(reuse_history, 10);
+    assert(screen_contains(reuse_history, "PALETTE-READY"));
+    mica_session_scroll(reuse_history, INT_MAX);
+    bool reused_interned = false, reused_expanded = false;
+    for (int row = 0; row < mica_session_rows(reuse_history); row++)
+        for (int col = 0; col < mica_session_cols(reuse_history); col++) {
+            MicaCell cell;
+            if (!mica_session_get_cell(reuse_history, row, col, &cell)) continue;
+            if (cell.chars[0] == 'I' && cell.attrs.bold && VTERM_COLOR_IS_RGB(&cell.fg) &&
+                cell.fg.rgb.red == 244 && cell.fg.rgb.green == 135 && cell.fg.rgb.blue == 113)
+                reused_interned = true;
+            if (cell.chars[0] == 'T' && VTERM_COLOR_IS_RGB(&cell.fg) && cell.fg.rgb.red == 20)
+                reused_expanded = true;
+        }
+    assert(reused_interned && reused_expanded);
+    mica_session_destroy(reuse_history);
+    // Full Unicode cells plus OSC 8 metadata must share the history budget.
+    MicaSession *linked_budget = mica_session_create("/tmp",
+        "exec perl -e 'for (1..400) { print \"\\e]8;;https://example.test/budget\\e\\\\\", "
+        "\"e\\xcc\\x81\" x 80, \"\\e]8;;\\e\\\\\\n\"; } "
+        "print \"BUDGET-READY\\n\"; scalar <STDIN>'", 6, 80);
+    assert(linked_budget != NULL);
+    for (int i = 0; i < 600 && !screen_contains(linked_budget, "BUDGET-READY"); i++)
+        mica_session_poll(linked_budget, 10);
+    assert(screen_contains(linked_budget, "BUDGET-READY"));
+    assert(mica_session_history_lines(linked_budget) > 0);
+    assert(mica_session_history_storage_bytes(linked_budget) <= mica_history_limit_bytes());
+    long budget_cursor = -1;
+    assert(mica_session_find(linked_budget, "e\xcc\x81", false, &budget_cursor));
+    assert(budget_cursor < (long)mica_session_history_lines(linked_budget));
+    MicaCell budget_cell;
+    assert(find_cell_starting_with(linked_budget, 'e', &budget_cell));
+    assert(budget_cell.chars[0] == 'e' && budget_cell.chars[1] == 0x301);
+    const char *budget_uri = mica_session_hyperlink_uri(linked_budget, budget_cell.hyperlink_id);
+    assert(budget_uri && strcmp(budget_uri, "https://example.test/budget") == 0);
+    mica_session_destroy(linked_budget);
+    // Output must not move the row being read when the history ring is full.
+    MicaSession *anchored_history = mica_session_create("/tmp",
+        "exec perl -e '$|=1; printf \"ANCHOR-%05d\\n\", $_ for 1..150; "
+        "print \"ANCHOR-READY\\n\"; scalar <STDIN>; "
+        "printf \"ANCHOR-%05d\\n\", $_ for 151..160; "
+        "print \"ANCHOR-MORE\\n\"; scalar <STDIN>; "
+        "printf \"ANCHOR-%05d\\n\", $_ for 161..400; "
+        "print \"ANCHOR-DONE\\n\"; scalar <STDIN>'", 6, 80);
+    assert(anchored_history != NULL);
+    for (int i = 0; i < 600 && !screen_contains(anchored_history, "ANCHOR-READY"); i++)
+        mica_session_poll(anchored_history, 10);
+    assert(screen_contains(anchored_history, "ANCHOR-READY"));
+    mica_session_scroll(anchored_history, 30);
+    MicaCell anchored_row[80];
+    for (int col = 0; col < 80; col++)
+        assert(mica_session_get_cell(anchored_history, 0, col, &anchored_row[col]));
+    uint64_t before_anchor_output = mica_session_scrolled_lines(anchored_history);
+    mica_session_write(anchored_history, "go\n", 3);
+    // The readiness marker is offscreen while reading history; observe output
+    // through the monotonic counter instead of scrolling back to the live view.
+    for (int i = 0; i < 600 && mica_session_scrolled_lines(anchored_history) < before_anchor_output + 12; i++)
+        mica_session_poll(anchored_history, 10);
+    assert(mica_session_scrolled_lines(anchored_history) >= before_anchor_output + 12);
+    for (int col = 0; col < 80; col++) {
+        MicaCell cell;
+        assert(mica_session_get_cell(anchored_history, 0, col, &cell));
+        assert(memcmp(cell.chars, anchored_row[col].chars, sizeof(cell.chars)) == 0);
+        assert(cell.width == anchored_row[col].width);
+    }
+    mica_session_write(anchored_history, "go\n", 3);
+    for (int i = 0; i < 600 && mica_session_scrolled_lines(anchored_history) < before_anchor_output + 254; i++)
+        mica_session_poll(anchored_history, 10);
+    assert(mica_session_scrolled_lines(anchored_history) >= before_anchor_output + 254);
+    assert(mica_session_view_offset(anchored_history) == (int)mica_session_display_history_lines(anchored_history));
+    mica_session_scroll(anchored_history, -INT_MAX);
+    assert(mica_session_view_offset(anchored_history) == 0);
+    assert(screen_contains(anchored_history, "ANCHOR-DONE"));
+    mica_session_destroy(anchored_history);
+    // Ring replacement must retain the wrap flags for a later multirow URL.
+    MicaSession *ring_wrap = mica_session_create("/tmp",
+        "exec perl -e '$|=1; print \"OLD-$_\\n\" for 1..500; "
+        "print \"https://example.test/abcdefghijklmnopqrstuvwxyz0123456789\\nHARD-RING\\n\", "
+        "\"\\n\" x 10, \"RING-READY\\n\"; scalar <STDIN>'", 6, 24);
+    assert(ring_wrap);
+    for (int i = 0; i < 600 && !screen_contains(ring_wrap, "RING-READY"); i++)
+        mica_session_poll(ring_wrap, 10);
+    assert(screen_contains(ring_wrap, "RING-READY"));
+    assert(mica_session_scrolled_lines(ring_wrap) > mica_session_history_lines(ring_wrap));
+    long ring_cursor = -1;
+    assert(mica_session_find(ring_wrap, "https://example.test/", false, &ring_cursor));
+    assert(ring_cursor < (long)mica_session_history_lines(ring_wrap));
+    int ring_row = (int)(ring_cursor - ((long)mica_session_history_lines(ring_wrap) -
+        mica_session_view_offset(ring_wrap)));
+    assert(ring_row >= 0 && ring_row + 3 < mica_session_rows(ring_wrap));
+    assert(mica_session_row_continues(ring_wrap, ring_row + 1));
+    assert(mica_session_row_continues(ring_wrap, ring_row + 2));
+    assert(!mica_session_row_continues(ring_wrap, ring_row + 3));
+    assert(mica_session_history_storage_bytes(ring_wrap) <= mica_history_limit_bytes());
+    mica_session_destroy(ring_wrap);
     mica_set_history_limit_lines(MICA_HISTORY_LIMIT_BYTES / (80u * sizeof(VTermScreenCell)));
     printf("the scrollback allowance can grow to thousands of lines and shrink again\n");
     printf("scrollback allocation stays within %u bytes per session\n", MICA_HISTORY_LIMIT_BYTES);

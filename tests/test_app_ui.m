@@ -8,6 +8,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef MICA_SESSION_TESTING
+void mica_session_test_fail_next_history_resize_allocation(void);
+#endif
+
 static double MicaUITestLinear(double value) { return value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4); }
 static double MicaContrastRatio(NSColor *foreground, NSColor *background) {
     NSColor *a = [foreground colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
@@ -477,6 +481,7 @@ static int MicaRunUISelfTest(void) {
                          diagnosticLogsMenuItem.target == delegate &&
                          shortcutsMenuItem.target == delegate &&
                          [[NSApp.mainMenu itemWithTitle:@"Focus"].submenu itemWithTitle:@"Start / Resume Focus Timer"].target == delegate &&
+                         [[NSApp.mainMenu itemWithTitle:@"Focus"].submenu itemWithTitle:@"End Current Phase"].target == delegate &&
                          [[NSApp.mainMenu itemWithTitle:@"Focus"].submenu itemWithTitle:@"Timer Settings…"].target == delegate &&
                          [shortcutsMenuItem.keyEquivalent isEqualToString:@"/"] &&
                          (shortcutsMenuItem.keyEquivalentModifierMask & NSEventModifierFlagCommand) != 0 &&
@@ -542,9 +547,17 @@ static int MicaRunUISelfTest(void) {
         wrapDelegate.uiMode = MicaUIModeNormal;
         MicaUITestAttachWindow(wrapDelegate);
         [wrapDelegate addTabWithName:@"Wrap" cwd:@"/tmp"
-            command:@"perl -e 'print \"WRAPSTART https://wrap.test/\" . (\"abcdefghij\" x 30) . \"/end\\n\"; "
+            command:@"exec perl -e '$|=1; print \"WRAPSTART https://wrap.test/\" . (\"abcdefghij\" x 30) . \"/end\\n\"; "
                     "print \"HARD https://hard.test/one\\ncontinued-text\\n\"; "
-                    "print \"PAIR https://a.test/1 https://b.test/2\\n\"'; sleep 2"
+                    "print \"PAIR https://a.test/1 https://b.test/2\\n\"; scalar <STDIN>; "
+                    "print \"\\n\" x 40, \"WRAP-HISTORY-READY\\n\"; scalar <STDIN>; "
+                    "print \"OLD-$_\\n\" for 1..500; "
+                    "print \"WRAPSTART https://wrap.test/\" . (\"abcdefghij\" x 30) . \"/end\\n\"; "
+                    "print \"\\n\" x 30, \"WRAP-RING-READY\\n\"; scalar <STDIN>; "
+                    "print \"\\e[2J\\e[H\\e]8;;https://width.test/resize-target\\e\\\\\" . "
+                    "\"WRAPWIDTHSTART https://width.test/\" . (\"abcdefghij\" x 30) . \"/end\\e]8;;\\e\\\\\\n\\n\\nWIDTH-READY\"; scalar <STDIN>; "
+                    "print \"\\e[2J\\e[HWRAPSTART https://wrap.test/\" . (\"abcdefghij\" x 30) . \"/end\\n\\n\\nBOUNDARY-READY\\n\"; "
+                    "scalar <STDIN>'"
             prefilled:NO];
         MicaTab *wrapTab = wrapDelegate.activeTab;
         NSInteger wrapRow = -1, wrapCol = -1;
@@ -582,6 +595,125 @@ static int MicaRunUISelfTest(void) {
                          wrappedFromSecondRow && hardNewlineStops && adjacentSeparate,
             [NSString stringWithFormat:@"Command-click joins a soft-wrapped URL from either row, stops at a hard newline and keeps adjacent URLs apart (cols=%ld first=%d second=%d hard=%d pair=%d)",
                 (long)wrapCols, wrappedFromFirstRow, wrappedFromSecondRow, hardNewlineStops, adjacentSeparate]);
+        int originalWrapRows = mica_session_rows(wrapTab.session);
+        mica_session_resize(wrapTab.session, 8, (int)wrapCols);
+        mica_session_scroll(wrapTab.session, INT_MAX);
+        wrapRow = wrapCol = -1;
+        MicaUITestFindText(wrapTab.session, @"WRAPSTART", &wrapRow, &wrapCol);
+        clickCell(wrapRow, wrapCol + 12);
+        BOOL shrinkKeepsURL = [wrapOpened.absoluteString isEqualToString:wrapExpected];
+        MicaUITestRecord(report, &allPassed, wrapRow >= 0 && shrinkKeepsURL,
+            @"Command-click preserves the complete wrapped URL after shrinking the grid");
+        mica_session_resize(wrapTab.session, originalWrapRows, (int)wrapCols);
+        mica_session_scroll(wrapTab.session, -INT_MAX);
+        mica_session_write(wrapTab.session, "go\n", 3);
+        NSInteger readyRow = -1, readyCol = -1;
+        for (int attempt = 0; attempt < 600 && readyRow < 0; attempt++) {
+            mica_session_poll(wrapTab.session, 10);
+            MicaUITestFindText(wrapTab.session, @"WRAP-HISTORY-READY", &readyRow, &readyCol);
+        }
+        mica_session_scroll(wrapTab.session, INT_MAX);
+        wrapRow = wrapCol = -1;
+        MicaUITestFindText(wrapTab.session, @"WRAPSTART", &wrapRow, &wrapCol);
+        clickCell(wrapRow, wrapCol + 12);
+        BOOL historyFirst = [wrapOpened.absoluteString isEqualToString:wrapExpected];
+        clickCell(wrapRow + 1, 3);
+        BOOL historySecond = [wrapOpened.absoluteString isEqualToString:wrapExpected];
+        hardRow = hardCol = pairRow = pairCol = -1;
+        MicaUITestFindText(wrapTab.session, @"https://hard.test/one", &hardRow, &hardCol);
+        MicaUITestFindText(wrapTab.session, @"https://b.test/2", &pairRow, &pairCol);
+        clickCell(hardRow, hardCol + 8);
+        BOOL historyHard = [wrapOpened.absoluteString isEqualToString:@"https://hard.test/one"];
+        clickCell(pairRow, pairCol + 8);
+        BOOL historyPair = [wrapOpened.absoluteString isEqualToString:@"https://b.test/2"];
+        MicaUITestRecord(report, &allPassed, readyRow >= 0 && wrapRow >= 0 && historyFirst &&
+            historySecond && historyHard && historyPair,
+            [NSString stringWithFormat:@"Command-click preserves wrapped URLs, hard newlines and separate links in scrollback (first=%d second=%d hard=%d pair=%d)",
+                historyFirst, historySecond, historyHard, historyPair]);
+        size_t savedWrapBudget = mica_history_limit_bytes();
+        mica_set_history_limit_lines(100);
+        mica_session_scroll(wrapTab.session, -INT_MAX);
+        mica_session_write(wrapTab.session, "go\n", 3);
+        readyRow = readyCol = -1;
+        for (int attempt = 0; attempt < 600 && readyRow < 0; attempt++) {
+            mica_session_poll(wrapTab.session, 10);
+            MicaUITestFindText(wrapTab.session, @"WRAP-RING-READY", &readyRow, &readyCol);
+        }
+        long ringCursor = -1;
+        BOOL foundRingURL = mica_session_find(wrapTab.session, "WRAPSTART", false, &ringCursor);
+        wrapRow = wrapCol = -1;
+        MicaUITestFindText(wrapTab.session, @"WRAPSTART", &wrapRow, &wrapCol);
+        clickCell(wrapRow, wrapCol + 12);
+        BOOL ringFirstClick = [wrapOpened.absoluteString isEqualToString:wrapExpected];
+        clickCell(wrapRow + 1, 3);
+        BOOL ringSecondClick = [wrapOpened.absoluteString isEqualToString:wrapExpected];
+        MicaUITestRecord(report, &allPassed, readyRow >= 0 && foundRingURL && wrapRow >= 0 &&
+            mica_session_scrolled_lines(wrapTab.session) > mica_session_history_lines(wrapTab.session) &&
+            mica_session_history_storage_bytes(wrapTab.session) <= mica_history_limit_bytes() &&
+            ringFirstClick && ringSecondClick,
+            [NSString stringWithFormat:@"Command-click opens a retained wrapped URL after history-ring replacement (first=%d second=%d)",
+                ringFirstClick, ringSecondClick]);
+        mica_session_resize(wrapTab.session, 8, (int)wrapCols);
+        mica_session_clear_scrollback(wrapTab.session);
+        mica_session_write(wrapTab.session, "go\n", 3);
+        readyRow = readyCol = -1;
+        for (int attempt = 0; attempt < 600 && readyRow < 0; attempt++) {
+            mica_session_poll(wrapTab.session, 10);
+            MicaUITestFindText(wrapTab.session, @"WIDTH-READY", &readyRow, &readyCol);
+        }
+        NSInteger preResizeLinkRow = -1, preResizeLinkCol = -1;
+        MicaUITestFindText(wrapTab.session, @"https://width.test/", &preResizeLinkRow, &preResizeLinkCol);
+        MicaCell preResizeLinkCell = {0};
+        BOOL preResizeLinkFound = preResizeLinkRow >= 0 &&
+            mica_session_get_cell(wrapTab.session, (int)preResizeLinkRow, (int)preResizeLinkCol, &preResizeLinkCell);
+        const char *preResizeLinkURI = preResizeLinkFound
+            ? mica_session_hyperlink_uri(wrapTab.session, preResizeLinkCell.hyperlink_id) : NULL;
+        MicaUITestRecord(report, &allPassed, preResizeLinkURI &&
+            strcmp(preResizeLinkURI, "https://width.test/resize-target") == 0,
+            [NSString stringWithFormat:@"width-resize fixture starts with OSC8 target (id=%u uri=%s)",
+                preResizeLinkCell.hyperlink_id, preResizeLinkURI ?: "<none>"]);
+        mica_session_resize(wrapTab.session, 8, (int)wrapCols - 21);
+        mica_session_scroll(wrapTab.session, INT_MAX);
+        long widthResizeCursor = 0;
+        BOOL widthResizeRetainsHistory = mica_session_find(wrapTab.session, "WRAPWIDTHSTART", false, &widthResizeCursor);
+        NSInteger widthLinkRow = -1, widthLinkCol = -1;
+        MicaUITestFindText(wrapTab.session, @"https://width.test/", &widthLinkRow, &widthLinkCol);
+        MicaCell widthLinkCell = {0};
+        BOOL widthLinkCellFound = widthLinkRow >= 0 &&
+            mica_session_get_cell(wrapTab.session, (int)widthLinkRow, (int)widthLinkCol, &widthLinkCell);
+        const char *widthLinkURI = widthLinkCellFound
+            ? mica_session_hyperlink_uri(wrapTab.session, widthLinkCell.hyperlink_id) : NULL;
+        BOOL widthResizeRetainsOSC8Target = widthLinkURI &&
+            strcmp(widthLinkURI, "https://width.test/resize-target") == 0;
+        if (widthLinkRow >= 0) clickCell(widthLinkRow, widthLinkCol + 2);
+        BOOL widthResizeClickRoutesOSC8Target = widthLinkRow >= 0 &&
+            [wrapOpened.absoluteString isEqualToString:@"https://width.test/resize-target"];
+        MicaUITestRecord(report, &allPassed, readyRow >= 0 && widthResizeRetainsHistory &&
+            mica_session_history_lines(wrapTab.session) > 0 && widthResizeRetainsOSC8Target &&
+            widthResizeClickRoutesOSC8Target,
+            [NSString stringWithFormat:@"column-width resize retains a wrapped row and routes its OSC 8 target (stored=%d click=%d)",
+                widthResizeRetainsOSC8Target, widthResizeClickRoutesOSC8Target]);
+        mica_session_resize(wrapTab.session, 8, (int)wrapCols);
+        mica_session_clear_scrollback(wrapTab.session);
+        mica_session_write(wrapTab.session, "go\n", 3);
+        readyRow = readyCol = -1;
+        for (int attempt = 0; attempt < 600 && readyRow < 0; attempt++) {
+            mica_session_poll(wrapTab.session, 10);
+            MicaUITestFindText(wrapTab.session, @"BOUNDARY-READY", &readyRow, &readyCol);
+        }
+        mica_session_scroll(wrapTab.session, INT_MAX);
+        wrapRow = wrapCol = -1;
+        MicaUITestFindText(wrapTab.session, @"WRAPSTART", &wrapRow, &wrapCol);
+        NSInteger boundaryRow = mica_session_view_offset(wrapTab.session);
+        clickCell(wrapRow, wrapCol + 12);
+        BOOL boundaryHistoryClick = [wrapOpened.absoluteString isEqualToString:wrapExpected];
+        clickCell(boundaryRow, 3);
+        BOOL boundaryLiveClick = [wrapOpened.absoluteString isEqualToString:wrapExpected];
+        MicaUITestRecord(report, &allPassed, readyRow >= 0 && wrapRow >= 0 && boundaryRow > wrapRow &&
+            boundaryRow <= wrapRow + 4 && boundaryHistoryClick && boundaryLiveClick,
+            [NSString stringWithFormat:@"Command-click opens the whole URL from both sides of the history/live boundary (boundary=%ld history=%d live=%d)",
+                (long)boundaryRow, boundaryHistoryClick, boundaryLiveClick]);
+        mica_set_history_limit_lines(savedWrapBudget / (80u * sizeof(VTermScreenCell)));
         wrapDelegate.tabs = [NSMutableArray array];
 
         MicaAppDelegate *voiceDelegate = [[MicaAppDelegate alloc] init];
@@ -882,21 +1014,28 @@ static int MicaRunUISelfTest(void) {
         resizeView.terminalFont = MicaTerminalFont(kFontSizeDefault);
         resizeDelegate.terminalView = resizeView;
         [resizeDelegate.window setContentView:resizeView];
-        [resizeDelegate addTabWithName:@"Resize" cwd:@"/tmp"
-            command:@"python3 -c 'import fcntl,termios,struct,time\n"
+        CGFloat cellWidth = [@"M" sizeWithAttributes:@{NSFontAttributeName:resizeView.terminalFont}].width;
+        NSString *resizeCommand = @"i=1; while [ $i -le 80 ]; do printf 'RESIZE-HISTORY-%03d\\n' $i; i=$((i+1)); done; "
+            @"python3 -c 'import fcntl,termios,struct,time,sys\n"
                      "get=lambda:struct.unpack(\"HHHH\",fcntl.ioctl(0,termios.TIOCGWINSZ,b\"\\0\"*8))\n"
                      "old=get()[2]\n"
                      "print(\"MICA-RESIZE-READY\",flush=True)\n"
+                     "sys.stdin.readline()\n"
+                     "old=get()[2]\n"
+                     "print(\"MICA-RESIZE-ARMED\",flush=True)\n"
                      "end=time.time()+5\n"
                      "while time.time()<end:\n"
                      " new=get()[2]\n"
                      " if new!=old:\n"
                      "  print(\"MICA-RESIZE-PIXELS-UPDATED\",flush=True)\n"
                      "  old=new\n"
-                     " time.sleep(.01)'"
-            prefilled:NO];
-        MicaTab *resizeTab = resizeDelegate.activeTab;
-        [resizeView updateGridSize];
+                     " time.sleep(.01)'";
+        MicaTab *resizeTab = [[MicaTab alloc] init];
+        resizeTab.name = @"Resize";
+        resizeTab.cwd = @"/tmp";
+        resizeTab.command = resizeCommand;
+        resizeTab.session = mica_session_create("/tmp", resizeCommand.UTF8String, 24, 80);
+        [resizeDelegate.tabs addObject:resizeTab];
         BOOL resizeFixtureReady = NO;
         for (int attempt = 0; attempt < 200; attempt++) {
             mica_session_poll(resizeTab.session, 0);
@@ -906,11 +1045,43 @@ static int MicaRunUISelfTest(void) {
             }
             usleep(10000);
         }
+        BOOL resizeHistoryReady = mica_session_history_lines(resizeTab.session) > 0;
+        [resizeView updateGridSize];
+        mica_session_write(resizeTab.session, "go\n", 3);
+        BOOL resizeFixtureArmed = NO;
+        for (int attempt = 0; attempt < 200; attempt++) {
+            mica_session_poll(resizeTab.session, 0);
+            if (MicaUITestFindText(resizeTab.session, @"MICA-RESIZE-ARMED", NULL, NULL)) {
+                resizeFixtureArmed = YES;
+                break;
+            }
+            usleep(10000);
+        }
+        NSInteger resizeBeforeFailure = mica_session_cols(resizeTab.session);
+        NSRect allocationFailureFrame = resizeView.frame;
+        allocationFailureFrame.size.width += MAX(1, ceil(cellWidth * 20));
+        resizeView.frame = allocationFailureFrame;
+        mica_session_test_fail_next_history_resize_allocation();
+        [resizeView updateGridSize];
+        NSInteger cachedColsAfterFailure = [[resizeView valueForKey:@"cols"] integerValue];
+        BOOL failedResizeKeptUICache = resizeFixtureReady && resizeHistoryReady && resizeFixtureArmed &&
+            mica_session_cols(resizeTab.session) == resizeBeforeFailure &&
+            cachedColsAfterFailure == resizeBeforeFailure;
+        MicaUITestRunLoopFor(1.15);
+        BOOL failedResizeRetried = mica_session_cols(resizeTab.session) > resizeBeforeFailure &&
+            [[resizeView valueForKey:@"cols"] integerValue] == mica_session_cols(resizeTab.session);
+        MicaUITestRecord(report, &allPassed, failedResizeKeptUICache && failedResizeRetried,
+            [NSString stringWithFormat:@"AppKit keeps its old grid cache after a history resize allocation failure, then retries to the new PTY size (ready=%d history=%d armed=%d cache=%ld/%ld retry=%d)",
+                resizeFixtureReady, resizeHistoryReady, resizeFixtureArmed,
+                (long)cachedColsAfterFailure, (long)resizeBeforeFailure, failedResizeRetried]);
+        NSUInteger initialResizeMarkerCount = 0;
+        for (int attempt = 0; attempt < 100 && initialResizeMarkerCount == 0; attempt++) {
+            mica_session_poll(resizeTab.session, 10);
+            initialResizeMarkerCount = MicaUITestCountText(resizeTab.session,
+                @"MICA-RESIZE-PIXELS-UPDATED");
+        }
         NSInteger originalRows = mica_session_rows(resizeTab.session);
         NSInteger originalCols = mica_session_cols(resizeTab.session);
-        CGFloat cellWidth = [@"M" sizeWithAttributes:@{
-            NSFontAttributeName: resizeView.terminalFont
-        }].width;
         NSRect resizedFrame = resizeView.frame;
         resizedFrame.size.width += MAX(1, floor(cellWidth / 2));
         resizeView.testInLiveResize = YES;
@@ -921,11 +1092,11 @@ static int MicaRunUISelfTest(void) {
         BOOL pixelResizeDeferred = resizeFixtureReady &&
             mica_session_rows(resizeTab.session) == originalRows &&
             mica_session_cols(resizeTab.session) == originalCols &&
-            MicaUITestCountText(resizeTab.session, @"MICA-RESIZE-PIXELS-UPDATED") == 0;
+            MicaUITestCountText(resizeTab.session, @"MICA-RESIZE-PIXELS-UPDATED") == initialResizeMarkerCount;
         resizeView.testInLiveResize = NO;
         [resizeView updateGridSize];
         for (int attempt = 0; attempt < 100 &&
-             MicaUITestCountText(resizeTab.session, @"MICA-RESIZE-PIXELS-UPDATED") == 0; attempt++) {
+             MicaUITestCountText(resizeTab.session, @"MICA-RESIZE-PIXELS-UPDATED") == initialResizeMarkerCount; attempt++) {
             mica_session_poll(resizeTab.session, 10);
         }
         for (int repeat = 0; repeat < 3; repeat++) [resizeView updateGridSize];
@@ -933,7 +1104,8 @@ static int MicaRunUISelfTest(void) {
         mica_session_poll(resizeTab.session, 0);
         NSUInteger pixelUpdatesAfterEnd = MicaUITestCountText(resizeTab.session,
             @"MICA-RESIZE-PIXELS-UPDATED");
-        MicaUITestRecord(report, &allPassed, pixelResizeDeferred && pixelUpdatesAfterEnd == 1,
+        MicaUITestRecord(report, &allPassed, pixelResizeDeferred &&
+            pixelUpdatesAfterEnd == initialResizeMarkerCount + 1,
             [NSString stringWithFormat:@"pixel-only terminal dimensions stay stable during live resize and update once when it ends (deferred=%d final-updates=%lu rows=%ld/%ld cols=%ld/%ld)",
                 pixelResizeDeferred, (unsigned long)pixelUpdatesAfterEnd,
                 (long)mica_session_rows(resizeTab.session), (long)originalRows,
@@ -1103,9 +1275,13 @@ static int MicaRunUISelfTest(void) {
         pollProbe.tabs = [NSMutableArray array];
         pollProbe.activeIndex = 0;
         MicaUITestAttachWindow(pollProbe);
-        for (int index = 0; index < 7; index++)
+        for (int index = 0; index < 7; index++) {
+            NSString *command = index == 0
+                ? @"exec perl -e '$|=1; while (1) { print \"bulk-output-abcdefghijklmnopqrstuvwxyz-0123456789\\n\"; }'"
+                : @"while :; do printf 'busy-output\\n'; sleep 0.01; done";
             [pollProbe addTabWithName:[NSString stringWithFormat:@"Busy %d", index + 1] cwd:@"/tmp"
-                command:@"while :; do printf 'busy-output\\n'; sleep 0.01; done" prefilled:NO];
+                command:command prefilled:NO];
+        }
         BOOL pollProbeReady = pollProbe.tabs.count == 7;
         for (int attempt = 0; pollProbeReady && attempt < 20; attempt++) {
             [pollProbe pollSessions:nil];
@@ -1124,7 +1300,7 @@ static int MicaRunUISelfTest(void) {
         for (MicaTab *tab in pollProbe.tabs)
             allBusy = allBusy && tab.session && mica_session_is_running(tab.session) && tab.lastOutputReadAt > 0;
         MicaUITestRecord(report, &allPassed, allBusy && pollTotal / 100.0 < 16.0 && pollMaximum < 50.0,
-            [NSString stringWithFormat:@"seven busy PTY tabs poll below 16 ms average and 50 ms worst (avg=%.2f max=%.2f)",
+            [NSString stringWithFormat:@"one flooding and six busy PTY tabs poll below 16 ms average and 50 ms worst (avg=%.2f max=%.2f)",
                 pollTotal / 100.0, pollMaximum]);
         for (MicaTab *tab in pollProbe.tabs) {
             MicaSession *session = tab.session;
@@ -2135,7 +2311,7 @@ static int MicaRunUISelfTest(void) {
                 @{NSFontAttributeName:[NSFont monospacedDigitSystemFontOfSize:11.5 weight:NSFontWeightMedium]}].width;
             NSArray<NSString *> *layoutHints = @[@"⌘/ Shortcuts", @"⌥ Dictate", @"⌘1–8 Switch tab",
                 @"⌘T New tab", @"⌘Q Quit"];
-            NSRect layoutTimer = NSMakeRect(12, 0, 190, kStatusHeight);
+            NSRect layoutTimer = [delegate.terminalView pomodoroControlRect];
             BOOL narrowRectsDoNotOverlap = YES;
             for (NSNumber *widthValue in @[@600, @800]) {
                 CGFloat width = widthValue.doubleValue;
@@ -2531,15 +2707,51 @@ static int MicaRunUISelfTest(void) {
         [timerWindowA configurePomodoro];
         [timerWindowB configurePomodoro];
         MicaUITestAttachWindow(timerWindowA);
+        MicaUITestAttachWindow(timerWindowB);
         BOOL timerDefaultsShared = sharedTimerURL && timerWindowA.focusDurationMinutes == 60 &&
+            timerWindowA.autoStartFocus && timerWindowA.autoStartBreaks &&
             timerWindowB.breakDurationMinutes == 15 &&
             [timerWindowA savePomodoroDurationsFocusMinutes:50 breakMinutes:8];
+        BOOL timerOptionsSaved = timerDefaultsShared &&
+            [timerWindowA savePomodoroSettingsFocusMinutes:50 breakMinutes:8
+                autoStartFocus:NO autoStartBreaks:NO];
         [timerWindowB refreshPomodoroState];
+        NSView *timerSettingsAccessory = [timerWindowB pomodoroSettingsAccessory];
+        NSButton *autoBreakCheckbox = nil, *autoFocusCheckbox = nil;
+        for (NSView *view in timerSettingsAccessory.subviews) {
+            if (![view isKindOfClass:NSButton.class]) continue;
+            NSButton *button = (NSButton *)view;
+            if ([button.title isEqualToString:@"Auto-start break after focus"]) autoBreakCheckbox = button;
+            if ([button.title isEqualToString:@"Auto-start focus after break"]) autoFocusCheckbox = button;
+        }
+        BOOL timerCheckboxesLoaded = autoBreakCheckbox && autoFocusCheckbox &&
+            autoBreakCheckbox.state == NSControlStateValueOff && autoFocusCheckbox.state == NSControlStateValueOff;
+        autoBreakCheckbox.state = NSControlStateValueOn;
+        autoFocusCheckbox.state = NSControlStateValueOff;
+        BOOL timerMixedCheckboxesSaved = timerCheckboxesLoaded &&
+            [timerWindowB savePomodoroSettingsFromAccessory:timerSettingsAccessory];
+        [timerWindowA refreshPomodoroState];
+        BOOL timerMixedOptionsShared = timerMixedCheckboxesSaved && timerWindowA.autoStartBreaks &&
+            !timerWindowA.autoStartFocus;
+        autoBreakCheckbox.state = NSControlStateValueOff;
+        autoFocusCheckbox.state = NSControlStateValueOn;
+        BOOL timerReverseMixedSaved = [timerWindowB savePomodoroSettingsFromAccessory:timerSettingsAccessory];
+        [timerWindowA refreshPomodoroState];
+        BOOL timerReverseMixedShared = timerReverseMixedSaved && !timerWindowA.autoStartBreaks &&
+            timerWindowA.autoStartFocus;
+        autoBreakCheckbox.state = NSControlStateValueOff;
+        autoFocusCheckbox.state = NSControlStateValueOff;
+        BOOL timerOptionsRestored = [timerWindowB savePomodoroSettingsFromAccessory:timerSettingsAccessory];
+        [timerWindowA refreshPomodoroState];
+        BOOL timerOptionsShared = timerOptionsSaved && timerOptionsRestored && timerMixedOptionsShared &&
+            timerReverseMixedShared &&
+            !timerWindowA.autoStartFocus && !timerWindowA.autoStartBreaks &&
+            !timerWindowB.autoStartFocus && !timerWindowB.autoStartBreaks;
         NSRect timerControl = [timerWindowA.terminalView pomodoroControlRect];
         MicaUITestSendMouse(timerWindowA, NSEventTypeLeftMouseDown,
             NSMakePoint(NSMinX(timerControl) + 72, NSMidY(timerControl)), 0);
         [timerWindowB refreshPomodoroState];
-        BOOL timerStartShared = timerDefaultsShared && timerControl.size.width >= 180 &&
+        BOOL timerStartShared = timerOptionsShared && timerControl.size.width >= 180 &&
             timerWindowA.pomodoro.phase == MICA_POMODORO_FOCUS && timerWindowB.focusDurationMinutes == 50 &&
             timerWindowB.breakDurationMinutes == 8 && timerWindowB.pomodoro.phase == MICA_POMODORO_FOCUS &&
             timerWindowB.pomodoroCycleFocusMinutes == 50 && timerWindowB.pomodoro.deadline == timerWindowA.pomodoro.deadline;
@@ -2547,15 +2759,41 @@ static int MicaRunUISelfTest(void) {
             valueForKey:@"accessibilityLabel"];
         BOOL timerToggleAccessible = NO;
         for (NSString *label in timerAXLabels)
-            if ([label hasPrefix:@"Focus timer, Focus,"]) timerToggleAccessible = YES;
+            if ([label hasPrefix:@"Focus timer, Focus,"] &&
+                [label containsString:@"0 focus sessions completed"]) timerToggleAccessible = YES;
         BOOL timerControlsAccessible = timerToggleAccessible && [timerAXLabels containsObject:@"Reset focus timer"];
         [timerWindowB togglePomodoroPause:nil];
         [timerWindowA refreshPomodoroState];
         BOOL timerPauseShared = timerWindowA.pomodoro.phase == MICA_POMODORO_PAUSED_FOCUS;
-        [timerWindowA skipPomodoroPhase:nil];
+        NSMenuItem *skipTimerMenu = [[NSMenuItem alloc] initWithTitle:@"End Current Phase"
+            action:@selector(skipPomodoroPhase:) keyEquivalent:@""];
+        BOOL timerSkipMenuAccessible = [timerWindowA validateMenuItem:skipTimerMenu] &&
+            [skipTimerMenu.title isEqualToString:@"End Focus & Start Break"];
+        BOOL timerSkipAXPerformed = NO;
+        for (NSAccessibilityElement *element in [timerWindowA.terminalView accessibilityChildren]) {
+            for (NSAccessibilityCustomAction *action in element.accessibilityCustomActions) {
+                if ([action.name isEqualToString:@"End focus and start break"] && action.handler)
+                    timerSkipAXPerformed = action.handler();
+            }
+        }
         [timerWindowB refreshPomodoroState];
-        BOOL timerSkipFocusShared = timerWindowA.pomodoro.phase == MICA_POMODORO_BREAK &&
+        BOOL timerSkipFocusShared = timerSkipAXPerformed && timerSkipMenuAccessible &&
+            [timerWindowA validateMenuItem:skipTimerMenu] &&
+            [skipTimerMenu.title isEqualToString:@"End Break & Start Focus"] &&
+            timerWindowA.pomodoro.phase == MICA_POMODORO_BREAK &&
             timerWindowB.pomodoro.phase == MICA_POMODORO_BREAK && timerWindowB.pomodoro.completed_focuses == 1;
+        BOOL timerCountAccessible = NO;
+        for (NSString *label in [[timerWindowB.terminalView accessibilityChildren] valueForKey:@"accessibilityLabel"])
+            if ([label hasPrefix:@"Focus timer, Break,"] &&
+                [label containsString:@"1 focus session completed"]) timerCountAccessible = YES;
+        NSString *visibleTimerStatus = [timerWindowB.terminalView pomodoroStatusText];
+        NSRect visibleTimerRect = [timerWindowB.terminalView pomodoroControlRect];
+        NSDictionary *visibleTimerAttributes = @{NSFontAttributeName:
+            [NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold]};
+        CGFloat visibleTimerTextWidth = ceil([visibleTimerStatus sizeWithAttributes:visibleTimerAttributes].width);
+        BOOL timerCountVisible = [visibleTimerStatus containsString:@"1 done"] &&
+            visibleTimerRect.size.width >= visibleTimerTextWidth + 96;
+        timerSkipFocusShared = timerSkipFocusShared && timerCountAccessible && timerCountVisible;
         [timerWindowB skipPomodoroPhase:nil];
         [timerWindowA refreshPomodoroState];
         BOOL timerSkipBreakShared = timerWindowA.pomodoro.phase == MICA_POMODORO_FOCUS &&
@@ -2563,11 +2801,36 @@ static int MicaRunUISelfTest(void) {
         [timerWindowA resetPomodoro:nil];
         [timerWindowB refreshPomodoroState];
         BOOL timerResetShared = timerWindowB.pomodoro.phase == MICA_POMODORO_IDLE;
+        timerResetShared = timerResetShared && ![timerWindowB validateMenuItem:skipTimerMenu] &&
+            [skipTimerMenu.title isEqualToString:@"End Current Phase"];
         MicaUITestRecord(report, &allPassed, timerDefaultsShared && timerStartShared && timerControlsAccessible &&
             timerPauseShared && timerSkipFocusShared && timerSkipBreakShared && timerResetShared,
-            [NSString stringWithFormat:@"timer controls expose readable VoiceOver actions and skip phases consistently across windows (start=%d accessible=%d pause=%d focus-skip=%d break-skip=%d reset=%d)",
-                timerStartShared, timerControlsAccessible, timerPauseShared, timerSkipFocusShared,
-                timerSkipBreakShared, timerResetShared]);
+            [NSString stringWithFormat:@"timer controls preserve independent checkbox auto-start choices, show completed focus count, and expose accessible skip actions across windows (options=%d start=%d accessible=%d count=%d pause=%d focus-skip=%d break-skip=%d reset=%d)",
+                timerOptionsShared, timerStartShared, timerControlsAccessible, timerCountVisible, timerPauseShared,
+                timerSkipFocusShared, timerSkipBreakShared, timerResetShared]);
+        for (MicaAppDelegate *window in @[timerWindowA, timerWindowB]) {
+            window.voiceController = [[MicaVoiceController alloc]
+                initWithHelperURL:[NSURL fileURLWithPath:@"/usr/bin/false"]];
+            [window.voiceController setValue:@(MicaVoiceControllerStateListening) forKey:@"state"];
+            [window.voiceController setValue:@"" forKey:@"transcript"];
+        }
+        NSTimeInterval heldAnimationStamp = NSProcessInfo.processInfo.systemUptime + 60;
+        timerWindowA.lastVoiceAnimationAt = heldAnimationStamp;
+        timerWindowB.lastVoiceAnimationAt = 0;
+        [timerWindowA pollSessions:nil];
+        [timerWindowB pollSessions:nil];
+        BOOL independentVoiceAnimation = timerWindowA.lastVoiceAnimationAt == heldAnimationStamp &&
+            timerWindowB.lastVoiceAnimationAt > 0;
+        timerWindowB.lastVoiceAnimationAt = heldAnimationStamp;
+        timerWindowA.lastVoiceAnimationAt = 0;
+        [timerWindowB pollSessions:nil];
+        [timerWindowA pollSessions:nil];
+        independentVoiceAnimation = independentVoiceAnimation &&
+            timerWindowB.lastVoiceAnimationAt == heldAnimationStamp && timerWindowA.lastVoiceAnimationAt > 0;
+        MicaUITestRecord(report, &allPassed, independentVoiceAnimation,
+            @"dictation animation throttling belongs to each window and does not suppress another window's repaint");
+        timerWindowA.voiceController = nil;
+        timerWindowB.voiceController = nil;
         if (sharedTimerURL) [NSFileManager.defaultManager removeItemAtURL:sharedTimerURL error:nil];
 
         MicaAppDelegate *layoutDelegate = [[MicaAppDelegate alloc] init];

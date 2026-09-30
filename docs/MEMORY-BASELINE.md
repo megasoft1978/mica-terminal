@@ -43,7 +43,7 @@ Measured 2026-09-29 with three project windows (1100 × 700 each) opened by URL 
 ## What makes the difference
 
 - One process, no web view. Mica is AppKit and a C session core; there is no Chromium and no Node.
-- Scrollback is allocated when output scrolls off screen and capped at 2 MiB per tab.
+- Scrollback is allocated when output scrolls off screen. The default allowance is about 2 MiB per tab; Settings can raise it to 20,000 nominal 80-column lines. Compact cells and optional hyperlink storage share that tracked allowance. See [current history measurements](PERFORMANCE.md#repeatable-history-benchmark); it is not a cap on total process memory.
 - The speech model is loaded only during dictation, and the recognizer runs in a short-lived helper.
 - The focus timer is a few hundred bytes of state shared between windows through one small file.
 - The Dock icon bitmap is 256 pt (it was 512 pt until this measurement showed it costing 6 MB), and the window is opaque (a translucent title bar cost about 8 MB, so it was removed).

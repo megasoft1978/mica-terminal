@@ -36,17 +36,25 @@ bool mica_pomodoro_toggle_pause(MicaPomodoro *timer, double now) {
 
 bool mica_pomodoro_advance(MicaPomodoro *timer, double now,
                            double focus_seconds, double break_seconds) {
+    return mica_pomodoro_advance_with_options(timer, now, focus_seconds, break_seconds, true, true);
+}
+
+bool mica_pomodoro_advance_with_options(MicaPomodoro *timer, double now,
+                           double focus_seconds, double break_seconds,
+                           bool auto_start_break, bool auto_start_focus) {
     if (!timer || !isfinite(now) || !isfinite(focus_seconds) || !isfinite(break_seconds) ||
         focus_seconds <= 0 || break_seconds <= 0 || now < timer->deadline) return false;
     if (timer->phase == MICA_POMODORO_FOCUS) {
-        timer->phase = MICA_POMODORO_BREAK;
         timer->completed_focuses++;
-        timer->deadline = now + break_seconds;
+        timer->phase = auto_start_break ? MICA_POMODORO_BREAK : MICA_POMODORO_PAUSED_BREAK;
+        timer->deadline = auto_start_break ? now + break_seconds : 0;
+        timer->paused_remaining = auto_start_break ? 0 : break_seconds;
         return true;
     }
     if (timer->phase == MICA_POMODORO_BREAK) {
-        timer->phase = MICA_POMODORO_FOCUS;
-        timer->deadline = now + focus_seconds;
+        timer->phase = auto_start_focus ? MICA_POMODORO_FOCUS : MICA_POMODORO_PAUSED_FOCUS;
+        timer->deadline = auto_start_focus ? now + focus_seconds : 0;
+        timer->paused_remaining = auto_start_focus ? 0 : focus_seconds;
         return true;
     }
     return false;

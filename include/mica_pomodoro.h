@@ -24,6 +24,9 @@ bool mica_pomodoro_start(MicaPomodoro *timer, double now, double focus_seconds);
 bool mica_pomodoro_toggle_pause(MicaPomodoro *timer, double now);
 bool mica_pomodoro_advance(MicaPomodoro *timer, double now,
                            double focus_seconds, double break_seconds);
+bool mica_pomodoro_advance_with_options(MicaPomodoro *timer, double now,
+                           double focus_seconds, double break_seconds,
+                           bool auto_start_break, bool auto_start_focus);
 double mica_pomodoro_remaining(const MicaPomodoro *timer, double now);
 bool mica_pomodoro_is_running(const MicaPomodoro *timer);
 bool mica_pomodoro_is_paused(const MicaPomodoro *timer);

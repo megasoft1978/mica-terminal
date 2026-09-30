@@ -50,15 +50,17 @@ void mica_session_paste(MicaSession *session, const char *utf8, size_t length);
 void mica_session_mouse(MicaSession *session, int row, int col, int button, bool pressed);
 void mica_session_wheel(MicaSession *session, int row, int col, int direction);
 void mica_session_focus(MicaSession *session, bool focused);
-void mica_session_resize(MicaSession *session, int rows, int cols);
-void mica_session_resize_pixels(MicaSession *session, int rows, int cols, int pixel_width, int pixel_height);
+// Returns false if the session rejected the resize (for example, if its bounded history index could not grow).
+bool mica_session_resize(MicaSession *session, int rows, int cols);
+bool mica_session_resize_pixels(MicaSession *session, int rows, int cols, int pixel_width, int pixel_height);
 void mica_session_scroll(MicaSession *session, int lines);
 void mica_session_scroll_to_bottom(MicaSession *session);
 // Drops all scrolled-off history (Cmd+K); the visible screen is left alone.
 void mica_session_clear_scrollback(MicaSession *session);
 // Switches the ANSI palette and default colours between the dark (default) and light themes.
 void mica_session_set_light_theme(MicaSession *session, bool light);
-// Case-insensitive search across history and the screen. `cursor` holds the last match's absolute row
+// UTF-8 search across history and the screen, with ASCII case folding. Combining codepoints
+// are retained; canonically equivalent Unicode spellings are not normalized. `cursor` holds the last match's absolute row
 // (start with -1) and is updated; the view scrolls to the match. Returns false if nothing matches.
 bool mica_session_find(MicaSession *session, const char *query, bool backward, long *cursor);
 int mica_session_rows(const MicaSession *session);

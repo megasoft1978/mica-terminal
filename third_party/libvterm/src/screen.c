@@ -46,6 +46,9 @@ struct VTermScreen
   VTerm *vt;
   VTermState *state;
 
+  bool callbacks_has_pushline4;
+  bool callbacks_has_popline4;
+  bool callbacks_has_popline5;
   const VTermScreenCallbacks *callbacks;
   void *cbdata;
 
@@ -209,26 +212,41 @@ static int putglyph(VTermGlyphInfo *info, VTermPos pos, void *user)
   return 1;
 }
 
-static void sb_pushline_from_row(VTermScreen *screen, int row)
+/* Mica patch: upstream continuation-aware capture before metadata moves. */
+static void sb_pushline_from_row(VTermScreen *screen, int row, bool continuation)
 {
   VTermPos pos = { .row = row };
   for(pos.col = 0; pos.col < screen->cols; pos.col++)
     vterm_screen_get_cell(screen, pos, screen->sb_buffer + pos.col);
 
-  (screen->callbacks->sb_pushline)(screen->cols, screen->sb_buffer, screen->cbdata);
+  if(screen->callbacks_has_pushline4 && screen->callbacks->sb_pushline4)
+    (screen->callbacks->sb_pushline4)(screen->cols, screen->sb_buffer, continuation, screen->cbdata);
+  else
+    (screen->callbacks->sb_pushline)(screen->cols, screen->sb_buffer, screen->cbdata);
+}
+
+static int premove(VTermRect rect, void *user)
+{
+  VTermScreen *screen = user;
+
+  if(((screen->callbacks && screen->callbacks->sb_pushline) ||
+        (screen->callbacks_has_pushline4 && screen->callbacks && screen->callbacks->sb_pushline4)) &&
+     rect.start_row == 0 && rect.start_col == 0 &&        // starts top-left corner
+     rect.end_col == screen->cols &&                      // full width
+     screen->buffer == screen->buffers[BUFIDX_PRIMARY]) { // not altscreen
+    for(int row = 0; row < rect.end_row; row++) {
+      const VTermLineInfo *lineinfo = vterm_state_get_lineinfo(screen->state, row);
+      sb_pushline_from_row(screen, row, lineinfo->continuation);
+    }
+  }
+
+  return 1;
 }
 
 static int moverect_internal(VTermRect dest, VTermRect src, void *user)
 {
   VTermScreen *screen = user;
 
-  if(screen->callbacks && screen->callbacks->sb_pushline &&
-     dest.start_row == 0 && dest.start_col == 0 &&        // starts top-left corner
-     dest.end_col == screen->cols &&                      // full width
-     screen->buffer == screen->buffers[BUFIDX_PRIMARY]) { // not altscreen
-    for(int row = 0; row < src.start_row; row++)
-      sb_pushline_from_row(screen, row);
-  }
 
   int cols = src.end_col - src.start_col;
   int downward = src.start_row - dest.start_row;
@@ -608,6 +626,9 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
         if(new_cursor.col >= new_cols)
           new_cursor.col = new_cols-1;
       }
+      /* Mica patch: retain the entire wrapped group in scrollback. The
+       * resize backfill can then restore the tail that fits the live grid. */
+      old_row = old_row_end;
       break;
     }
 
@@ -674,18 +695,33 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
 
   if(old_row >= 0 && bufidx == BUFIDX_PRIMARY) {
     /* Push spare lines to scrollback buffer */
-    if(screen->callbacks && screen->callbacks->sb_pushline)
+    /* Mica patch: preserve continuation metadata for resize-generated history. */
+    if((screen->callbacks && screen->callbacks->sb_pushline) ||
+        (screen->callbacks_has_pushline4 && screen->callbacks && screen->callbacks->sb_pushline4))
       for(int row = 0; row <= old_row; row++)
-        sb_pushline_from_row(screen, row);
+        sb_pushline_from_row(screen, row, old_lineinfo[row].continuation);
     if(active)
       statefields->pos.row -= (old_row + 1);
   }
-  if(new_row >= 0 && bufidx == BUFIDX_PRIMARY &&
-      screen->callbacks && screen->callbacks->sb_popline) {
-    /* Try to backfill rows by popping scrollback buffer */
+  if(new_row >= 0 && bufidx == BUFIDX_PRIMARY && screen->callbacks &&
+      (screen->callbacks->sb_popline ||
+      (screen->callbacks_has_popline4 && screen->callbacks->sb_popline4) ||
+      (screen->callbacks_has_popline5 && screen->callbacks->sb_popline5))) {
+    /* Mica patch: restore continuation metadata alongside popped cells. */
     while(new_row >= 0) {
-      if(!(screen->callbacks->sb_popline(old_cols, screen->sb_buffer, screen->cbdata)))
+      bool continuation = false;
+      int popped;
+      if(screen->callbacks_has_popline5 && screen->callbacks->sb_popline5)
+        popped = screen->callbacks->sb_popline5(old_cols, screen->sb_buffer,
+            &continuation, new_row, screen->cbdata);
+      else if(screen->callbacks_has_popline4 && screen->callbacks->sb_popline4)
+        popped = screen->callbacks->sb_popline4(old_cols, screen->sb_buffer,
+            &continuation, screen->cbdata);
+      else
+        popped = screen->callbacks->sb_popline(old_cols, screen->sb_buffer, screen->cbdata);
+      if(!popped)
         break;
+      new_lineinfo[new_row].continuation = continuation;
 
       VTermPos pos = { .row = new_row };
       for(pos.col = 0; pos.col < old_cols && pos.col < new_cols; pos.col += screen->sb_buffer[pos.col].width) {
@@ -855,6 +891,7 @@ static VTermStateCallbacks state_cbs = {
   .resize      = &resize,
   .setlineinfo = &setlineinfo,
   .sb_clear    = &sb_clear,
+  .premove     = &premove,
 };
 
 static VTermScreen *screen_new(VTerm *vt)
@@ -881,6 +918,9 @@ static VTermScreen *screen_new(VTerm *vt)
   screen->global_reverse = false;
   screen->reflow = false;
 
+  screen->callbacks_has_pushline4 = false;
+  screen->callbacks_has_popline4 = false;
+  screen->callbacks_has_popline5 = false;
   screen->callbacks = NULL;
   screen->cbdata    = NULL;
 
@@ -891,6 +931,7 @@ static VTermScreen *screen_new(VTerm *vt)
   screen->sb_buffer = vterm_allocator_malloc(screen->vt, sizeof(VTermScreenCell) * cols);
 
   vterm_state_set_callbacks(screen->state, &state_cbs, screen);
+  vterm_state_callbacks_has_premove(screen->state);
 
   return screen;
 }
@@ -1055,6 +1096,24 @@ void vterm_screen_enable_altscreen(VTermScreen *screen, int altscreen)
 
     screen->buffers[BUFIDX_ALTSCREEN] = alloc_buffer(screen, rows, cols);
   }
+}
+
+/* Mica patch: upstream callback extension opt-in. */
+void vterm_screen_callbacks_has_pushline4(VTermScreen *screen)
+{
+  screen->callbacks_has_pushline4 = true;
+}
+
+/* Mica patch: opt in before accessing the extended pop callback. */
+void vterm_screen_callbacks_has_popline4(VTermScreen *screen)
+{
+  screen->callbacks_has_popline4 = true;
+}
+
+/* Mica extension: opt in before accessing destination-row sidecar callback. */
+void vterm_screen_callbacks_has_popline5(VTermScreen *screen)
+{
+  screen->callbacks_has_popline5 = true;
 }
 
 void vterm_screen_set_callbacks(VTermScreen *screen, const VTermScreenCallbacks *callbacks, void *user)

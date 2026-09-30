@@ -56,6 +56,8 @@ struct VTermState
 {
   VTerm *vt;
 
+  /* Mica patch: upstream opt-in callback extension. */
+  bool callbacks_has_premove;
   const VTermStateCallbacks *callbacks;
   void *cbdata;
 

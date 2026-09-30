@@ -27,6 +27,24 @@ int main(void) {
     assert(timer.deadline == 615); // A delayed wake starts a full break when noticed.
 
     mica_pomodoro_reset(&timer);
+    assert(mica_pomodoro_start(&timer, 0, 10));
+    assert(mica_pomodoro_advance_with_options(&timer, 10, 10, 5, false, true));
+    assert(timer.phase == MICA_POMODORO_PAUSED_BREAK && timer.completed_focuses == 1);
+    assert(fabs(mica_pomodoro_remaining(&timer, 100) - 5) < 0.001);
+    assert(mica_pomodoro_toggle_pause(&timer, 20));
+    assert(timer.phase == MICA_POMODORO_BREAK && timer.deadline == 25);
+    assert(mica_pomodoro_advance_with_options(&timer, 25, 10, 5, true, false));
+    assert(timer.phase == MICA_POMODORO_PAUSED_FOCUS && timer.completed_focuses == 1);
+    assert(fabs(mica_pomodoro_remaining(&timer, 100) - 10) < 0.001);
+
+    // A late timer wake still holds the complete next interval when auto-start is off.
+    mica_pomodoro_reset(&timer);
+    assert(mica_pomodoro_start(&timer, 0, 10));
+    assert(mica_pomodoro_advance_with_options(&timer, 500, 10, 5, false, true));
+    assert(timer.phase == MICA_POMODORO_PAUSED_BREAK && timer.deadline == 0);
+    assert(fabs(mica_pomodoro_remaining(&timer, 500) - 5) < 0.001);
+
+    mica_pomodoro_reset(&timer);
     assert(timer.phase == MICA_POMODORO_IDLE && timer.completed_focuses == 0);
     assert(!mica_pomodoro_start(&timer, 0, 0));
     puts("Pomodoro timer tests passed");

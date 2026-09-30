@@ -14,9 +14,17 @@ jobs:
           v=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)
           base="${GITHUB_REF_NAME%%-*}"
           [ "v$v" = "$base" ] || { echo "tag ${GITHUB_REF_NAME} does not start from Info.plist version $v"; exit 1; }
+      - name: Require signed-release credentials
+        env:
+          CERT_P12: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.NOTARY_APP_PASSWORD }}
+        run: scripts/check-release-credentials.sh
       - name: Test
         run: make test
-      - name: Import Developer ID certificate (optional)
+      - name: Import Developer ID certificate
         env:
           CERT_P12: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
           CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
@@ -30,18 +38,24 @@ jobs:
             security set-key-partition-list -S apple-tool:,apple: -s -k ci ci.keychain
             echo "SIGN_ID=$(security find-identity -v -p codesigning ci.keychain | sed -n 's/.*"\(Developer ID Application.*\)"/\1/p' | head -1)" >> "$GITHUB_ENV"
           fi
-      - name: Build (signed and notarized when secrets exist, otherwise ad-hoc)
+      - name: Build signed and notarized distribution
         env:
           APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.NOTARY_APP_PASSWORD }}
         run: |
-          if [ -n "$SIGN_ID" ] && [ -n "$APPLE_ID" ]; then
-            xcrun notarytool store-credentials mica-notary --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
-            make notarize SIGN_ID="$SIGN_ID"
-          else
-            make dmg
+          if [ -z "$SIGN_ID" ] || [ "$SIGN_ID" = "-" ]; then
+            echo "::error::No Developer ID identity was imported"
+            exit 1
           fi
+          xcrun notarytool store-credentials mica-notary --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
+          make notarize SIGN_ID="$SIGN_ID"
+      - name: Verify release checksums
+        run: |
+          codesign --verify --deep --strict build/Mica.app
+          xcrun stapler validate build/Mica.app
+          xcrun stapler validate build/Mica.dmg
+          cd build && shasum -a 256 -c SHA256SUMS.txt
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

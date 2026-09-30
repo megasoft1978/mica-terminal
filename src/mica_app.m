@@ -23,7 +23,6 @@ static const CGFloat kHeaderHeight = 28.0;
 static const CGFloat kStatusHeight = 32.0;
 static const CGFloat kTerminalPaddingX = 10.0;   // breathing room between the window edge and the first column
 static const CGFloat kTrafficLightInset = 78.0;  // tab strip starts after the window buttons in the merged title bar
-static NSTimeInterval gLastVoiceAnimationAt = 0;
 static const NSTimeInterval kAgentActivityQuietInterval = 2.5;
 static const CGFloat kFontSizeDefault = 16.0;
 static const CGFloat kTabTitleFontSize = 12.0;
@@ -463,6 +462,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (NSRect)dirtyRectForRows:(MicaDirtyRows)rows;
 - (NSRect)terminalRect;
 - (NSRect)pomodoroControlRect;
+- (NSString *)pomodoroStatusText;
 - (void)showPomodoroControlMenu:(id)sender;
 - (void)updateGridSize;
 - (void)scheduleGridResize;
@@ -514,6 +514,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, strong) MicaVoiceController *voiceController;
 @property(nonatomic, strong) MicaTab *voiceTargetTab;
 @property(nonatomic) NSInteger lastVoiceState;
+@property(nonatomic) NSTimeInterval lastVoiceAnimationAt;
 @property(nonatomic, copy) NSString *memoryLabel;
 @property(nonatomic) NSTimeInterval memoryCheckedAt;
 @property(nonatomic) double lastPomodoroFilesStamp;
@@ -526,6 +527,8 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, assign) NSInteger attentionRequest;
 @property(nonatomic, assign) NSInteger focusDurationMinutes;
 @property(nonatomic, assign) NSInteger breakDurationMinutes;
+@property(nonatomic, assign) BOOL autoStartFocus;
+@property(nonatomic, assign) BOOL autoStartBreaks;
 @property(nonatomic, assign) NSInteger pomodoroCycleFocusMinutes;
 @property(nonatomic, assign) NSInteger pomodoroCycleBreakMinutes;
 @property(nonatomic, assign) MicaPomodoro pomodoro;
@@ -599,6 +602,10 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)configurePomodoro;
 - (void)refreshPomodoroState;
 - (BOOL)savePomodoroDurationsFocusMinutes:(NSInteger)focusMinutes breakMinutes:(NSInteger)breakMinutes;
+- (BOOL)savePomodoroSettingsFocusMinutes:(NSInteger)focusMinutes breakMinutes:(NSInteger)breakMinutes
+    autoStartFocus:(BOOL)autoStartFocus autoStartBreaks:(BOOL)autoStartBreaks;
+- (NSView *)pomodoroSettingsAccessory;
+- (BOOL)savePomodoroSettingsFromAccessory:(NSView *)accessory;
 - (void)savePomodoroState;
 - (void)updatePomodoroTimer;
 - (NSString *)currentPomodoroNotificationIdentifier;
@@ -948,6 +955,8 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     NSRect _tabToolTipRect;
     BOOL _hasTabToolTip;
     NSTimer *_leftOptionTimer;
+    NSTimer *_gridSizeRetryTimer;
+    BOOL _gridSizeFailureLogged;
     BOOL _leftOptionIsDown;
     BOOL _leftOptionUsedWithAnotherKey;
     BOOL _leftOptionStartedDictation;
@@ -1033,8 +1042,9 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
             (paused ? (focus ? @"Focus paused" : @"Break paused") : (focus ? @"Focus" : @"Break"));
         NSString *actionLabel = state.phase == MICA_POMODORO_IDLE ? @"Start focus" :
             (paused ? @"Resume timer" : @"Pause timer");
-        NSString *timerLabel = [NSString stringWithFormat:@"Focus timer, %@, %02lu:%02lu remaining, %@",
-            phaseLabel, (unsigned long)(secondsLeft / 60), (unsigned long)(secondsLeft % 60), actionLabel];
+        NSString *timerLabel = [NSString stringWithFormat:@"Focus timer, %@, %02lu:%02lu remaining, %@, %llu focus session%@ completed",
+            phaseLabel, (unsigned long)(secondsLeft / 60), (unsigned long)(secondsLeft % 60), actionLabel,
+            (unsigned long long)state.completed_focuses, state.completed_focuses == 1 ? @"" : @"s"];
         NSRect resetRect = NSMakeRect(NSMaxX(timerRect) - 29, NSMinY(timerRect), 29, timerRect.size.height);
         NSRect toggleRect = timerRect;
         toggleRect.size.width -= resetRect.size.width;
@@ -1042,6 +1052,15 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
             frame:[self.window convertRectToScreen:[self convertRect:toggleRect toView:nil]]
             label:timerLabel parent:self];
         timer.pressHandler = ^BOOL{ [weakSelf.owner togglePomodoroPause:nil]; return YES; };
+        if (state.phase != MICA_POMODORO_IDLE) {
+            NSString *skipLabel = focus ? @"End focus and start break" : @"End break and start focus";
+            timer.accessibilityCustomActions = @[[[NSAccessibilityCustomAction alloc] initWithName:skipLabel handler:^BOOL{
+                MicaAppDelegate *owner = weakSelf.owner;
+                if (!owner) return NO;
+                [owner skipPomodoroPhase:nil];
+                return YES;
+            }]];
+        }
         [children addObject:timer];
         MicaTabAccessibilityElement *reset = [MicaTabAccessibilityElement accessibilityElementWithRole:NSAccessibilityButtonRole
             frame:[self.window convertRectToScreen:[self convertRect:resetRect toView:nil]]
@@ -1120,6 +1139,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
 - (void)dealloc {
     [_leftOptionTimer invalidate];
     [_gridResizeTimer invalidate];
+    [_gridSizeRetryTimer invalidate];
 }
 
 - (void)leftOptionPressedAlone:(NSTimer *)timer {
@@ -1289,7 +1309,26 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         NSDictionary *attributes = @{NSFontAttributeName: [NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold]};
         x = 12 + [modeName sizeWithAttributes:attributes].width + 18 + 12;
     }
-    return NSMakeRect(x, floor((kStatusHeight - 23) / 2), 190, 23);
+    NSDictionary *attributes = @{NSFontAttributeName:[NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold]};
+    CGFloat labelWidth = ceil([[self pomodoroStatusText] sizeWithAttributes:attributes].width);
+    CGFloat controlWidth = MAX(190, labelWidth + 96);
+    return NSMakeRect(x, floor((kStatusHeight - 23) / 2), controlWidth, 23);
+}
+
+- (NSString *)pomodoroStatusText {
+    MicaPomodoro timer = self.owner.pomodoro;
+    BOOL paused = mica_pomodoro_is_paused(&timer);
+    BOOL focus = timer.phase == MICA_POMODORO_IDLE || timer.phase == MICA_POMODORO_FOCUS ||
+        timer.phase == MICA_POMODORO_PAUSED_FOCUS;
+    NSInteger minutes = focus ? self.owner.focusDurationMinutes : self.owner.breakDurationMinutes;
+    double remaining = timer.phase == MICA_POMODORO_IDLE ? MAX(1, minutes) * 60.0 :
+        mica_pomodoro_remaining(&timer, MicaContinuousTimeSeconds());
+    NSUInteger secondsLeft = (NSUInteger)ceil(remaining);
+    NSString *phase = timer.phase == MICA_POMODORO_IDLE ? @"Ready" :
+        (paused ? @"Paused" : (focus ? @"Focus" : @"Break"));
+    return [NSString stringWithFormat:@"%@ · %02lu:%02lu · %llu done", phase,
+        (unsigned long)(secondsLeft / 60), (unsigned long)(secondsLeft % 60),
+        (unsigned long long)timer.completed_focuses];
 }
 
 - (void)showPomodoroControlMenu:(id)sender {
@@ -1354,12 +1393,34 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         NSInteger oldRows = _rows;
         int oldPixelWidth = _pixelWidth;
         int oldPixelHeight = _pixelHeight;
+        if (!mica_session_resize_pixels(tab.session, (int)rows, (int)cols, pixelWidth, pixelHeight)) {
+            if (!_gridSizeFailureLogged) {
+                MicaDiagnosticsLog(@"resize", [NSString stringWithFormat:
+                    @"pty-size resize deferred pid=%d grid=%ldx%ld requested=%ldx%ld; history-index allocation failed",
+                    mica_session_pid(tab.session), (long)oldCols, (long)oldRows, (long)cols, (long)rows]);
+                _gridSizeFailureLogged = YES;
+            }
+            if (!_gridSizeRetryTimer) {
+                __weak typeof(self) weakSelf = self;
+                _gridSizeRetryTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:NO
+                    block:^(NSTimer *timer) {
+                        MicaTerminalView *view = weakSelf;
+                        if (!view || timer != view->_gridSizeRetryTimer) return;
+                        view->_gridSizeRetryTimer = nil;
+                        [view updateGridSize];
+                    }];
+            }
+            return;
+        }
+        [_gridSizeRetryTimer invalidate];
+        _gridSizeRetryTimer = nil;
+        _gridSizeFailureLogged = NO;
+        if (gridChanged) [self clearSelection];
         _cols = cols;
         _rows = rows;
         _pixelWidth = pixelWidth;
         _pixelHeight = pixelHeight;
         _sizedSession = tab.session;
-        mica_session_resize_pixels(tab.session, (int)rows, (int)cols, pixelWidth, pixelHeight);
         MicaDiagnosticsLog(@"resize", [NSString stringWithFormat:
             @"pty-size pid=%d grid=%ldx%ld->%ldx%ld pixels=%dx%d->%dx%d live=%d",
             mica_session_pid(tab.session), (long)oldCols, (long)oldRows,
@@ -1754,10 +1815,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     double intervalSeconds = MAX(1, intervalMinutes) * 60.0;
     double remaining = timerPhase == MICA_POMODORO_IDLE ? intervalSeconds :
         mica_pomodoro_remaining(&timer, MicaContinuousTimeSeconds());
-    NSUInteger secondsLeft = (NSUInteger)ceil(remaining);
-    NSString *timerText = [NSString stringWithFormat:@"%@ · %02lu:%02lu",
-        timerPhase == MICA_POMODORO_IDLE ? @"Ready" : (paused ? @"Paused" : (focus ? @"Focus" : @"Break")),
-        (unsigned long)(secondsLeft / 60), (unsigned long)(secondsLeft % 60)];
+    NSString *timerText = [self pomodoroStatusText];
     NSColor *timerColor = timerPhase == MICA_POMODORO_IDLE || paused ? MicaSecondaryLabelColor(1.0) :
         (focus ? NSColor.systemGreenColor : NSColor.systemOrangeColor);
     NSRect timerControl = [self pomodoroControlRect];
@@ -3296,17 +3354,28 @@ static NSDictionary *MicaScalarDictionary(id object) {
     NSInteger pause = [settings[@"breakMinutes"] integerValue];
     self.focusDurationMinutes = focus >= 1 && focus <= kMaximumFocusMinutes ? focus : kDefaultFocusMinutes;
     self.breakDurationMinutes = pause >= 1 && pause <= kMaximumBreakMinutes ? pause : kDefaultBreakMinutes;
+    self.autoStartFocus = settings[@"autoStartFocus"] ? [settings[@"autoStartFocus"] boolValue] : YES;
+    self.autoStartBreaks = settings[@"autoStartBreaks"] ? [settings[@"autoStartBreaks"] boolValue] : YES;
 }
 
 - (BOOL)savePomodoroDurationsFocusMinutes:(NSInteger)focusMinutes breakMinutes:(NSInteger)breakMinutes {
+    return [self savePomodoroSettingsFocusMinutes:focusMinutes breakMinutes:breakMinutes
+        autoStartFocus:self.autoStartFocus autoStartBreaks:self.autoStartBreaks];
+}
+
+- (BOOL)savePomodoroSettingsFocusMinutes:(NSInteger)focusMinutes breakMinutes:(NSInteger)breakMinutes
+    autoStartFocus:(BOOL)autoStartFocus autoStartBreaks:(BOOL)autoStartBreaks {
     if (focusMinutes < 1 || focusMinutes > kMaximumFocusMinutes ||
         breakMinutes < 1 || breakMinutes > kMaximumBreakMinutes || ![self acquirePomodoroLock]) return NO;
-    NSDictionary *settings = @{@"focusMinutes": @(focusMinutes), @"breakMinutes": @(breakMinutes)};
+    NSDictionary *settings = @{@"focusMinutes": @(focusMinutes), @"breakMinutes": @(breakMinutes),
+        @"autoStartFocus": @(autoStartFocus), @"autoStartBreaks": @(autoStartBreaks)};
     NSData *data = [NSJSONSerialization dataWithJSONObject:settings options:0 error:nil];
     BOOL saved = data && [data writeToURL:self.pomodoroSettingsURL options:NSDataWritingAtomic error:nil];
     if (saved) {
         self.focusDurationMinutes = focusMinutes;
         self.breakDurationMinutes = breakMinutes;
+        self.autoStartFocus = autoStartFocus;
+        self.autoStartBreaks = autoStartBreaks;
     }
     [self releasePomodoroLock];
     return saved;
@@ -3354,8 +3423,9 @@ static NSDictionary *MicaScalarDictionary(id object) {
         double left = sameBoot ? [saved[@"continuousDeadline"] doubleValue] - now
                                : [saved[@"deadline"] doubleValue] - NSDate.date.timeIntervalSince1970;
         restored.deadline = now + MAX(0, left);
-        if (left <= 0) expired = mica_pomodoro_advance(&restored, now,
-            self.pomodoroCycleFocusMinutes * 60.0, self.pomodoroCycleBreakMinutes * 60.0);
+        if (left <= 0) expired = mica_pomodoro_advance_with_options(&restored, now,
+            self.pomodoroCycleFocusMinutes * 60.0, self.pomodoroCycleBreakMinutes * 60.0,
+            self.autoStartBreaks, self.autoStartFocus);
     } else if (restored.phase == MICA_POMODORO_PAUSED_FOCUS || restored.phase == MICA_POMODORO_PAUSED_BREAK) {
         restored.paused_remaining = MAX(0, [saved[@"remaining"] doubleValue]);
     } else mica_pomodoro_reset(&restored);
@@ -3526,8 +3596,9 @@ static NSDictionary *MicaScalarDictionary(id object) {
     [self loadPomodoroStateFromDisk];
     self.lastPomodoroFilesStamp = stamp;
     BOOL changed = oldPhase != self.pomodoro.phase || oldCompletedFocuses != self.pomodoro.completed_focuses;
-    changed = mica_pomodoro_advance(&_pomodoro, MicaContinuousTimeSeconds(),
-        self.pomodoroCycleFocusMinutes * 60.0, self.pomodoroCycleBreakMinutes * 60.0) || changed;
+    changed = mica_pomodoro_advance_with_options(&_pomodoro, MicaContinuousTimeSeconds(),
+        self.pomodoroCycleFocusMinutes * 60.0, self.pomodoroCycleBreakMinutes * 60.0,
+        self.autoStartBreaks, self.autoStartFocus) || changed;
     if (changed) [self savePomodoroState];
     [self releasePomodoroLock];
     if (changed) {
@@ -3551,18 +3622,55 @@ static NSDictionary *MicaScalarDictionary(id object) {
 #endif
 }
 
-- (void)openPomodoroSettings:(id)sender {
-    (void)sender;
-    [self refreshPomodoroState];
-    NSView *accessory = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 280, 76)];
+- (NSView *)pomodoroSettingsAccessory {
+    NSView *accessory = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 300, 142)];
     NSTextField *focusLabel = [NSTextField labelWithString:@"Focus (minutes)"];
     NSTextField *breakLabel = [NSTextField labelWithString:@"Break (minutes)"];
     NSTextField *focusField = [NSTextField textFieldWithString:@(self.focusDurationMinutes).stringValue];
     NSTextField *breakField = [NSTextField textFieldWithString:@(self.breakDurationMinutes).stringValue];
-    focusField.frame = NSMakeRect(205, 43, 65, 24); breakField.frame = NSMakeRect(205, 7, 65, 24);
-    focusLabel.frame = NSMakeRect(0, 43, 190, 24); breakLabel.frame = NSMakeRect(0, 7, 190, 24);
+    focusField.frame = NSMakeRect(225, 114, 65, 24); breakField.frame = NSMakeRect(225, 82, 65, 24);
+    focusLabel.frame = NSMakeRect(0, 114, 210, 24); breakLabel.frame = NSMakeRect(0, 82, 210, 24);
+    NSButton *autoBreak = [NSButton checkboxWithTitle:@"Auto-start break after focus" target:nil action:nil];
+    NSButton *autoFocus = [NSButton checkboxWithTitle:@"Auto-start focus after break" target:nil action:nil];
+    autoBreak.frame = NSMakeRect(0, 48, 290, 24);
+    autoFocus.frame = NSMakeRect(0, 16, 290, 24);
+    autoBreak.state = self.autoStartBreaks ? NSControlStateValueOn : NSControlStateValueOff;
+    autoFocus.state = self.autoStartFocus ? NSControlStateValueOn : NSControlStateValueOff;
     [accessory addSubview:focusLabel]; [accessory addSubview:focusField];
     [accessory addSubview:breakLabel]; [accessory addSubview:breakField];
+    [accessory addSubview:autoBreak]; [accessory addSubview:autoFocus];
+    return accessory;
+}
+
+- (BOOL)savePomodoroSettingsFromAccessory:(NSView *)accessory {
+    NSTextField *focusField = nil, *breakField = nil;
+    NSButton *autoBreak = nil, *autoFocus = nil;
+    for (NSView *view in accessory.subviews) {
+        if (![view isKindOfClass:NSControl.class]) continue;
+        NSControl *control = (NSControl *)view;
+        if ([control isKindOfClass:NSButton.class]) {
+            NSButton *button = (NSButton *)control;
+            if ([button.title isEqualToString:@"Auto-start break after focus"]) autoBreak = button;
+            if ([button.title isEqualToString:@"Auto-start focus after break"]) autoFocus = button;
+        } else if ([control isKindOfClass:NSTextField.class]) {
+            NSTextField *field = (NSTextField *)control;
+            if (!field.isEditable) continue;
+            if (!focusField) focusField = field;
+            else breakField = field;
+        }
+    }
+    if (!focusField || !breakField || !autoBreak || !autoFocus) return NO;
+    NSInteger focus = MicaMinutesFromText(focusField.stringValue, 0, kMaximumFocusMinutes);
+    NSInteger pause = MicaMinutesFromText(breakField.stringValue, 0, kMaximumBreakMinutes);
+    return [self savePomodoroSettingsFocusMinutes:focus breakMinutes:pause
+        autoStartFocus:autoFocus.state == NSControlStateValueOn
+        autoStartBreaks:autoBreak.state == NSControlStateValueOn];
+}
+
+- (void)openPomodoroSettings:(id)sender {
+    (void)sender;
+    [self refreshPomodoroState];
+    NSView *accessory = [self pomodoroSettingsAccessory];
     NSAlert *alert = [NSAlert new];
     alert.messageText = @"Computer-wide Focus Timer";
     alert.informativeText = @"Every Mica window shares this timer. Changes apply to the next focus or break interval.";
@@ -3571,9 +3679,7 @@ static NSDictionary *MicaScalarDictionary(id object) {
     [alert addButtonWithTitle:@"Cancel"];
     [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
         if (response != NSAlertFirstButtonReturn) return;
-        NSInteger focus = MicaMinutesFromText(focusField.stringValue, 0, kMaximumFocusMinutes);
-        NSInteger pause = MicaMinutesFromText(breakField.stringValue, 0, kMaximumBreakMinutes);
-        if (![self savePomodoroDurationsFocusMinutes:focus breakMinutes:pause]) {
+        if (![self savePomodoroSettingsFromAccessory:accessory]) {
             NSAlert *error = [NSAlert new]; error.messageText = @"Enter valid timer lengths";
             error.informativeText = [NSString stringWithFormat:@"Focus: 1–%ld minutes. Break: 1–%ld minutes.",
                 (long)kMaximumFocusMinutes, (long)kMaximumBreakMinutes];
@@ -3845,6 +3951,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSMenu *focusMenu = [[NSMenu alloc] initWithTitle:@"Focus"];
     AddMenuItem(focusMenu, @"Start / Resume Focus Timer", @selector(startPomodoro:), @"", 0).target = self;
     AddMenuItem(focusMenu, @"Pause / Resume Timer", @selector(togglePomodoroPause:), @"", 0).target = self;
+    AddMenuItem(focusMenu, @"End Current Phase", @selector(skipPomodoroPhase:), @"", 0).target = self;
     AddMenuItem(focusMenu, @"Reset Timer", @selector(resetPomodoro:), @"", 0).target = self;
     [focusMenu addItem:NSMenuItem.separatorItem];
     AddMenuItem(focusMenu, @"Timer Settings…", @selector(openPomodoroSettings:), @"", 0).target = self;
@@ -4072,6 +4179,18 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     }
     [self updateWindowTitle];
     [self.terminalView setNeedsDisplay:YES];
+}
+
+- (BOOL)validateMenuItem:(NSMenuItem *)item {
+    if (item.action == @selector(skipPomodoroPhase:)) {
+        [self refreshPomodoroState];
+        MicaPomodoroPhase phase = self.pomodoro.phase;
+        BOOL focus = phase == MICA_POMODORO_FOCUS || phase == MICA_POMODORO_PAUSED_FOCUS;
+        item.title = phase == MICA_POMODORO_IDLE ? @"End Current Phase" :
+            (focus ? @"End Focus & Start Break" : @"End Break & Start Focus");
+        return phase != MICA_POMODORO_IDLE;
+    }
+    return YES;
 }
 
 - (NSUserDefaults *)micaDefaults { return gMicaDefaultsOverride ?: NSUserDefaults.standardUserDefaults; }
@@ -4869,8 +4988,8 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
     MicaVoiceController *voice = self.voiceController;
     if (voice.state == MicaVoiceControllerStateListening && voice.transcript.length == 0 &&
-        now - gLastVoiceAnimationAt >= 0.10) {
-        gLastVoiceAnimationAt = now;
+        now - self.lastVoiceAnimationAt >= 0.10) {
+        self.lastVoiceAnimationAt = now;
         [self.terminalView setNeedsDisplayInRect:[self.terminalView dictationStatusRect]];
     }
     NSTimeInterval pollStartedAt = now;

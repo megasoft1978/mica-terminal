@@ -1,6 +1,6 @@
 # Releasing a signed, notarized build
 
-Local builds are ad-hoc signed (`make dmg`). To publish a build other people can open without a Gatekeeper warning you need an Apple Developer ID certificate and notarization.
+For an ad-hoc local build, use `make dmg SIGN_ID=-`. By default, Make uses an installed Developer ID identity when one is available. To publish a build other people can open without a Gatekeeper warning you need an Apple Developer ID certificate and notarization.
 
 ## One-time setup
 
@@ -18,13 +18,15 @@ Local builds are ad-hoc signed (`make dmg`). To publish a build other people can
 make notarize SIGN_ID="Developer ID Application: Your Name (TEAMID)"
 ```
 
-This signs the helper, icon tool and app with the hardened runtime, Apple's secure timestamp (required for notarization) and the microphone entitlement, zips the app, submits it with `notarytool --wait`, staples the ticket, re-zips and runs `spctl --assess`. Attach `build/Mica.zip` to a GitHub release.
+This signs the helper, icon tool and app, notarizes and staples the app, packages it, then notarizes and staples the DMG. It regenerates `SHA256SUMS.txt` after the final stapling operation and runs `spctl --assess`. Verify with `cd build && shasum -a 256 -c SHA256SUMS.txt` before attaching the DMG, ZIP and checksum manifest to a release. [Apple’s notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow) describes attaching the ticket to the distribution artifact.
 
-`make notarize` has not been run end to end yet because no Developer ID certificate is installed on the development machine.
+The published [alpha 8 release](https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.8) is Developer ID signed. On 2026-09-30, downloaded app signature verification and app/DMG stapled-ticket validation passed. This audit did not submit a new build for notarization.
+
+The alpha 8 ZIP matches its published checksum, but the DMG does not: published `dfd4207684c67f53ebc8ccdb214c73fd1a3222af6821ecc2d8e5af42d460e036`, downloaded `952c2ff4a2c5213215e8fe6ee0ad4fdb186dc7112dba8addce8ef1536e00adaf`. The old recipe generated the manifest before stapling the DMG, which can explain the mismatch. The local recipe now hashes after stapling, and CI verifies the manifest before publishing. The existing release manifest still requires correction; it was not changed by this audit.
 
 ## Cutting a release
 
 1. Bump `MICA_VERSION`/`MICA_REVISION` in `include/mica.h` and `CFBundleShortVersionString`/`CFBundleVersion` in `Info.plist` (keep them equal).
 2. `make validate && make dmg` (or `make notarize SIGN_ID="Developer ID Application: … (TEAMID)"` once the certificate and notary profile exist).
-3. Tag and push: `git tag v0.1.0 && git push origin v0.1.0`. The `Release` workflow checks the tag against `Info.plist`, runs the tests, builds `Mica.dmg`, `Mica.zip` and `SHA256SUMS.txt`, and publishes them. It signs and notarizes when the repository secrets `DEVELOPER_ID_P12_BASE64`, `DEVELOPER_ID_P12_PASSWORD`, `NOTARY_APPLE_ID`, `NOTARY_TEAM_ID` and `NOTARY_APP_PASSWORD` are set; otherwise the build is ad-hoc.
-4. The README and site link to `releases/latest/download/Mica.dmg`, so they follow each new release without edits.
+3. Tag and push: `git tag v0.1.0 && git push origin v0.1.0`. The `Release` workflow checks the tag against `Info.plist`, runs the tests, builds `Mica.dmg`, `Mica.zip` and `SHA256SUMS.txt`, and publishes them. It requires repository secrets `DEVELOPER_ID_P12_BASE64`, `DEVELOPER_ID_P12_PASSWORD`, `NOTARY_APPLE_ID`, `NOTARY_TEAM_ID` and `NOTARY_APP_PASSWORD`. Missing credentials stop the workflow before building; it never publishes an ad-hoc fallback. Before publishing it validates the app signature, app/DMG stapled tickets and final checksums. Local ad-hoc packaging remains available with `make dmg SIGN_ID=-`.
+4. After verifying the uploaded assets, update README/site download links and release notes to the new tag. Update the site’s visible version, ZIP size and JSON-LD `softwareVersion`, `fileSize` and `downloadUrl`; regenerate the inline-script CSP hash after changing JSON-LD. The current links pin the verified alpha 8 ZIP while its alternative DMG manifest awaits correction. [GitHub’s release-link documentation](https://docs.github.com/en/repositories/releasing-projects-on-github/linking-to-releases) describes moving latest-release links; pinned asset URLs keep the download consistent with the displayed version and audit.
