@@ -3,6 +3,9 @@ MACOSX_DEPLOYMENT_TARGET ?= 14.0
 MACOSX_VERSION_FLAG := -mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET)
 BUILD := build
 APP := $(BUILD)/Mica.app
+# Project launchers should run the installed release when available, keeping everyday project work
+# independent of the app bundle rebuilt by `make app`.
+BASE_APP ?= $(if $(wildcard /Applications/Mica.app),/Applications/Mica.app,$(APP))
 APP_BIN := $(APP)/Contents/MacOS/Mica
 APP_ICON := $(APP)/Contents/Resources/Mica.icns
 PROJECT_ICON_TOOL := $(BUILD)/mica-project-icon
@@ -50,6 +53,12 @@ POMODORO := src/pomodoro.c
 all: app
 
 app: $(APP_FONTS) $(APP_LAUNCHER_SCRIPT) $(APP_ICON_TOOL) $(APP_BIN) $(APP_ICON) $(PROJECT_ICON_TOOL) $(VOICE_BINARY) $(APP_VOICE_HELPER) $(APP_THIRD_PARTY_NOTICES)
+	@if [ "$(SIGN_ID)" != "-" ]; then \
+		codesign --force --options runtime --timestamp$(SIGN_TIMESTAMP) --entitlements Mica.entitlements --sign "$(SIGN_ID)" $(APP_VOICE_HELPER) && \
+		codesign --force --options runtime --timestamp$(SIGN_TIMESTAMP) --sign "$(SIGN_ID)" $(APP_ICON_TOOL) && \
+		codesign --force --options runtime --timestamp$(SIGN_TIMESTAMP) --entitlements Mica.entitlements --sign "$(SIGN_ID)" $(APP) && \
+		codesign --verify --deep --strict $(APP); \
+	fi
 
 $(APP_BIN): Makefile $(VTERM_STATIC) src/mica_app.m src/mica_voice_controller.m src/mica_voice_controller.h src/mica_diagnostics.m src/mica_diagnostics.h $(CORE) $(POMODORO) include/mica.h include/mica_pomodoro.h Info.plist
 	@mkdir -p $(dir $@)
@@ -147,13 +156,13 @@ memory:
 	@scripts/memory-sample.sh
 
 desktop-apps: app
-	python3 scripts/install-desktop-apps.py
+	python3 scripts/install-desktop-apps.py --base-app "$(BASE_APP)"
 
 install-desktop-apps: app
-	python3 scripts/install-desktop-apps.py --install --base-app "$(APP)" --project-icon-tool "$(PROJECT_ICON_TOOL)"
+	python3 scripts/install-desktop-apps.py --install --base-app "$(BASE_APP)" --project-icon-tool "$(PROJECT_ICON_TOOL)"
 
 new-instance: app
-	python3 scripts/install-desktop-apps.py --new-instance --base-app "$(APP)" --project-icon-tool "$(PROJECT_ICON_TOOL)"
+	python3 scripts/install-desktop-apps.py --new-instance --base-app "$(BASE_APP)" --project-icon-tool "$(PROJECT_ICON_TOOL)"
 
 # SIGN_ID defaults to ad-hoc ("-"); pass a Developer ID identity for distribution.
 # Default: the first Developer ID Application identity in the keychain (a stable signature keeps macOS folder and

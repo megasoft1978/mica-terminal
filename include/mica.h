@@ -65,6 +65,8 @@ int mica_session_rows(const MicaSession *session);
 int mica_session_cols(const MicaSession *session);
 int mica_session_view_offset(const MicaSession *session);
 size_t mica_session_history_lines(const MicaSession *session);
+// Bytes currently held by this session's compacted scrollback cells, hyperlink rows and row index.
+size_t mica_session_history_storage_bytes(const MicaSession *session);
 // Scrollback allowance for all sessions, in lines at 80 columns (clamped to 100...100000). Default is
 // MICA_HISTORY_LIMIT_BYTES worth (about 650 lines). Memory is allocated only as output arrives.
 void mica_set_history_limit_lines(size_t lines_at_80_columns);

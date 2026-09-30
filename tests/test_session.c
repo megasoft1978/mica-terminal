@@ -624,11 +624,10 @@ color_checked:
     for (int i = 0; i < 1000 && !screen_contains(history_session, "STRESS-05000"); i++)
         mica_session_poll(history_session, 10);
     assert(screen_contains(history_session, "STRESS-05000"));
-    size_t history_bytes = mica_session_history_lines(history_session) * 80u * sizeof(VTermScreenCell);
+    size_t history_bytes = mica_session_history_storage_bytes(history_session);
     assert(history_bytes <= MICA_HISTORY_LIMIT_BYTES);
-    assert(history_bytes == (MICA_HISTORY_LIMIT_BYTES / (80u * sizeof(VTermScreenCell))) *
-                            (80u * sizeof(VTermScreenCell)));
     assert(mica_session_history_lines(history_session) > 0);
+    assert(history_bytes < mica_session_history_lines(history_session) * 80u * sizeof(VTermScreenCell) / 2);
     // Once scrollback is full the monotonic counter keeps growing while the stored count stays capped.
     assert(mica_session_scrolled_lines(history_session) > mica_session_history_lines(history_session));
     long find_cursor = -1;
@@ -640,8 +639,9 @@ color_checked:
     assert(!mica_session_find(history_session, "no-such-text-anywhere", true, &find_cursor));
     mica_session_clear_scrollback(history_session);
     assert(mica_session_history_lines(history_session) == 0);
+    assert(mica_session_history_storage_bytes(history_session) == 0);
     mica_session_resize(history_session, 8, 160);
-    history_bytes = mica_session_history_lines(history_session) * 160u * sizeof(VTermScreenCell);
+    history_bytes = mica_session_history_storage_bytes(history_session);
     assert(history_bytes <= MICA_HISTORY_LIMIT_BYTES);
     mica_session_destroy(history_session);
 

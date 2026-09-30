@@ -2041,9 +2041,14 @@ static int MicaRunUISelfTest(void) {
             [windowA openProjectWindowWithArguments:@[@"mica", @"--layout", goodLayout]];   // already open: no third window
             BOOL noDuplicate = MicaControllers().count == 2;
             NSUInteger tabsBeforeClose = windowA.tabs.count;
+            pid_t closedShellPID = mica_session_pid(windowB.activeTab.session);
             [windowB windowWillClose:nil];
+            for (NSUInteger attempt = 0; attempt < 200 && kill(closedShellPID, 0) == 0; attempt++)
+                usleep(10000);
             BOOL closedCleanly = MicaControllers().count == 1 && MicaControllers().firstObject == windowA &&
-                windowA.tabs.count == tabsBeforeClose && windowA.activeTab.session != NULL;
+                windowA.tabs.count == tabsBeforeClose && windowA.activeTab.session != NULL &&
+                windowB.activeTab.session == NULL && windowB.pollTimer == nil &&
+                kill(closedShellPID, 0) == -1 && errno == ESRCH;
             MicaUITestRecord(report, &allPassed, twoWindows && menuAtA && menuAtB && noDuplicate && closedCleanly,
                 [NSString stringWithFormat:@"one process hosts several project windows (two=%d menuA=%d menuB=%d nodup=%d closed=%d)",
                     twoWindows, menuAtA, menuAtB, noDuplicate, closedCleanly]);
@@ -2538,15 +2543,31 @@ static int MicaRunUISelfTest(void) {
             timerWindowA.pomodoro.phase == MICA_POMODORO_FOCUS && timerWindowB.focusDurationMinutes == 50 &&
             timerWindowB.breakDurationMinutes == 8 && timerWindowB.pomodoro.phase == MICA_POMODORO_FOCUS &&
             timerWindowB.pomodoroCycleFocusMinutes == 50 && timerWindowB.pomodoro.deadline == timerWindowA.pomodoro.deadline;
+        NSArray *timerAXLabels = [[timerWindowA.terminalView accessibilityChildren]
+            valueForKey:@"accessibilityLabel"];
+        BOOL timerToggleAccessible = NO;
+        for (NSString *label in timerAXLabels)
+            if ([label hasPrefix:@"Focus timer, Focus,"]) timerToggleAccessible = YES;
+        BOOL timerControlsAccessible = timerToggleAccessible && [timerAXLabels containsObject:@"Reset focus timer"];
         [timerWindowB togglePomodoroPause:nil];
         [timerWindowA refreshPomodoroState];
         BOOL timerPauseShared = timerWindowA.pomodoro.phase == MICA_POMODORO_PAUSED_FOCUS;
+        [timerWindowA skipPomodoroPhase:nil];
+        [timerWindowB refreshPomodoroState];
+        BOOL timerSkipFocusShared = timerWindowA.pomodoro.phase == MICA_POMODORO_BREAK &&
+            timerWindowB.pomodoro.phase == MICA_POMODORO_BREAK && timerWindowB.pomodoro.completed_focuses == 1;
+        [timerWindowB skipPomodoroPhase:nil];
+        [timerWindowA refreshPomodoroState];
+        BOOL timerSkipBreakShared = timerWindowA.pomodoro.phase == MICA_POMODORO_FOCUS &&
+            timerWindowA.pomodoro.completed_focuses == 1;
         [timerWindowA resetPomodoro:nil];
         [timerWindowB refreshPomodoroState];
         BOOL timerResetShared = timerWindowB.pomodoro.phase == MICA_POMODORO_IDLE;
-        MicaUITestRecord(report, &allPassed, timerDefaultsShared && timerStartShared && timerPauseShared && timerResetShared,
-            [NSString stringWithFormat:@"computer-wide timer settings and state synchronize across Mica windows (start=%d pause=%d reset=%d)",
-                timerStartShared, timerPauseShared, timerResetShared]);
+        MicaUITestRecord(report, &allPassed, timerDefaultsShared && timerStartShared && timerControlsAccessible &&
+            timerPauseShared && timerSkipFocusShared && timerSkipBreakShared && timerResetShared,
+            [NSString stringWithFormat:@"timer controls expose readable VoiceOver actions and skip phases consistently across windows (start=%d accessible=%d pause=%d focus-skip=%d break-skip=%d reset=%d)",
+                timerStartShared, timerControlsAccessible, timerPauseShared, timerSkipFocusShared,
+                timerSkipBreakShared, timerResetShared]);
         if (sharedTimerURL) [NSFileManager.defaultManager removeItemAtURL:sharedTimerURL error:nil];
 
         MicaAppDelegate *layoutDelegate = [[MicaAppDelegate alloc] init];

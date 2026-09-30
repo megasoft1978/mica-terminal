@@ -20,7 +20,8 @@ from pathlib import Path
 HOME = Path.home()
 DEFAULT_LAYOUTS = HOME / ".config/mica/layouts"
 DEFAULT_DESKTOP = HOME / "Desktop"
-DEFAULT_BASE_APP = Path(__file__).resolve().parents[1] / "build/Mica.app"
+DEFAULT_BASE_APP = (Path("/Applications/Mica.app") if Path("/Applications/Mica.app").is_dir()
+                    else Path(__file__).resolve().parents[1] / "build/Mica.app")
 DEFAULT_PROJECT_ICON_TOOL = Path(
     os.environ.get("MICA_PROJECT_ICON_TOOL", Path(__file__).resolve().parents[1] / "build/mica-project-icon")
 )

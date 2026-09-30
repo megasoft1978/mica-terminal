@@ -50,6 +50,16 @@ typedef struct {
     size_t end;
 } MicaFold;
 
+// Scrollback rows keep only meaningful trailing cells. Cell and hyperlink storage
+// grows with content instead of reserving the full terminal width for every line.
+typedef struct {
+    VTermScreenCell *cells;
+    uint32_t *hyperlinks;
+    size_t cols;
+    size_t cell_capacity;
+    size_t hyperlink_capacity;
+} MicaHistoryRow;
+
 struct MicaSession {
     int master_fd;
     pid_t child_pid;
@@ -75,11 +85,12 @@ int last_attention_kind;
     VTerm *vt;
     VTermScreen *screen;
     VTermState *state;
-    VTermScreenCell *history;
+    MicaHistoryRow *history;
     size_t history_cols;
     size_t history_capacity;
     size_t history_start;
     size_t history_count;
+    size_t history_storage_bytes;
 uint64_t scrolled_total;
     size_t view_offset;
     MicaFold *folds;
@@ -123,8 +134,6 @@ char selection_buffer[4096];
     bool osc_fragment_active;
     bool osc_fragment_overflow;
     uint32_t *screen_link_ids;
-    uint32_t *history_link_ids;
-    size_t history_link_capacity;
     char **hyperlink_uris;
     size_t hyperlink_count;
     size_t hyperlink_bytes;
@@ -145,28 +154,76 @@ static bool ensure_screen_link_map(MicaSession *session) {
     return session->screen_link_ids != NULL;
 }
 
-static bool ensure_history_link_map(MicaSession *session) {
-    if (!session || session->history_capacity == 0 || session->history_cols == 0) return true;
-    if (session->history_link_ids && session->history_link_capacity == session->history_capacity) return true;
-    if (session->history_capacity > SIZE_MAX / session->history_cols / sizeof(uint32_t)) return false;
-    size_t count = session->history_capacity * session->history_cols;
-    uint32_t *grown = calloc(count, sizeof(*grown));
-    if (!grown) return false;
-    if (session->history_link_ids) {
-        size_t keep = session->history_count;
-        if (keep > session->history_link_capacity) keep = session->history_link_capacity;
-        size_t copy_cols = session->history_cols;
-        for (size_t row = 0; row < keep; row++) {
-            size_t old_slot = (session->history_start + row) % session->history_link_capacity;
-            memcpy(grown + row * session->history_cols,
-                session->history_link_ids + old_slot * session->history_cols,
-                copy_cols * sizeof(*grown));
-        }
+static void history_row_release(MicaSession *session, MicaHistoryRow *row) {
+    if (!session || !row) return;
+    session->history_storage_bytes -= row->cell_capacity * sizeof(*row->cells) +
+        row->hyperlink_capacity * sizeof(*row->hyperlinks);
+    free(row->cells);
+    free(row->hyperlinks);
+    memset(row, 0, sizeof(*row));
+}
+
+static bool history_row_resize_cells(MicaSession *session, MicaHistoryRow *row, size_t cols) {
+    if (cols > SIZE_MAX / sizeof(*row->cells)) return false;
+    if (cols == 0) {
+        free(row->cells);
+        session->history_storage_bytes -= row->cell_capacity * sizeof(*row->cells);
+        row->cells = NULL;
+        row->cell_capacity = 0;
+        return true;
     }
-    free(session->history_link_ids);
-    session->history_link_ids = grown;
-    session->history_link_capacity = session->history_capacity;
+    if (row->cell_capacity >= cols && (cols >= row->cell_capacity / 2 || cols == row->cell_capacity)) return true;
+    size_t old_bytes = row->cell_capacity * sizeof(*row->cells);
+    VTermScreenCell *cells = realloc(row->cells, cols * sizeof(*cells));
+    if (!cells) return row->cell_capacity >= cols;
+    row->cells = cells;
+    row->cell_capacity = cols;
+    session->history_storage_bytes = session->history_storage_bytes - old_bytes + cols * sizeof(*cells);
     return true;
+}
+
+static bool history_row_resize_links(MicaSession *session, MicaHistoryRow *row, size_t cols) {
+    if (cols > SIZE_MAX / sizeof(*row->hyperlinks)) return false;
+    if (cols == 0) {
+        free(row->hyperlinks);
+        session->history_storage_bytes -= row->hyperlink_capacity * sizeof(*row->hyperlinks);
+        row->hyperlinks = NULL;
+        row->hyperlink_capacity = 0;
+        return true;
+    }
+    if (row->hyperlink_capacity >= cols && (cols >= row->hyperlink_capacity / 2 || cols == row->hyperlink_capacity)) return true;
+    size_t old_bytes = row->hyperlink_capacity * sizeof(*row->hyperlinks);
+    uint32_t *links = realloc(row->hyperlinks, cols * sizeof(*links));
+    if (!links) return row->hyperlink_capacity >= cols;
+    row->hyperlinks = links;
+    row->hyperlink_capacity = cols;
+    session->history_storage_bytes = session->history_storage_bytes - old_bytes + cols * sizeof(*links);
+    return true;
+}
+
+static bool history_cell_is_trimmable_blank(const VTermScreenCell *cell) {
+    if (!cell || cell->width != 1 || cell->attrs.bold || cell->attrs.underline || cell->attrs.italic ||
+        cell->attrs.blink || cell->attrs.reverse || cell->attrs.conceal || cell->attrs.strike ||
+        cell->attrs.font || cell->attrs.dwl || cell->attrs.dhl || cell->attrs.small || cell->attrs.baseline ||
+        !VTERM_COLOR_IS_DEFAULT_FG(&cell->fg) || !VTERM_COLOR_IS_DEFAULT_BG(&cell->bg)) return false;
+    if (cell->chars[0] != 0 && cell->chars[0] != ' ') return false;
+    for (size_t i = 1; i < VTERM_MAX_CHARS_PER_CELL; i++)
+        if (cell->chars[i] != 0) return false;
+    return true;
+}
+
+static size_t history_compact_cols(const VTermScreenCell *cells, const uint32_t *links, size_t cols) {
+    while (cols > 0 && (!links || links[cols - 1] == 0) &&
+        history_cell_is_trimmable_blank(&cells[cols - 1])) cols--;
+    return cols;
+}
+
+static VTermScreenCell history_blank_cell(void) {
+    VTermScreenCell cell = {0};
+    cell.width = 1;
+    cell.fg.type = VTERM_COLOR_DEFAULT_FG;
+    cell.bg.type = VTERM_COLOR_DEFAULT_BG;
+    return cell;
 }
 
 static uint32_t intern_hyperlink(MicaSession *session, const char *uri, size_t length) {
@@ -373,12 +430,6 @@ static char *copy_title(VTermStringFragment fragment) {
     return title;
 }
 
-static VTermScreenCell *allocate_history(size_t capacity, int cols) {
-    if (capacity == 0 || cols <= 0 || capacity > SIZE_MAX / (size_t)cols ||
-        capacity * (size_t)cols > SIZE_MAX / sizeof(VTermScreenCell)) return NULL;
-    return calloc(capacity * (size_t)cols, sizeof(VTermScreenCell));
-}
-
 static size_t gHistoryLimitBytes = MICA_HISTORY_LIMIT_BYTES;
 
 // The scrollback allowance is expressed as lines at 80 columns (a line costs columns x sizeof(cell)); memory is only
@@ -392,8 +443,8 @@ void mica_set_history_limit_lines(size_t lines_at_80_columns) {
 size_t mica_history_limit_bytes(void) { return gHistoryLimitBytes; }
 
 static size_t history_limit_lines(int cols) {
-    if (cols <= 0 || (size_t)cols > SIZE_MAX / sizeof(VTermScreenCell)) return 0;
-    size_t bytes_per_line = (size_t)cols * sizeof(VTermScreenCell);
+    if (cols <= 0 || (size_t)cols > (SIZE_MAX - sizeof(MicaHistoryRow)) / sizeof(VTermScreenCell)) return 0;
+    size_t bytes_per_line = (size_t)cols * sizeof(VTermScreenCell) + sizeof(MicaHistoryRow);
     return gHistoryLimitBytes / bytes_per_line;
 }
 
@@ -688,7 +739,7 @@ static int notification_osc(int command, VTermStringFragment fragment, void *use
             return 1;
         }
         session->hyperlink_tracking = true;
-        if (ensure_screen_link_map(session) && ensure_history_link_map(session)) {
+        if (ensure_screen_link_map(session)) {
             // Row-merged damage can combine changed glyphs with unchanged link
             // cells. Switch to exact damage once OSC 8 metadata is in use.
             vterm_screen_set_damage_merge(session->screen, VTERM_DAMAGE_CELL);
@@ -1026,48 +1077,25 @@ static int history_push(int cols, const VTermScreenCell *cells, void *user) {
     if (session->history_cols == 0) session->history_cols = (size_t)session->cols;
     size_t limit = history_limit_lines((int)session->history_cols);
     if (session->history_count == session->history_capacity && session->history_capacity < limit) {
-        size_t old_history_start = session->history_start;
-        size_t old_history_capacity = session->history_capacity;
+        size_t old_capacity = session->history_capacity;
         size_t next_capacity = session->history_capacity ? session->history_capacity * 2 : MICA_HISTORY_INITIAL;
         if (next_capacity > limit) next_capacity = limit;
-        VTermScreenCell *grown = allocate_history(next_capacity, (int)session->history_cols);
+        MicaHistoryRow *grown = next_capacity <= SIZE_MAX / sizeof(*grown)
+            ? calloc(next_capacity, sizeof(*grown)) : NULL;
         if (grown) {
             for (size_t i = 0; i < session->history_count; i++) {
                 size_t old_slot = (session->history_start + i) % session->history_capacity;
-                memcpy(grown + i * session->history_cols,
-                       session->history + old_slot * session->history_cols,
-                       session->history_cols * sizeof(*grown));
+                grown[i] = session->history[old_slot];
             }
             free(session->history);
             session->history = grown;
             session->history_capacity = next_capacity;
             session->history_start = 0;
-            if (session->history_link_ids) {
-                uint32_t *grown_links = calloc(next_capacity * session->history_cols, sizeof(*grown_links));
-                if (grown_links) {
-                    size_t keep = session->history_count;
-                    if (keep > session->history_link_capacity) keep = session->history_link_capacity;
-                    for (size_t i = 0; i < keep; i++) {
-                        size_t old_slot = (old_history_start + i) % session->history_link_capacity;
-                        memcpy(grown_links + i * session->history_cols,
-                            session->history_link_ids + old_slot * session->history_cols,
-                            session->history_cols * sizeof(*grown_links));
-                    }
-                }
-                free(session->history_link_ids);
-                session->history_link_ids = grown_links;
-                session->history_link_capacity = grown_links ? next_capacity : 0;
-            } else if (session->hyperlink_tracking && old_history_capacity == 0) {
-                session->history_link_capacity = 0;
-            }
+            session->history_storage_bytes = session->history_storage_bytes - old_capacity * sizeof(*grown) +
+                next_capacity * sizeof(*grown);
         }
     }
     if (session->history_capacity == 0) return 1;
-    if (session->screen_link_ids && !ensure_history_link_map(session)) {
-        free(session->history_link_ids);
-        session->history_link_ids = NULL;
-        session->history_link_capacity = 0;
-    }
     size_t slot;
     if (session->history_count < session->history_capacity) {
         slot = (session->history_start + session->history_count) % session->history_capacity;
@@ -1077,16 +1105,25 @@ static int history_push(int cols, const VTermScreenCell *cells, void *user) {
         slot = session->history_start;
         session->history_start = (session->history_start + 1) % session->history_capacity;
     }
-    VTermScreenCell *destination = session->history + slot * session->history_cols;
-    memset(destination, 0, session->history_cols * sizeof(*destination));
-    memcpy(destination, cells, (size_t)session->cols * sizeof(*cells));
-    if (session->history_link_ids && session->screen_link_ids) {
-        // history_cols only grows, so after narrowing the window it exceeds the screen width; copy just the
-        // screen's columns and clear the rest of the history row.
-        uint32_t *link_row = session->history_link_ids + slot * session->history_cols;
-        size_t link_columns = (size_t)session->cols < session->history_cols ? (size_t)session->cols : session->history_cols;
-        memset(link_row, 0, session->history_cols * sizeof(*link_row));
-        memcpy(link_row, session->screen_link_ids, link_columns * sizeof(*link_row));
+    MicaHistoryRow *row = &session->history[slot];
+    size_t compact_cols = history_compact_cols(cells, session->screen_link_ids, (size_t)session->cols);
+    if (!history_row_resize_cells(session, row, compact_cols)) {
+        row->cols = 0;
+        (void)history_row_resize_links(session, row, 0);
+    } else {
+        row->cols = compact_cols;
+        if (compact_cols) memcpy(row->cells, cells, compact_cols * sizeof(*cells));
+        bool has_links = false;
+        if (session->screen_link_ids)
+            for (size_t col = 0; col < compact_cols; col++)
+                if (session->screen_link_ids[col]) { has_links = true; break; }
+        if (has_links && history_row_resize_links(session, row, compact_cols)) {
+            memcpy(row->hyperlinks, session->screen_link_ids, compact_cols * sizeof(*row->hyperlinks));
+        } else if (!has_links) {
+            (void)history_row_resize_links(session, row, 0);
+        } else {
+            (void)history_row_resize_links(session, row, 0);
+        }
     }
     size_t new_display_count = display_history_count(session);
     if (new_display_count > old_display_count && session->view_offset > 0 &&
@@ -1101,9 +1138,12 @@ static int history_pop(int cols, VTermScreenCell *cells, void *user) {
     if (!session || session->history_count == 0 || cols != session->cols ||
         session->history_cols > (size_t)cols) return 0;
     size_t slot = (session->history_start + session->history_count - 1) % session->history_capacity;
-    memcpy(cells, session->history + slot * session->history_cols,
-           (size_t)session->cols * sizeof(*cells));
+    for (int col = 0; col < cols; col++) cells[col] = history_blank_cell();
+    MicaHistoryRow *row = &session->history[slot];
+    size_t copy_cols = row->cols < (size_t)cols ? row->cols : (size_t)cols;
+    if (copy_cols) memcpy(cells, row->cells, copy_cols * sizeof(*cells));
     session->history_count--;
+    history_row_release(session, row);
     if (session->scrolled_total > 0) session->scrolled_total--;
     adjust_folds_after_history_pop(session);
     if (session->history_count == 0) session->history_start = 0;
@@ -1115,11 +1155,10 @@ static int history_pop(int cols, VTermScreenCell *cells, void *user) {
 static int history_clear(void *user) {
     MicaSession *session = user;
     if (!session) return 1;
+    for (size_t i = 0; i < session->history_capacity; i++) history_row_release(session, &session->history[i]);
     free(session->history);
     session->history = NULL;
-    free(session->history_link_ids);
-    session->history_link_ids = NULL;
-    session->history_link_capacity = 0;
+    session->history_storage_bytes = 0;
     session->history_capacity = 0;
     session->history_cols = 0;
     session->history_start = 0;
@@ -1637,10 +1676,10 @@ void mica_session_destroy(MicaSession *session) {
     free(process_tree);
     free(terminal_processes);
     if (session->vt) vterm_free(session->vt);
+    for (size_t i = 0; i < session->history_capacity; i++) history_row_release(session, &session->history[i]);
     free(session->history);
     free(session->sync_hold);
     free(session->screen_link_ids);
-    free(session->history_link_ids);
     for (size_t i = 0; i < session->hyperlink_count; i++) free(session->hyperlink_uris[i]);
     free(session->hyperlink_uris);
     clear_folds(session);
@@ -1812,27 +1851,27 @@ void mica_session_resize_pixels(MicaSession *session, int rows, int cols, int pi
         // rather than leave metadata attached to different visible text.
         free(session->screen_link_ids);
         session->screen_link_ids = NULL;
-        free(session->history_link_ids);
-        session->history_link_ids = NULL;
-        session->history_link_capacity = 0;
+        for (size_t i = 0; i < session->history_capacity; i++)
+            (void)history_row_resize_links(session, &session->history[i], 0);
         session->pending_link_move_valid = false;
     }
     if ((size_t)cols > session->history_cols) {
         size_t capacity = session->history_capacity;
         size_t limit = history_limit_lines(cols);
         if (capacity > limit) capacity = limit;
-        VTermScreenCell *new_history = capacity ? allocate_history(capacity, cols) : NULL;
+        MicaHistoryRow *new_history = capacity ? calloc(capacity, sizeof(*new_history)) : NULL;
         if (capacity && !new_history) return;
         size_t kept = session->history_count;
         if (kept > capacity) kept = capacity;
         size_t skip = session->history_count - kept;
-        size_t copy_cols = (size_t)cols < session->history_cols
-            ? (size_t)cols : session->history_cols;
+        size_t old_capacity = session->history_capacity;
         for (size_t i = 0; i < kept; i++) {
-            size_t old_slot = (session->history_start + skip + i) % session->history_capacity;
-            memcpy(new_history + i * (size_t)cols,
-                   session->history + old_slot * session->history_cols,
-                   copy_cols * sizeof(*new_history));
+            size_t old_slot = (session->history_start + skip + i) % old_capacity;
+            new_history[i] = session->history[old_slot];
+        }
+        for (size_t i = 0; i < skip; i++) {
+            size_t old_slot = (session->history_start + i) % old_capacity;
+            history_row_release(session, &session->history[old_slot]);
         }
         free(session->history);
         session->history = new_history;
@@ -1840,6 +1879,8 @@ void mica_session_resize_pixels(MicaSession *session, int rows, int cols, int pi
         session->history_cols = (size_t)cols;
         session->history_count = kept;
         session->history_start = 0;
+        session->history_storage_bytes = session->history_storage_bytes - old_capacity * sizeof(*new_history) +
+            capacity * sizeof(*new_history);
         if (session->view_offset > kept) session->view_offset = kept;
     }
     session->rows = rows;
@@ -1880,9 +1921,10 @@ static size_t find_row_text(const MicaSession *session, size_t row, char *out, s
     for (int col = 0; col < session->cols; col++) {
         VTermScreenCell cell;
         if (row < session->history_count) {
-            if (session->history_cols == 0 || (size_t)col >= session->history_cols) break;
             size_t slot = (session->history_start + row) % session->history_capacity;
-            cell = session->history[slot * session->history_cols + (size_t)col];
+            MicaHistoryRow *history_row = &session->history[slot];
+            cell = history_blank_cell();
+            if ((size_t)col < history_row->cols) cell = history_row->cells[col];
         } else {
             vterm_screen_get_cell(session->screen, (VTermPos){ (int)(row - session->history_count), col }, &cell);
         }
@@ -1947,6 +1989,7 @@ int mica_session_rows(const MicaSession *session) { return session ? session->ro
 int mica_session_cols(const MicaSession *session) { return session ? session->cols : 0; }
 int mica_session_view_offset(const MicaSession *session) { return session ? (int)session->view_offset : 0; }
 size_t mica_session_history_lines(const MicaSession *session) { return session ? session->history_count : 0; }
+size_t mica_session_history_storage_bytes(const MicaSession *session) { return session ? session->history_storage_bytes : 0; }
 size_t mica_session_display_history_lines(const MicaSession *session) { return display_history_count(session); }
 
 bool mica_session_fold_visible_rows(MicaSession *session, int start_row, int end_row) {
@@ -2082,11 +2125,11 @@ bool mica_session_get_cell(const MicaSession *session, int row, int col, MicaCel
     VTermScreenCell source;
     if (display_row < visible_history_count) {
         if (!session->history_capacity || !session->history) return false;
-        size_t history_row = history_index_for_display_row(session, display_row, NULL);
-        size_t slot = (session->history_start + history_row) % session->history_capacity;
-        memset(&source, 0, sizeof(source));
-        if ((size_t)col < session->history_cols)
-            source = session->history[slot * session->history_cols + (size_t)col];
+        size_t history_row_index = history_index_for_display_row(session, display_row, NULL);
+        size_t slot = (session->history_start + history_row_index) % session->history_capacity;
+        source = history_blank_cell();
+        MicaHistoryRow *history_row = &session->history[slot];
+        if ((size_t)col < history_row->cols) source = history_row->cells[col];
     } else {
         VTermPos pos = { .row = (int)(display_row - visible_history_count), .col = col };
         if (pos.row < 0 || pos.row >= session->rows || !vterm_screen_get_cell(session->screen, pos, &source))
@@ -2105,12 +2148,11 @@ bool mica_session_get_cell(const MicaSession *session, int row, int col, MicaCel
     cell->width = source.width;
     cell->hyperlink_id = 0;
     if (display_row < visible_history_count) {
-        if (session->history_link_ids && session->history_cols == (size_t)session->cols &&
-            session->history_link_capacity == session->history_capacity) {
-            size_t history_row = history_index_for_display_row(session, display_row, NULL);
-            size_t slot = (session->history_start + history_row) % session->history_link_capacity;
-            cell->hyperlink_id = session->history_link_ids[slot * session->history_cols + (size_t)col];
-        }
+        size_t history_row_index = history_index_for_display_row(session, display_row, NULL);
+        size_t slot = (session->history_start + history_row_index) % session->history_capacity;
+        MicaHistoryRow *history_row = &session->history[slot];
+        if (history_row->hyperlinks && (size_t)col < history_row->cols)
+            cell->hyperlink_id = history_row->hyperlinks[col];
     } else if (session->screen_link_ids) {
         cell->hyperlink_id = session->screen_link_ids[(size_t)(display_row - visible_history_count) *
             (size_t)session->cols + (size_t)col];

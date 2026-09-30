@@ -593,6 +593,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)openProjectSettings:(id)sender;
 - (void)startPomodoro:(id)sender;
 - (void)togglePomodoroPause:(id)sender;
+- (void)skipPomodoroPhase:(id)sender;
 - (void)resetPomodoro:(id)sender;
 - (void)openPomodoroSettings:(id)sender;
 - (void)configurePomodoro;
@@ -1020,11 +1021,33 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     NSRect timerRect = [self pomodoroControlRect];
     if (!NSIsEmptyRect(timerRect)) {
         __weak typeof(self) weakSelf = self;
+        MicaPomodoro state = self.owner.pomodoro;
+        BOOL paused = mica_pomodoro_is_paused(&state);
+        BOOL focus = state.phase == MICA_POMODORO_IDLE || state.phase == MICA_POMODORO_FOCUS ||
+            state.phase == MICA_POMODORO_PAUSED_FOCUS;
+        NSInteger minutes = focus ? self.owner.focusDurationMinutes : self.owner.breakDurationMinutes;
+        double remaining = state.phase == MICA_POMODORO_IDLE ? MAX(1, minutes) * 60.0 :
+            mica_pomodoro_remaining(&state, MicaContinuousTimeSeconds());
+        NSUInteger secondsLeft = (NSUInteger)ceil(remaining);
+        NSString *phaseLabel = state.phase == MICA_POMODORO_IDLE ? @"Ready" :
+            (paused ? (focus ? @"Focus paused" : @"Break paused") : (focus ? @"Focus" : @"Break"));
+        NSString *actionLabel = state.phase == MICA_POMODORO_IDLE ? @"Start focus" :
+            (paused ? @"Resume timer" : @"Pause timer");
+        NSString *timerLabel = [NSString stringWithFormat:@"Focus timer, %@, %02lu:%02lu remaining, %@",
+            phaseLabel, (unsigned long)(secondsLeft / 60), (unsigned long)(secondsLeft % 60), actionLabel];
+        NSRect resetRect = NSMakeRect(NSMaxX(timerRect) - 29, NSMinY(timerRect), 29, timerRect.size.height);
+        NSRect toggleRect = timerRect;
+        toggleRect.size.width -= resetRect.size.width;
         MicaTabAccessibilityElement *timer = [MicaTabAccessibilityElement accessibilityElementWithRole:NSAccessibilityButtonRole
-            frame:[self.window convertRectToScreen:[self convertRect:timerRect toView:nil]]
-            label:@"Focus timer" parent:self];
+            frame:[self.window convertRectToScreen:[self convertRect:toggleRect toView:nil]]
+            label:timerLabel parent:self];
         timer.pressHandler = ^BOOL{ [weakSelf.owner togglePomodoroPause:nil]; return YES; };
         [children addObject:timer];
+        MicaTabAccessibilityElement *reset = [MicaTabAccessibilityElement accessibilityElementWithRole:NSAccessibilityButtonRole
+            frame:[self.window convertRectToScreen:[self convertRect:resetRect toView:nil]]
+            label:@"Reset focus timer" parent:self];
+        reset.pressHandler = ^BOOL{ [weakSelf.owner resetPomodoro:nil]; return YES; };
+        [children addObject:reset];
     }
     return children;
 }
@@ -1274,8 +1297,18 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     MicaPomodoro timer = self.owner.pomodoro;
     NSString *toggleTitle = timer.phase == MICA_POMODORO_IDLE ? @"Start Focus" :
         (mica_pomodoro_is_paused(&timer) ? @"Resume Timer" : @"Pause Timer");
+    BOOL focus = timer.phase == MICA_POMODORO_FOCUS || timer.phase == MICA_POMODORO_PAUSED_FOCUS;
+    NSString *skipTitle = focus ? @"End Focus & Start Break" : @"End Break & Start Focus";
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Focus Timer"];
+    NSString *sessionCount = [NSString stringWithFormat:@"%llu focus session%@ completed",
+        (unsigned long long)timer.completed_focuses, timer.completed_focuses == 1 ? @"" : @"s"];
+    NSMenuItem *summary = AddMenuItem(menu, sessionCount, nil, @"", 0);
+    summary.enabled = NO;
+    [menu addItem:NSMenuItem.separatorItem];
     AddMenuItem(menu, toggleTitle, @selector(togglePomodoroPause:), @"", 0).target = self.owner;
+    NSMenuItem *skip = AddMenuItem(menu, skipTitle, @selector(skipPomodoroPhase:), @"", 0);
+    skip.target = self.owner;
+    skip.enabled = timer.phase != MICA_POMODORO_IDLE;
     AddMenuItem(menu, @"Reset Timer", @selector(resetPomodoro:), @"", 0).target = self.owner;
     [menu addItem:NSMenuItem.separatorItem];
     AddMenuItem(menu, @"Timer Settings…", @selector(openPomodoroSettings:), @"", 0).target = self.owner;
@@ -3439,6 +3472,36 @@ static NSDictionary *MicaScalarDictionary(id object) {
     [self.terminalView setNeedsDisplay:YES];
 }
 
+- (void)skipPomodoroPhase:(id)sender {
+    (void)sender;
+    if (![self acquirePomodoroLock]) return;
+    [self loadPomodoroStateFromDisk];
+    MicaPomodoroPhase phase = self.pomodoro.phase;
+    if (phase == MICA_POMODORO_IDLE) {
+        [self releasePomodoroLock];
+        return;
+    }
+#if !defined(MICA_APP_NO_MAIN)
+    NSString *oldNotification = [self currentPomodoroNotificationIdentifier];
+#endif
+    double now = MicaContinuousTimeSeconds();
+    if (phase == MICA_POMODORO_PAUSED_FOCUS) _pomodoro.phase = MICA_POMODORO_FOCUS;
+    else if (phase == MICA_POMODORO_PAUSED_BREAK) _pomodoro.phase = MICA_POMODORO_BREAK;
+    _pomodoro.paused_remaining = 0;
+    _pomodoro.deadline = now;
+    BOOL changed = mica_pomodoro_advance(&_pomodoro, now,
+        MAX(1, self.pomodoroCycleFocusMinutes) * 60.0,
+        MAX(1, self.pomodoroCycleBreakMinutes) * 60.0);
+    if (changed) [self savePomodoroState];
+    [self releasePomodoroLock];
+    if (!changed) return;
+#if !defined(MICA_APP_NO_MAIN)
+    [UNUserNotificationCenter.currentNotificationCenter removePendingNotificationRequestsWithIdentifiers:@[oldNotification]];
+#endif
+    [self schedulePomodoroNotification];
+    [self.terminalView setNeedsDisplay:YES];
+}
+
 - (double)currentPomodoroFilesStamp {
     double total = 0;
     for (NSURL *url in @[self.pomodoroStateURL ?: NSURL.new, self.pomodoroSettingsURL ?: NSURL.new]) {
@@ -3607,14 +3670,37 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     }
     [pending removeAllObjects];
     BOOL launchedFromProjectLayout = pendingArguments.count > 0;
-    NSArray<NSDictionary *> *savedWindows = (!launchedFromProjectLayout &&
-        NSProcessInfo.processInfo.arguments.count <= 1 && !getenv("MICA_TEST_NO_STARTUP"))
+    NSArray<NSDictionary *> *savedWindows = (NSProcessInfo.processInfo.arguments.count <= 1 && !getenv("MICA_TEST_NO_STARTUP"))
         ? [self readSessionState] : @[];
-    [self startWindowWithArguments:pendingArguments.firstObject];
-    if (savedWindows.count > 1 && !self.explicitLayoutLaunch) {
-        for (NSUInteger index = 1; index < savedWindows.count; index++) {
+    NSArray<NSString *> *firstArguments = pendingArguments.firstObject;
+    NSUInteger nextSavedWindow = 0;
+    if (!firstArguments && savedWindows.count && [savedWindows.firstObject[@"layout"] isKindOfClass:NSString.class]) {
+        NSMutableArray *arguments = [NSMutableArray arrayWithObjects:@"mica", @"--layout", savedWindows.firstObject[@"layout"], nil];
+        if ([savedWindows.firstObject[@"projectName"] isKindOfClass:NSString.class])
+            [arguments addObjectsFromArray:@[@"--project-name", savedWindows.firstObject[@"projectName"]]];
+        firstArguments = arguments;
+    }
+    if (!firstArguments && savedWindows.count) self.savedTabsForWindow = savedWindows.firstObject[@"tabs"];
+    [self startWindowWithArguments:firstArguments];
+    if (!launchedFromProjectLayout && savedWindows.count) nextSavedWindow = 1;
+    for (NSUInteger index = nextSavedWindow; index < savedWindows.count; index++) {
+        NSDictionary *saved = savedWindows[index];
+        NSString *savedLayout = saved[@"layout"];
+        BOOL alreadyOpen = NO;
+        for (NSArray<NSString *> *arguments in pendingArguments) {
+            NSUInteger layoutIndex = [arguments indexOfObject:@"--layout"];
+            if (layoutIndex != NSNotFound && layoutIndex + 1 < arguments.count &&
+                [arguments[layoutIndex + 1] isEqualToString:savedLayout]) { alreadyOpen = YES; break; }
+        }
+        if (savedLayout && !alreadyOpen) {
+            NSMutableArray *arguments = [NSMutableArray arrayWithObjects:@"mica", @"--layout", savedLayout, nil];
+            if ([saved[@"projectName"] isKindOfClass:NSString.class])
+                [arguments addObjectsFromArray:@[@"--project-name", saved[@"projectName"]]];
             MicaAppDelegate *restored = [MicaAppDelegate new];
-            restored.savedTabsForWindow = savedWindows[index][@"tabs"];
+            [restored startWindowWithArguments:arguments];
+        } else if (!savedLayout) {
+            MicaAppDelegate *restored = [MicaAppDelegate new];
+            restored.savedTabsForWindow = saved[@"tabs"];
             [restored startWindowWithArguments:@[@"mica", @"--new-window"]];
         }
     }
@@ -4016,6 +4102,16 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     for (id window in windows) {
         if (![window isKindOfClass:NSDictionary.class] || ![window[@"tabs"] isKindOfClass:NSArray.class] ||
             [window[@"tabs"] count] == 0 || [window[@"tabs"] count] > 9) return @[];
+        NSString *layout = window[@"layout"];
+        id projectName = window[@"projectName"];
+        NSString *layoutRoot = [[MicaDefaultLayoutsDirectory() stringByResolvingSymlinksInPath]
+            stringByAppendingString:@"/"];
+        if (projectName && (![projectName isKindOfClass:NSString.class] || [projectName length] > 100 ||
+            [projectName rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound)) return @[];
+        if (layout && (![layout isKindOfClass:NSString.class] || !layout.isAbsolutePath ||
+            layout.length > PATH_MAX ||
+            ![layout.pathExtension isEqualToString:@"mica"] ||
+            ![[layout stringByResolvingSymlinksInPath] hasPrefix:layoutRoot])) return @[];
         for (id tab in window[@"tabs"]) {
             if (![tab isKindOfClass:NSDictionary.class] || ![tab[@"name"] isKindOfClass:NSString.class] ||
                 ![tab[@"cwd"] isKindOfClass:NSString.class] ||
@@ -4038,7 +4134,6 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     if (getenv("MICA_TEST_NO_STARTUP") && !gMicaSessionStateURLOverride) return;
     NSMutableArray *windows = [NSMutableArray array];
     for (MicaAppDelegate *controller in MicaControllers()) {
-        if (controller.explicitLayoutLaunch) continue;
         NSMutableArray *tabs = [NSMutableArray array];
         for (MicaTab *tab in controller.tabs) {
             if (tabs.count >= 9) break;
@@ -4059,7 +4154,16 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
             if (tab.command.length && tab.command.length <= 4096) savedTab[@"command"] = tab.command;
             [tabs addObject:savedTab];
         }
-        if (tabs.count) [windows addObject:@{@"tabs":tabs}];
+        if (tabs.count) {
+            NSMutableDictionary *savedWindow = [@{@"tabs":tabs} mutableCopy];
+            if (controller.explicitLayoutLaunch && controller.projectLayoutPath.length &&
+                [[controller.projectLayoutPath stringByResolvingSymlinksInPath] hasPrefix:
+                    [[MicaDefaultLayoutsDirectory() stringByResolvingSymlinksInPath] stringByAppendingString:@"/"]]) {
+                savedWindow[@"layout"] = [controller.projectLayoutPath stringByResolvingSymlinksInPath];
+                if (controller.projectName.length) savedWindow[@"projectName"] = controller.projectName;
+            }
+            [windows addObject:savedWindow];
+        }
     }
     NSURL *url = [self sessionStateURL];
     [NSFileManager.defaultManager createDirectoryAtURL:url.URLByDeletingLastPathComponent
@@ -4223,6 +4327,8 @@ static BOOL MicaValidBranchName(NSString *name) {
 - (void)newProjectLauncher:(id)sender {
     (void)sender;
     NSURL *bundle = NSBundle.mainBundle.bundleURL;
+    NSURL *installedRelease = [NSURL fileURLWithPath:@"/Applications/Mica.app" isDirectory:YES];
+    if ([NSFileManager.defaultManager fileExistsAtPath:installedRelease.path]) bundle = installedRelease;
     NSURL *script = [bundle URLByAppendingPathComponent:@"Contents/Resources/Scripts/install-desktop-apps.py"];
     NSURL *iconTool = [bundle URLByAppendingPathComponent:@"Contents/Helpers/mica-project-icon"];
     if (![NSFileManager.defaultManager fileExistsAtPath:script.path] || ![NSFileManager.defaultManager fileExistsAtPath:iconTool.path]) {
@@ -5054,7 +5160,7 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     for (MicaAppDelegate *controller in windows) [sessions addObjectsFromArray:[controller detachSessionsForTermination]];
     MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"queued all sessions count=%lu",
         (unsigned long)sessions.count]);
-    self.terminationCleanupGroup = dispatch_group_create();
+    if (!self.terminationCleanupGroup) self.terminationCleanupGroup = dispatch_group_create();
     dispatch_group_enter(self.terminationCleanupGroup);
     self.terminationReplyTimer = [NSTimer timerWithTimeInterval:0.05
         target:self selector:@selector(finishTerminationWhenCleanupCompletes:) userInfo:nil repeats:YES];
@@ -5071,10 +5177,8 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
         }
         dispatch_group_leave(self.terminationCleanupGroup);
     });
-    // Never let a hung child teardown keep Quit waiting forever.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        [NSApp replyToApplicationShouldTerminate:YES];
-    });
+    // The C teardown bounds its child waits. Wait for every cleanup, including
+    // windows closed just before Quit, rather than abandoning their descendants.
     return NSTerminateLater;
 }
 // Stops this window's timers and voice controller and hands back its sessions for destruction.
@@ -5098,10 +5202,17 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     NSArray<NSValue *> *sessions = [self detachSessionsForTermination];
     self.window.delegate = nil;
     [self.terminalView setOwner:nil];
+    MicaAppDelegate *applicationController = [NSApp.delegate isKindOfClass:MicaAppDelegate.class]
+        ? (MicaAppDelegate *)NSApp.delegate : self;
+    if (!applicationController.terminationCleanupGroup)
+        applicationController.terminationCleanupGroup = dispatch_group_create();
+    dispatch_group_t cleanupGroup = applicationController.terminationCleanupGroup;
+    dispatch_group_enter(cleanupGroup);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         @autoreleasepool {
             for (NSValue *value in sessions) mica_session_destroy(value.pointerValue);
         }
+        dispatch_group_leave(cleanupGroup);
     });
 }
 
@@ -5112,13 +5223,10 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
         self.observesSystemAppearance = NO;
     }
     NSMutableArray<MicaAppDelegate *> *controllers = MicaControllers();
-    if (controllers.count > 1 && [controllers containsObject:self]) {
-        [controllers removeObject:self];
-        [self saveSessionState];
-    }
     if (![controllers containsObject:self] || controllers.count <= 1) return;   // last window: quitting cleans up
     [self teardownWindow];
     [controllers removeObject:self];
+    [self saveSessionState];
     for (MicaAppDelegate *other in controllers) if (other.window) { [other takeMenuOwnership]; break; }
     MicaDiagnosticsLog(@"launch", [NSString stringWithFormat:@"closed a window (windows left=%lu)", (unsigned long)controllers.count]);
 }
