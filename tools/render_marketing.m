@@ -84,6 +84,22 @@ int main(int argc, const char *argv[]) {
         [[paletteBitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
             writeToFile:[outputDirectory stringByAppendingPathComponent:@"command-palette-dark.png"] atomically:YES];
         [delegate toggleCommandPalette:nil];
+        // Capture cycle 7's command landmarks and vocabulary correction with local sample text only.
+        const char *landmarks = "clear; printf '\\033]133;A\\007'; printf '❯ '; printf '\\033]133;B\\007'; printf 'git status --short\\n'; printf '\\033]133;C\\007'; printf ' M src/mica_app.m\\n'; printf '\\033]133;D;1\\007'; printf '\\033]133;A\\007'; printf '❯ '; printf '\\033]133;B\\007'; printf 'make test\\n'; printf '\\033]133;C\\007'; printf '✓ tests passed\\n'; printf '\\033]133;D;0\\007'; printf '\\033]133;A\\007'; printf '❯ ';\n";
+        mica_session_write(session, landmarks, strlen(landmarks));
+        for (int i = 0; i < 50; i++) { [delegate pollSessions:nil]; RunLoopFor(0.03); }
+        if (mica_session_jump_prompt(session, -1)) SaveView(delegate, [outputDirectory stringByAppendingPathComponent:@"prompt-navigation-demo.png"]);
+        mica_session_destroy(session);
+        session = mica_session_create("/tmp", nil, 24, 100);
+        if (!session) return 1;
+        delegate.activeTab.session = session;
+        for (int i = 0; i < 20; i++) { [delegate pollSessions:nil]; RunLoopFor(0.03); }
+        NSString *rawTranscript = @"Open Mica Terminal";
+        NSString *correctedTranscript = MicaCorrectTranscript(rawTranscript, @[@"MicaTerminal"]);
+        NSString *fakeTranscript = [NSString stringWithFormat:@"clear; printf 'Fake transcript (no microphone)\\nraw: %@\\ncorrected: %@\\nEdit Vocabulary… · Undo restores raw\\n'\n", rawTranscript, correctedTranscript];
+        mica_session_write(session, fakeTranscript.UTF8String, strlen(fakeTranscript.UTF8String));
+        for (int i = 0; i < 40; i++) { [delegate pollSessions:nil]; RunLoopFor(0.03); }
+        SaveView(delegate, [outputDirectory stringByAppendingPathComponent:@"vocabulary-correction-demo.png"]);
         [delegate setLightTheme:YES];
         RunLoopFor(0.3);
         delegate.activeTab.cwd = @"/Users/me/code/fieldnote";

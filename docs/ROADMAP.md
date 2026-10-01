@@ -6,9 +6,9 @@ This roadmap tracks open work only. Shipped features are summarized below so the
 
 - The Command Palette (<kbd>⌘⇧P</kbd>) searches the menu action tree, displays current menu shortcuts and switches among tabs with folder, branch and activity context. It also exposes per-tab notification mute controls.
 - Dictation supports Hold (default) and Toggle modes. Edit → Undo Last Dictation removes the latest inserted transcript only while no later prompt text has been typed.
-- Local deterministic dictation correction uses the user's vocabulary file, project name, Git branch and tracked file names, and recently visible terminal text. It is enabled by default, can be switched off, and Undo Last Dictation restores the raw transcript after correction. It uses no additional speech model.
+- Local deterministic dictation correction uses the user's vocabulary file, project name, Git branch and tracked file names, and recently visible terminal text. It is enabled by default, can be switched off from Edit, and Undo Last Dictation restores the raw transcript after correction. Optional vocabulary boosting uses an extra CTC model and is off by default; added memory and latency are UNMEASURED.
 - Quick Select (<kbd>⌘⇧U</kbd>) labels visible URLs, existing file paths and git hashes. Typing a label copies it; holding Option opens a URL or reveals a file.
-- OSC 133 A/B/C/D shell markers are emitted by Mica's zsh integration and recognized by the session parser. The parser retains the latest advisory phase and command exit status; per-row landmarks, prompt navigation and last-command output selection/copy remain open.
+- OSC 133 A/B/C/D shell markers are emitted by Mica's zsh integration and recognized by the session parser. Per-row landmarks, failed-command markers, ⌘↑/⌘↓ prompt navigation, and last-command output selection/copy are shipped.
 - Agent notifications distinguish “needs input” from “finished”, use no sound, and can be muted per tab. Mica handles terminal notification sequences and clicking a notification returns to its window and tab.
 - Project windows and ordinary tabs restore their names and folders after quit. Relaunch starts fresh PTY sessions; commands, running processes and scrollback do not resume.
 - The focus timer is shared across windows, with labeled focus/break/paused states, Start/Pause/Resume controls, accessible actions, completion notifications and independent auto-start settings.
@@ -19,20 +19,18 @@ This roadmap tracks open work only. Shipped features are summarized below so the
 
 | # | Work | Current gap | Effort |
 | --- | --- | --- | --- |
-| 1 | OSC 133 command landmarks | Track prompt/command boundaries per row through scroll, clear, alternate screen, resize and history wrap; add prompt navigation, last-output selection/copy and a failure marker. OSC 133 parsing currently retains only the latest advisory phase and command exit status. | Medium–large |
-| 2 | Retained-history column reflow | Reflow retained rows across width changes while preserving links, cell attributes, search and selection anchors within the per-session history cap. | Large |
-| 3 | Agent/project sidebar | Make existing folder, branch, activity and notification context visible without reducing terminal space by default. | Medium |
-| 4 | More complete session recovery | Reopened windows start fresh shells. Any future process or scrollback recovery needs explicit process-safety and bounded-storage design. | Large |
-| 5 | Split panes | The layout, focus and resize model assumes one PTY grid per tab; define a bounded pane tree and resource accounting first. | Large |
-| 6 | Broader shell support | Startup hooks and completion currently target `/bin/zsh -l -i`; add shells only with startup-file preservation and PTY coverage. | Medium–large |
-| 7 | Release reliability | Keep install and update flows reproducible and separate development builds from installed releases. | Medium |
+| 1 | Retained-history column reflow | Reflow retained rows across width changes while preserving links, cell attributes, search and selection anchors within the per-session history cap. | Large |
+| 2 | Agent/project sidebar | Make existing folder, branch, activity and notification context visible without reducing terminal space by default. | Medium |
+| 3 | More complete session recovery | Reopened windows start fresh shells. Any future process or scrollback recovery needs explicit process-safety and bounded-storage design. | Large |
+| 4 | Split panes | The layout, focus and resize model assumes one PTY grid per tab; define a bounded pane tree and resource accounting first. | Large |
+| 5 | Broader shell support | Startup hooks and completion currently target `/bin/zsh -l -i`; add shells only with startup-file preservation and PTY coverage. | Medium–large |
+| 6 | Release reliability | Keep install and update flows reproducible and separate development builds from installed releases. | Medium |
 
-## Deferred to Cycle 7
+## Deferred
 
 - Optional agent/workspace sidebar.
 - Timer session labels, daily goal and local history; menu-bar timer extra.
 - Dictation snippets and a review-before-insert draft.
-- Native speech-model vocabulary boosting with an additional model remains unimplemented; the pinned FluidAudio API availability has not been verified.
 - Worktree picker and cleanup; agent resume adapters.
 - Bounded scrollback restore; changed-files summary.
 - Quick-terminal drop-down; Liquid Glass on the tab strip.

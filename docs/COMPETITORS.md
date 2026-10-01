@@ -53,7 +53,9 @@ Method and caveats: [MEMORY-BASELINE.md](MEMORY-BASELINE.md). cmux, Warp, Ghostt
 | Clipboard from remote sessions with consent | Done (OSC 52) |
 | Synchronized output, bracketed paste awareness | Done |
 | Local voice dictation, shared focus timer | Done (not offered by the others) |
-| Hold or Toggle dictation and undo the latest insertion | Done; undo is available only before later prompt text is typed |
+| Hold or Toggle dictation, project vocabulary correction and undo | Done; local correction is switchable and undo restores raw text before later prompt edits |
+| Optional native vocabulary boosting | Done; extra CTC model, off by default; memory and latency UNMEASURED |
+| Prompt landmarks and last-command output | Done: ⌘↑/⌘↓ at a prompt, output selection/copy and failed-command marker |
 | Light and dark themes, cursor styles, bundled font, settings | Done |
 | Fuzz, sanitizer and UI stress testing | Done |
 | Vertical sidebar with per-tab status (branch, last notification, ports) | Not done. Strong interface opportunity; Mica already has project, branch, agent activity and notification state |
@@ -80,11 +82,10 @@ Method and caveats: [MEMORY-BASELINE.md](MEMORY-BASELINE.md). cmux, Warp, Ghostt
 1. **Memory-efficient scrollback** — measure retained rows and bytes, trim blank cells per line, then share attribute storage. Maintain the current hard cap and add latency/memory regression checks.
 2. **Pomodoro timer UI** — the status strip prioritizes a clear phase label and countdown, with focus, break and paused states shown in text as well as color. VoiceOver and the timer menu expose the completed-focus count, and skip is available through the menu and VoiceOver action. Settings offer separate automatic starts for focus and break intervals, both on by default. Be Focused also lists completed intervals and optional auto-start in its [Mac App Store description](https://apps.apple.com/us/app/be-focused-pomodoro-timer/id973134470?mt=12).
 3. **Optional agent/project sidebar** — show project, branch, folder, agent state and unread notification with clear focus/attention styling; use existing state and keep it off when a user prefers the full-width terminal.
-4. **Command landmarks** — make shell start/finish events robust and use them for jump-to-command/output and clearer state; preserve raw PTY behavior when hooks are absent.
-5. **Session restoration quality** — test several restored project windows and ordinary windows end to end; distinguish startup commands from surviving processes. Current implementation restores window metadata and launches fresh sessions; it does not resume the previous PTY process or scrollback.
-6. **Split panes** — design a bounded pane tree and per-pane resource accounting before UI implementation.
-7. **Release reliability** — notarized install/update flow depends on Developer ID and release credentials; keep development builds separate from the installed release.
-8. **Quick terminal** — useful, but lower value than agent visibility and memory-efficient history for Mica's project-first workflow.
+4. **Session restoration quality** — test several restored project windows and ordinary windows end to end; distinguish startup commands from surviving processes. Current implementation restores window metadata and launches fresh sessions; it does not resume the previous PTY process or scrollback.
+5. **Split panes** — design a bounded pane tree and per-pane resource accounting before UI implementation.
+6. **Release reliability** — notarized install/update flow depends on Developer ID and release credentials; keep development builds separate from the installed release.
+7. **Quick terminal** — useful, but lower value than agent visibility and memory-efficient history for Mica's project-first workflow.
 
 ## Sources
 

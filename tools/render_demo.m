@@ -125,6 +125,30 @@ int main(int argc, const char *argv[]) {
         [palette cacheDisplayInRect:palette.bounds toBitmapImageRep:paletteBitmap];
         NSData *palettePNG = [paletteBitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
         if (!palettePNG || ![palettePNG writeToFile:[directory stringByAppendingPathComponent:@"command-palette-demo.png"] atomically:YES]) return 1;
+        [owner toggleCommandPalette:nil];
+        const char *landmarks = "clear; printf '\\033]133;A\\007'; printf 'demo> '; printf '\\033]133;B\\007'; printf 'git status --short\\n'; printf '\\033]133;C\\007'; printf ' M src/mica_app.m\\n'; printf '\\033]133;D;1\\007'; printf '\\033]133;A\\007'; printf 'demo> '; printf '\\033]133;B\\007'; printf 'make test\\n'; printf '\\033]133;C\\007'; printf '✓ tests passed\\n'; printf '\\033]133;D;0\\007'; printf '\\033]133;A\\007'; printf 'demo> ';\n";
+        mica_session_write(session, landmarks, strlen(landmarks));
+        for (int attempt = 0; attempt < 60; attempt++) PollDemo(owner);
+        if (!mica_session_jump_prompt(session, -1)) return 1;
+        [owner.terminalView setNeedsDisplay:YES];
+        NSBitmapImageRep *promptBitmap = [owner.terminalView bitmapImageRepForCachingDisplayInRect:owner.terminalView.bounds];
+        [owner.terminalView cacheDisplayInRect:owner.terminalView.bounds toBitmapImageRep:promptBitmap];
+        NSData *promptPNG = [promptBitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+        if (!promptPNG || ![promptPNG writeToFile:[directory stringByAppendingPathComponent:@"prompt-navigation-demo.png"] atomically:YES]) return 1;
+        mica_session_destroy(session);
+        session = mica_session_create("/tmp", nil, 24, 100);
+        if (!session) return 1;
+        owner.activeTab.session = session;
+        for (int attempt = 0; attempt < 30; attempt++) PollDemo(owner);
+        NSString *rawTranscript = @"Open Mica Terminal";
+        NSString *correctedTranscript = MicaCorrectTranscript(rawTranscript, @[@"MicaTerminal"]);
+        NSString *correction = [NSString stringWithFormat:@"clear; printf 'Fake transcript (no microphone)\\nraw: %@\\ncorrected: %@\\nEdit Vocabulary… · Undo restores raw\\n'\n", rawTranscript, correctedTranscript];
+        mica_session_write(session, correction.UTF8String, strlen(correction.UTF8String));
+        for (int attempt = 0; attempt < 50; attempt++) PollDemo(owner);
+        NSBitmapImageRep *vocabBitmap = [owner.terminalView bitmapImageRepForCachingDisplayInRect:owner.terminalView.bounds];
+        [owner.terminalView cacheDisplayInRect:owner.terminalView.bounds toBitmapImageRep:vocabBitmap];
+        NSData *vocabPNG = [vocabBitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+        if (!vocabPNG || ![vocabPNG writeToFile:[directory stringByAppendingPathComponent:@"vocabulary-correction-demo.png"] atomically:YES]) return 1;
         for (MicaTab *tab in owner.tabs) { mica_session_destroy(tab.session); tab.session = NULL; }
         printf("Captured 160 current-UI frames with local PTY output.\n");
     }
