@@ -2749,7 +2749,7 @@ static int MicaRunUISelfTest(void) {
             !timerWindowB.autoStartFocus && !timerWindowB.autoStartBreaks;
         NSRect timerControl = [timerWindowA.terminalView pomodoroControlRect];
         MicaUITestSendMouse(timerWindowA, NSEventTypeLeftMouseDown,
-            NSMakePoint(NSMaxX(timerControl) - 68, NSMidY(timerControl)), 0);
+            NSMakePoint(NSMinX(timerControl) + 72, NSMidY(timerControl)), 0);
         [timerWindowB refreshPomodoroState];
         BOOL timerStartShared = timerOptionsShared && timerControl.size.width >= 180 &&
             timerWindowA.pomodoro.phase == MICA_POMODORO_FOCUS && timerWindowB.focusDurationMinutes == 50 &&
