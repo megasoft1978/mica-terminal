@@ -3329,6 +3329,22 @@ static int MicaRunUISelfTest(void) {
             timerWindowA.pomodoro.phase == MICA_POMODORO_FOCUS && timerWindowB.focusDurationMinutes == 50 &&
             timerWindowB.breakDurationMinutes == 8 && timerWindowB.pomodoro.phase == MICA_POMODORO_FOCUS &&
             timerWindowB.pomodoroCycleFocusMinutes == 50 && timerWindowB.pomodoro.deadline == timerWindowA.pomodoro.deadline;
+        BOOL timerLabelValid = MicaPomodoroLabelIsValid(@"Cycle 9") &&
+            !MicaPomodoroLabelIsValid([@"x" stringByPaddingToLength:81 withString:@"x" startingAtIndex:0]) &&
+            !MicaPomodoroLabelIsValid(@"bad\nlabel");
+        timerWindowA.pomodoroLabel = @"Cycle 9";
+        BOOL timerLabelStored = [timerWindowA acquirePomodoroLock];
+        if (timerLabelStored) { [timerWindowA savePomodoroState]; [timerWindowA releasePomodoroLock]; }
+        [timerWindowB refreshPomodoroState];
+        timerLabelStored = timerLabelStored && [timerWindowB.pomodoroLabel isEqualToString:@"Cycle 9"];
+        [timerWindowA buildMenus];
+        NSMenuItem *focusRootForLabel = [NSApp.mainMenu itemWithTitle:@"Focus"];
+        BOOL timerLabelInFocusMenu = NO;
+        for (NSMenuItem *item in focusRootForLabel.submenu.itemArray)
+            if (item.tag == 9137 && [item.title isEqualToString:@"Session: Cycle 9"]) timerLabelInFocusMenu = YES;
+        BOOL timerLabelAccessible = NO;
+        for (NSString *label in [[timerWindowB.terminalView accessibilityChildren] valueForKey:@"accessibilityLabel"])
+            if ([label containsString:@"Cycle 9"]) timerLabelAccessible = YES;
         NSArray *timerAXLabels = [[timerWindowA.terminalView accessibilityChildren]
             valueForKey:@"accessibilityLabel"];
         BOOL timerToggleAccessible = NO;
@@ -3339,7 +3355,8 @@ static int MicaRunUISelfTest(void) {
         BOOL timerControlsAccessible = timerToggleAccessible && [timerAXLabels containsObject:@"Reset focus timer"];
         [timerWindowB togglePomodoroPause:nil];
         [timerWindowA refreshPomodoroState];
-        BOOL timerPauseShared = timerWindowA.pomodoro.phase == MICA_POMODORO_PAUSED_FOCUS;
+        BOOL timerPauseShared = timerWindowA.pomodoro.phase == MICA_POMODORO_PAUSED_FOCUS &&
+            [timerWindowA.pomodoroLabel isEqualToString:@"Cycle 9"];
         BOOL pausedPhaseVisible = [[timerWindowA.terminalView pomodoroStatusText] hasPrefix:@"Paused focus · "];
         NSMenuItem *skipTimerMenu = [[NSMenuItem alloc] initWithTitle:@"End Current Phase"
             action:@selector(skipPomodoroPhase:) keyEquivalent:@""];
@@ -3358,6 +3375,7 @@ static int MicaRunUISelfTest(void) {
             [skipTimerMenu.title isEqualToString:@"End Break & Start Focus"] &&
             timerWindowA.pomodoro.phase == MICA_POMODORO_BREAK &&
             timerWindowB.pomodoro.phase == MICA_POMODORO_BREAK && timerWindowB.pomodoro.completed_focuses == 1;
+        BOOL timerLabelSurvivesPauseAndFocusEnd = [timerWindowB.pomodoroLabel isEqualToString:@"Cycle 9"];
         BOOL timerCountAccessible = NO;
         for (NSString *label in [[timerWindowB.terminalView accessibilityChildren] valueForKey:@"accessibilityLabel"])
             if ([label hasPrefix:@"Focus timer, Break,"] &&
@@ -3375,12 +3393,29 @@ static int MicaRunUISelfTest(void) {
         [timerWindowB skipPomodoroPhase:nil];
         [timerWindowA refreshPomodoroState];
         BOOL timerSkipBreakShared = timerWindowA.pomodoro.phase == MICA_POMODORO_FOCUS &&
-            timerWindowA.pomodoro.completed_focuses == 1;
+            timerWindowA.pomodoro.completed_focuses == 1 && timerWindowA.pomodoroLabel.length == 0;
         [timerWindowA resetPomodoro:nil];
         [timerWindowB refreshPomodoroState];
         BOOL timerResetShared = timerWindowB.pomodoro.phase == MICA_POMODORO_IDLE;
+        timerResetShared = timerResetShared && timerWindowB.pomodoroLabel.length == 0;
         timerResetShared = timerResetShared && ![timerWindowB validateMenuItem:skipTimerMenu] &&
             [skipTimerMenu.title isEqualToString:@"End Current Phase"];
+        NSURL *timerStateURL = [sharedTimerURL URLByAppendingPathComponent:@"timer.json"];
+        NSDictionary *legacyTimerState = @{@"phase": @(MICA_POMODORO_PAUSED_FOCUS), @"remaining": @90,
+            @"completedFocuses": @0, @"cycleFocusMinutes": @50, @"cycleBreakMinutes": @8};
+        [[NSJSONSerialization dataWithJSONObject:legacyTimerState options:0 error:nil] writeToURL:timerStateURL atomically:YES];
+        [timerWindowB refreshPomodoroState];
+        BOOL timerLegacyLabel = timerWindowB.pomodoroLabel.length == 0;
+        NSMutableDictionary *malformedTimerState = [legacyTimerState mutableCopy];
+        malformedTimerState[@"label"] = @"not\nplain";
+        [[NSJSONSerialization dataWithJSONObject:malformedTimerState options:0 error:nil] writeToURL:timerStateURL atomically:YES];
+        [timerWindowB refreshPomodoroState];
+        BOOL timerMalformedLabelIgnored = timerWindowB.pomodoroLabel.length == 0;
+        MicaUITestRecord(report, &allPassed, timerLabelValid && timerLabelStored && timerLabelInFocusMenu && timerLabelAccessible && timerLabelSurvivesPauseAndFocusEnd &&
+            timerSkipBreakShared && timerResetShared && timerLegacyLabel && timerMalformedLabelIgnored,
+            [NSString stringWithFormat:@"focus labels validate at 80 plain-text characters, show in the Focus menu and timer accessibility label, persist across windows and pause, then clear at the next focus and reset; legacy and malformed state are handled (valid=%d stored=%d menu=%d ax=%d preserved=%d legacy=%d malformed=%d)",
+                timerLabelValid, timerLabelStored, timerLabelInFocusMenu, timerLabelAccessible,
+                timerLabelSurvivesPauseAndFocusEnd, timerLegacyLabel, timerMalformedLabelIgnored]);
         MicaPomodoro phaseLabelProbe = {0};
         phaseLabelProbe.phase = MICA_POMODORO_FOCUS;
         phaseLabelProbe.deadline = MicaContinuousTimeSeconds() + 90;

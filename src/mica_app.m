@@ -570,6 +570,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, assign) NSInteger pomodoroCycleFocusMinutes;
 @property(nonatomic, assign) NSInteger pomodoroCycleBreakMinutes;
 @property(nonatomic, assign) MicaPomodoro pomodoro;
+@property(nonatomic, copy) NSString *pomodoroLabel;
 @property(nonatomic, strong) NSURL *pomodoroStateURL;
 @property(nonatomic, strong) NSURL *pomodoroLockURL;
 @property(nonatomic, strong) NSURL *pomodoroSettingsURL;
@@ -658,6 +659,8 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)showKeyboardShortcuts:(id)sender;
 - (void)openProjectSettings:(id)sender;
 - (void)startPomodoro:(id)sender;
+- (void)editPomodoroLabel:(id)sender;
+- (void)updateFocusMenuLabel;
 - (void)togglePomodoroPause:(id)sender;
 - (void)skipPomodoroPhase:(id)sender;
 - (void)resetPomodoro:(id)sender;
@@ -1211,8 +1214,9 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
             (paused ? (focus ? @"Paused focus" : @"Paused break") : (focus ? @"Focus" : @"Break"));
         NSString *actionLabel = state.phase == MICA_POMODORO_IDLE ? @"Start focus" :
             (paused ? @"Resume timer" : @"Pause timer");
-        NSString *timerLabel = [NSString stringWithFormat:@"Focus timer, %@, %02lu:%02lu remaining, %@, %llu focus session%@ completed",
-            phaseLabel, (unsigned long)(secondsLeft / 60), (unsigned long)(secondsLeft % 60), actionLabel,
+        NSString *timerLabel = [NSString stringWithFormat:@"Focus timer, %@%@, %02lu:%02lu remaining, %@, %llu focus session%@ completed",
+            phaseLabel, self.owner.pomodoroLabel.length ? [NSString stringWithFormat:@", %@", self.owner.pomodoroLabel] : @"",
+            (unsigned long)(secondsLeft / 60), (unsigned long)(secondsLeft % 60), actionLabel,
             (unsigned long long)state.completed_focuses, state.completed_focuses == 1 ? @"" : @"s"];
         NSRect resetRect = NSMakeRect(NSMaxX(timerRect) - 29, NSMinY(timerRect), 29, timerRect.size.height);
         NSRect toggleRect = timerRect;
@@ -1519,6 +1523,11 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         (unsigned long long)timer.completed_focuses, timer.completed_focuses == 1 ? @"" : @"s"];
     NSMenuItem *summary = AddMenuItem(menu, sessionCount, nil, @"", 0);
     summary.enabled = NO;
+    if (self.owner.pomodoroLabel.length) {
+        NSMenuItem *label = AddMenuItem(menu, [NSString stringWithFormat:@"Label: %@", self.owner.pomodoroLabel], nil, @"", 0);
+        label.enabled = NO;
+    }
+    AddMenuItem(menu, @"Label…", @selector(editPomodoroLabel:), @"", 0).target = self.owner;
     [menu addItem:NSMenuItem.separatorItem];
     AddMenuItem(menu, toggleTitle, @selector(togglePomodoroPause:), @"", 0).target = self.owner;
     NSMenuItem *skip = AddMenuItem(menu, skipTitle, @selector(skipPomodoroPhase:), @"", 0);
@@ -3714,6 +3723,14 @@ static NSDictionary *MicaScalarDictionary(id object) {
     return clean;
 }
 
+static BOOL MicaPomodoroLabelIsValid(id value) {
+    if (![value isKindOfClass:NSString.class] || [(NSString *)value length] > 80) return NO;
+    NSCharacterSet *controls = NSCharacterSet.controlCharacterSet;
+    for (NSUInteger i = 0; i < [(NSString *)value length]; i++)
+        if ([controls characterIsMember:[(NSString *)value characterAtIndex:i]]) return NO;
+    return YES;
+}
+
 - (void)loadPomodoroSettingsFromDisk {
     NSDictionary *settings = MicaScalarDictionary([NSJSONSerialization JSONObjectWithData:
         [NSData dataWithContentsOfURL:self.pomodoroSettingsURL] ?: NSData.data
@@ -3752,6 +3769,7 @@ static NSDictionary *MicaScalarDictionary(id object) {
 - (void)savePomodoroState {
     if (!self.pomodoroOwnsLock || !self.pomodoroStateURL) return;
     if (self.pomodoro.phase == MICA_POMODORO_IDLE) {
+        self.pomodoroLabel = @"";
         [NSFileManager.defaultManager removeItemAtURL:self.pomodoroStateURL error:nil];
         return;
     }
@@ -3760,7 +3778,8 @@ static NSDictionary *MicaScalarDictionary(id object) {
         @"phase": @(self.pomodoro.phase),
         @"completedFocuses": @(self.pomodoro.completed_focuses),
         @"cycleFocusMinutes": @(self.pomodoroCycleFocusMinutes),
-        @"cycleBreakMinutes": @(self.pomodoroCycleBreakMinutes)
+        @"cycleBreakMinutes": @(self.pomodoroCycleBreakMinutes),
+        @"label": MicaPomodoroLabelIsValid(self.pomodoroLabel ?: @"") ? (self.pomodoroLabel ?: @"") : @""
     } mutableCopy];
     if (mica_pomodoro_is_running(&_pomodoro)) {
         state[@"deadline"] = @(NSDate.date.timeIntervalSince1970 + mica_pomodoro_remaining(&_pomodoro, now));
@@ -3776,7 +3795,8 @@ static NSDictionary *MicaScalarDictionary(id object) {
     [self loadPomodoroSettingsFromDisk];
     NSData *data = [NSData dataWithContentsOfURL:self.pomodoroStateURL];
     NSDictionary *saved = data ? MicaScalarDictionary([NSJSONSerialization JSONObjectWithData:data options:0 error:nil]) : nil;
-    if (!saved) { mica_pomodoro_reset(&_pomodoro); return; }
+    if (!saved) { mica_pomodoro_reset(&_pomodoro); self.pomodoroLabel = @""; return; }
+    self.pomodoroLabel = MicaPomodoroLabelIsValid(saved[@"label"]) ? saved[@"label"] : @"";
     NSInteger cycleFocus = [saved[@"cycleFocusMinutes"] integerValue];
     NSInteger cycleBreak = [saved[@"cycleBreakMinutes"] integerValue];
     self.pomodoroCycleFocusMinutes = cycleFocus >= 1 ? cycleFocus : self.focusDurationMinutes;
@@ -3798,6 +3818,7 @@ static NSDictionary *MicaScalarDictionary(id object) {
         restored.paused_remaining = MAX(0, [saved[@"remaining"] doubleValue]);
     } else mica_pomodoro_reset(&restored);
     self.pomodoro = restored;
+    [self updateFocusMenuLabel];
     if (expired) [self savePomodoroState];
 }
 
@@ -3864,17 +3885,46 @@ static NSDictionary *MicaScalarDictionary(id object) {
     double now = MicaContinuousTimeSeconds();
     if (mica_pomodoro_is_paused(&_pomodoro)) mica_pomodoro_toggle_pause(&_pomodoro, now);
     else if (self.pomodoro.phase == MICA_POMODORO_IDLE) {
+        self.pomodoroLabel = @"";
         self.pomodoroCycleFocusMinutes = self.focusDurationMinutes;
         self.pomodoroCycleBreakMinutes = self.breakDurationMinutes;
         mica_pomodoro_start(&_pomodoro, now, self.pomodoroCycleFocusMinutes * 60.0);
     }
     [self savePomodoroState];
     [self releasePomodoroLock];
+    [self updateFocusMenuLabel];
 #if !defined(MICA_APP_NO_MAIN)
     [self requestPomodoroNotifications];
 #endif
     [self schedulePomodoroNotification];
     [self.terminalView setNeedsDisplay:YES];
+    if (gMicaTimerStatusItem) [self updateMenuBarTimer];
+}
+
+- (void)editPomodoroLabel:(id)sender {
+    (void)sender;
+    [self refreshPomodoroState];
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = @"Label Focus Session";
+    alert.informativeText = @"Add a plain text label (up to 80 characters).";
+    [alert addButtonWithTitle:@"Save"];
+    [alert addButtonWithTitle:@"Cancel"];
+    NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 280, 24)];
+    field.stringValue = self.pomodoroLabel ?: @"";
+    alert.accessoryView = field;
+    if ([alert runModal] != NSAlertFirstButtonReturn) return;
+    NSString *label = field.stringValue ?: @"";
+    if (!MicaPomodoroLabelIsValid(label)) {
+        NSBeep();
+        return;
+    }
+    if (![self acquirePomodoroLock]) return;
+    [self loadPomodoroStateFromDisk];
+    self.pomodoroLabel = label;
+    [self savePomodoroState];
+    [self releasePomodoroLock];
+    [self.terminalView setNeedsDisplay:YES];
+    [self updateFocusMenuLabel];
     if (gMicaTimerStatusItem) [self updateMenuBarTimer];
 }
 
@@ -3905,8 +3955,10 @@ static NSDictionary *MicaScalarDictionary(id object) {
     NSString *oldNotification = [self currentPomodoroNotificationIdentifier];
 #endif
     mica_pomodoro_reset(&_pomodoro);
+    self.pomodoroLabel = @"";
     [self savePomodoroState];
     [self releasePomodoroLock];
+    [self updateFocusMenuLabel];
 #if !defined(MICA_APP_NO_MAIN)
     [UNUserNotificationCenter.currentNotificationCenter removePendingNotificationRequestsWithIdentifiers:@[oldNotification]];
 #endif
@@ -3934,8 +3986,11 @@ static NSDictionary *MicaScalarDictionary(id object) {
     BOOL changed = mica_pomodoro_advance(&_pomodoro, now,
         MAX(1, self.pomodoroCycleFocusMinutes) * 60.0,
         MAX(1, self.pomodoroCycleBreakMinutes) * 60.0);
+    if (changed && (phase == MICA_POMODORO_BREAK || phase == MICA_POMODORO_PAUSED_BREAK))
+        self.pomodoroLabel = @"";
     if (changed) [self savePomodoroState];
     [self releasePomodoroLock];
+    [self updateFocusMenuLabel];
     if (!changed) return;
 #if !defined(MICA_APP_NO_MAIN)
     [UNUserNotificationCenter.currentNotificationCenter removePendingNotificationRequestsWithIdentifiers:@[oldNotification]];
@@ -3969,9 +4024,13 @@ static NSDictionary *MicaScalarDictionary(id object) {
     [self loadPomodoroStateFromDisk];
     self.lastPomodoroFilesStamp = stamp;
     BOOL changed = oldPhase != self.pomodoro.phase || oldCompletedFocuses != self.pomodoro.completed_focuses;
+    MicaPomodoroPhase phaseBeforeAdvance = self.pomodoro.phase;
     changed = mica_pomodoro_advance_with_options(&_pomodoro, MicaContinuousTimeSeconds(),
         self.pomodoroCycleFocusMinutes * 60.0, self.pomodoroCycleBreakMinutes * 60.0,
         self.autoStartBreaks, self.autoStartFocus) || changed;
+    if ((phaseBeforeAdvance == MICA_POMODORO_BREAK || phaseBeforeAdvance == MICA_POMODORO_PAUSED_BREAK) &&
+        (self.pomodoro.phase == MICA_POMODORO_FOCUS || self.pomodoro.phase == MICA_POMODORO_PAUSED_FOCUS))
+        self.pomodoroLabel = @"";
     if (changed) [self savePomodoroState];
     [self releasePomodoroLock];
     if (changed) {
@@ -3981,6 +4040,7 @@ static NSDictionary *MicaScalarDictionary(id object) {
     }
     if (self.pomodoro.phase != MICA_POMODORO_IDLE)
         [self.terminalView setNeedsDisplayInRect:NSMakeRect(0, 0, self.terminalView.bounds.size.width, kStatusHeight)];
+    if (changed) [self updateFocusMenuLabel];
     if (gMicaTimerStatusItem) [self updateMenuBarTimer];
 }
 
@@ -4614,6 +4674,11 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     AddMenuItem(focusMenu, @"Start / Resume Focus Timer", @selector(startPomodoro:), @"", 0).target = self;
     AddMenuItem(focusMenu, @"Pause / Resume Timer", @selector(togglePomodoroPause:), @"", 0).target = self;
     AddMenuItem(focusMenu, @"End Current Phase", @selector(skipPomodoroPhase:), @"", 0).target = self;
+    NSMenuItem *currentLabel = AddMenuItem(focusMenu,
+        self.pomodoroLabel.length ? [NSString stringWithFormat:@"Session: %@", self.pomodoroLabel] : @"Session: (unlabeled)", nil, @"", 0);
+    currentLabel.enabled = NO;
+    currentLabel.tag = 9137;
+    AddMenuItem(focusMenu, @"Label…", @selector(editPomodoroLabel:), @"", 0).target = self;
     AddMenuItem(focusMenu, @"Reset Timer", @selector(resetPomodoro:), @"", 0).target = self;
     [focusMenu addItem:NSMenuItem.separatorItem];
     AddMenuItem(focusMenu, @"Timer Settings…", @selector(openPomodoroSettings:), @"", 0).target = self;
@@ -4701,6 +4766,14 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     [main addItem:helpRoot];
     NSApp.helpMenu = helpMenu;
     [NSApp setMainMenu:main];
+}
+
+- (void)updateFocusMenuLabel {
+    for (NSMenuItem *root in NSApp.mainMenu.itemArray) {
+        if (![root.title isEqualToString:@"Focus"]) continue;
+        for (NSMenuItem *item in root.submenu.itemArray) if (item.tag == 9137)
+            item.title = self.pomodoroLabel.length ? [NSString stringWithFormat:@"Session: %@", self.pomodoroLabel] : @"Session: (unlabeled)";
+    }
 }
 
 - (void)showKeyboardShortcuts:(id)sender {
