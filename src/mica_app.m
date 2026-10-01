@@ -972,6 +972,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
 
 - (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
     (void)replacementRange;
+    if (self.owner.dictationUndoValid) self.owner.dictationUndoValid = NO;
     _markedText = nil;
     [self setNeedsDisplay:YES];
     NSString *text = [string isKindOfClass:NSAttributedString.class] ? [(NSAttributedString *)string string] : string;
@@ -4654,7 +4655,8 @@ static BOOL MicaValidBranchName(NSString *name) {
     mica_session_paste(target.session, bytes.bytes, bytes.length);
     self.lastDictationText = transcript;
     self.lastDictationTab = target;
-    self.dictationUndoValid = YES;
+    self.dictationUndoValid = [transcript rangeOfCharacterFromSet:
+        NSCharacterSet.newlineCharacterSet].location == NSNotFound;
     self.voiceTargetTab = nil;
     if (target == self.activeTab) {
         [self.terminalView clearSelection];

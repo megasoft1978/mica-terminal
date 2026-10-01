@@ -278,14 +278,17 @@ static void MicaUITestSendMouse(MicaAppDelegate *delegate, NSEventType type, NSP
 @interface MicaUITestVoiceController : MicaVoiceController
 @property(nonatomic) NSUInteger pushToTalkStarts;
 @property(nonatomic) NSUInteger pushToTalkFinishes;
+@property(nonatomic) NSUInteger cancels;
 @end
 
 @implementation MicaUITestVoiceController
 - (void)startPushToTalkForWorkingDirectory:(NSString *)workingDirectory {
     (void)workingDirectory;
     self.pushToTalkStarts++;
+    [self setValue:@(MicaVoiceControllerStateListening) forKey:@"state"];
 }
-- (void)finishPushToTalk { self.pushToTalkFinishes++; }
+- (void)finishPushToTalk { self.pushToTalkFinishes++; [self setValue:@(MicaVoiceControllerStateIdle) forKey:@"state"]; }
+- (void)cancel { self.cancels++; [self setValue:@(MicaVoiceControllerStateIdle) forKey:@"state"]; }
 @end
 
 @interface MicaUITestLiveResizeView : MicaTerminalView
@@ -788,12 +791,70 @@ static int MicaRunUISelfTest(void) {
                 (unsigned long)pushToTalkProbe.pushToTalkStarts,
                 (unsigned long)pushToTalkProbe.pushToTalkFinishes]);
 
+        voiceDelegate.dictationToggleMode = YES;
         MicaUITestSendFlags(voiceDelegate, NSEventModifierFlagOption, 58);
-        for (int attempt = 0; pushToTalkProbe.pushToTalkStarts < 2 && attempt < 200; attempt++)
+        MicaUITestSendFlags(voiceDelegate, 0, 58);
+        BOOL toggleStarted = pushToTalkProbe.pushToTalkStarts == 2 &&
+            pushToTalkProbe.state == MicaVoiceControllerStateListening;
+        MicaUITestSendFlags(voiceDelegate, NSEventModifierFlagOption, 58);
+        MicaUITestSendFlags(voiceDelegate, 0, 58);
+        BOOL toggleStopped = pushToTalkProbe.pushToTalkFinishes == 2 &&
+            pushToTalkProbe.state == MicaVoiceControllerStateIdle;
+        MicaUITestSendFlags(voiceDelegate, NSEventModifierFlagOption, 58);
+        MicaUITestSendFlags(voiceDelegate, 0, 58);
+        [voiceDelegate.terminalView keyDown:[NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+            modifierFlags:0 timestamp:0 windowNumber:voiceDelegate.window.windowNumber context:nil
+            characters:@"\x1b" charactersIgnoringModifiers:@"\x1b" isARepeat:NO keyCode:53]];
+        BOOL toggleCancelled = pushToTalkProbe.cancels == 1 &&
+            pushToTalkProbe.state == MicaVoiceControllerStateIdle;
+        MicaUITestRecord(report, &allPassed, toggleStarted && toggleStopped && toggleCancelled,
+            [NSString stringWithFormat:@"toggle dictation starts on first Option tap, stops on the next, and Esc cancels (start=%d stop=%d cancel=%d)",
+                toggleStarted, toggleStopped, toggleCancelled]);
+        voiceDelegate.dictationToggleMode = NO;
+
+        voiceDelegate.voiceTargetTab = voiceTargetTab;
+        BOOL fakeTranscriptInserted = [voiceDelegate voiceController:pushToTalkProbe
+            didFinishTranscript:@"mica-safe-undo"];
+        NSString *insertedBuffer = voiceTestDirectoryReady
+            ? MicaUITestCaptureZLEBuffer(voiceTestDirectory, voiceTargetTab.session) : nil;
+        NSMenuItem *undoItem = [[NSMenuItem alloc] initWithTitle:@"Undo Last Dictation"
+            action:@selector(undoLastDictation:) keyEquivalent:@""];
+        undoItem.target = voiceDelegate;
+        BOOL undoEnabled = voiceDelegate.dictationUndoValid && [voiceDelegate validateMenuItem:undoItem];
+        [voiceDelegate undoLastDictation:nil];
+        NSString *undoneBuffer = voiceTestDirectoryReady
+            ? MicaUITestCaptureZLEBuffer(voiceTestDirectory, voiceTargetTab.session) : nil;
+        MicaUITestRecord(report, &allPassed, fakeTranscriptInserted && undoEnabled &&
+            [insertedBuffer isEqualToString:@"mica-safe-undo"] && [undoneBuffer isEqualToString:@""],
+            [NSString stringWithFormat:@"injected single-line transcript enables undo and removes exactly its prompt text (enabled=%d before=%@ after=%@)",
+                undoEnabled, insertedBuffer, undoneBuffer]);
+
+        voiceDelegate.voiceTargetTab = voiceTargetTab;
+        BOOL multilineInserted = [voiceDelegate voiceController:pushToTalkProbe
+            didFinishTranscript:@"first line\nsecond line"];
+        BOOL multilineUndoDisabled = !voiceDelegate.dictationUndoValid && ![voiceDelegate validateMenuItem:undoItem];
+        MicaUITestRecord(report, &allPassed, multilineInserted && multilineUndoDisabled,
+            @"undo stays disabled for a multiline injected transcript");
+        mica_session_write(voiceTargetTab.session, "\x03", 1);
+        for (int attempt = 0; attempt < 40; attempt++) {
+            mica_session_poll(voiceTargetTab.session, 0);
+            MicaUITestRunLoopFor(0.01);
+        }
+        voiceDelegate.voiceTargetTab = voiceTargetTab;
+        [voiceDelegate voiceController:pushToTalkProbe didFinishTranscript:@"mica-edit-check"];
+        MicaUITestInsertComposedText(voiceDelegate, @"x");
+        BOOL editedPromptUndoDisabled = !voiceDelegate.dictationUndoValid && ![voiceDelegate validateMenuItem:undoItem];
+        MicaUITestRecord(report, &allPassed, editedPromptUndoDisabled,
+            @"undo becomes disabled when composed or pasted prompt text is edited");
+
+        NSUInteger startsBeforeFocusLoss = pushToTalkProbe.pushToTalkStarts;
+        NSUInteger finishesBeforeFocusLoss = pushToTalkProbe.pushToTalkFinishes;
+        MicaUITestSendFlags(voiceDelegate, NSEventModifierFlagOption, 58);
+        for (int attempt = 0; pushToTalkProbe.pushToTalkStarts == startsBeforeFocusLoss && attempt < 200; attempt++)
             MicaUITestRunLoopFor(0.01);
         [voiceDelegate.terminalView cancelLeftOptionTracking];
-        BOOL focusLossFinishesHold = pushToTalkProbe.pushToTalkStarts == 2 &&
-            pushToTalkProbe.pushToTalkFinishes == 2;
+        BOOL focusLossFinishesHold = pushToTalkProbe.pushToTalkStarts == startsBeforeFocusLoss + 1 &&
+            pushToTalkProbe.pushToTalkFinishes == finishesBeforeFocusLoss + 1;
         MicaUITestRecord(report, &allPassed, focusLossFinishesHold,
             @"losing app focus finalizes an active hold-to-talk capture exactly once");
 
@@ -2375,6 +2436,7 @@ static int MicaRunUISelfTest(void) {
             dictationLayoutView.owner = delegate;
             dictationLayoutView.terminalFont = delegate.terminalView.terminalFont;
             [dictationLayoutWindow setContentView:dictationLayoutView];
+            delegate.dictationToggleMode = YES;
             for (NSInteger themeIndex = 0; themeIndex < 2; themeIndex++) {
                 [delegate setLightTheme:themeIndex == 1];
                 for (NSNumber *width in dictationWidths) for (NSNumber *stateValue in dictationStatesForLayout)
@@ -2407,6 +2469,7 @@ static int MicaRunUISelfTest(void) {
                 }
             }
             [dictationLayoutWindow close];
+            delegate.dictationToggleMode = NO;
             [delegate setLightTheme:NO];
             MicaUITestRecord(report, &allPassed, dictationRectsSafe,
                 @"dictation label, 0/3/40-word transcript and hint stay separate with the last word visible at 480/600/800/1600 px in both themes");

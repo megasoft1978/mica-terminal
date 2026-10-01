@@ -137,6 +137,7 @@ int main(int argc, const char *argv[]) {
         ];
         for (NSNumber *width in dictationWidths) for (NSDictionary *state in dictationStates) {
             MicaAppDelegate *sample = MakeWindow(width.doubleValue, 360, @[@"Shell"], @"Fieldnote");
+            sample.dictationToggleMode = YES;
             MicaVoiceController *sampleVoice = [[MicaVoiceController alloc] initWithHelperURL:[NSURL fileURLWithPath:@"/nonexistent"]];
             sample.voiceController = sampleVoice;
             [sampleVoice setValue:state[@"state"] forKey:@"state"];
@@ -169,6 +170,7 @@ int main(int argc, const char *argv[]) {
         gMicaLightTheme = YES;
         for (NSNumber *width in dictationWidths) for (NSDictionary *state in dictationStates) {
             MicaAppDelegate *sample = MakeWindow(width.doubleValue, 360, @[@"Shell"], @"Fieldnote");
+            sample.dictationToggleMode = YES;
             [sample setLightTheme:YES];
             MicaVoiceController *sampleVoice = [[MicaVoiceController alloc] initWithHelperURL:[NSURL fileURLWithPath:@"/nonexistent"]];
             sample.voiceController = sampleVoice;
