@@ -81,12 +81,24 @@ int main(int argc, const char *argv[]) {
                     owner.pomodoro = timer;
                 }
                 if (frame == 95) mica_session_scroll(session, 12);
-                if (frame == 110) {
+                if (frame == 100) {
                     long cursor = -1;
                     if (!mica_session_find(session, "Hello, Mica!", true, &cursor)) return 1;
                 }
-                if (frame == 125) [owner setLightTheme:YES];
-                if (frame == 145) { [owner setLightTheme:NO]; mica_session_scroll_to_bottom(session); }
+                if (frame == 110) {
+                    MicaPomodoro timer = owner.pomodoro;
+                    timer.phase = MICA_POMODORO_BREAK;
+                    timer.deadline = MicaContinuousTimeSeconds() + 5 * 60;
+                    timer.completed_focuses = 1;
+                    owner.pomodoro = timer;
+                }
+                if (frame == 135) {
+                    MicaPomodoro timer = owner.pomodoro;
+                    mica_pomodoro_toggle_pause(&timer, MicaContinuousTimeSeconds());
+                    owner.pomodoro = timer;
+                }
+                if (frame == 145) [owner setLightTheme:YES];
+                if (frame == 155) { [owner setLightTheme:NO]; mica_session_scroll_to_bottom(session); }
                 PollDemo(owner);
                 [owner.terminalView setNeedsDisplay:YES];
                 NSView *view = owner.terminalView;

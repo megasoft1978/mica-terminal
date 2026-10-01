@@ -1,6 +1,6 @@
 # What comparable tools do, and where Mica stands
 
-Researched 2026-09-30 from each product's own documentation. "Done" means shipped in this repository; the rest is ranked by user value, effort, and fit with Mica's small, local-first design.
+Researched 2026-10-01 from each product's own documentation and current Mac App Store listings. "Done" means shipped in this repository; the rest is ranked by user value, effort, and fit with Mica's small, local-first design.
 
 ## The field
 
@@ -25,7 +25,7 @@ Mica already has a computer-wide focus/break timer, a persistent phase and count
 - Small menu-bar timers like FocusTimer make the remaining time glanceable without requiring the full app window ([FocusTimer](https://focus.braunf.com/)).
 - Apple exposes named [custom accessibility actions](https://developer.apple.com/documentation/appkit/nsaccessibilitycustomaction) through VoiceOver's Actions rotor. Mica now exposes ending the active phase there and in the Focus menu, alongside its accessible start/pause/resume and reset controls.
 
-For Mica, the best fit is to keep the timer visible but quiet: make its current phase and remaining time the clearest status-strip information, keep completed-focus count in the timer menu and accessibility label, and let users independently choose whether focus and break intervals start automatically. Mica keeps today's automatic transitions as the default. Task planning, app blocking and gamified rewards add scope and would distract from Mica's terminal-first workflow.
+For Mica, the useful pattern is glanceable phase and time plus unmistakable primary actions. Be Focused lists start, pause, skip and optional auto-start as direct timer controls; Apple's Focus listing describes seeing remaining focus or break time in the menu bar without opening a window. Mica keeps that quick visibility in its status strip: uppercase FOCUS/BREAK/PAUSED text, phase color, a progress ring, and labeled Start/Pause/Resume actions. Completed-focus count remains in the menu and accessibility label, while users can independently choose whether focus and break intervals start automatically. Task planning, app blocking and gamified rewards add scope and would distract from Mica's terminal-first workflow.
 
 ## Memory (idle, one window, this Mac)
 

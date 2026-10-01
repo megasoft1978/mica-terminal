@@ -212,9 +212,9 @@
 
     <div class="wrap" id="demo">
       <div class="shot"><video controls muted loop playsinline preload="metadata" poster="assets/mica-demo-poster.png" width="1280" height="564" aria-describedby="demo-caption"><source src="assets/mica-demo.mp4" type="video/mp4">Your browser cannot play this video. Read the demo transcript below or download the MP4.</video></div>
-      <p class="caption" id="demo-caption">Fresh capture of the current native Mica view (September 30, 2026): local commands, Unicode output, scrollback search, a focus timer, and dark and light themes. Captured offscreen; no coding agent is invoked. The memory readout belongs to the capture process. This source build includes improvements made after the downloadable alpha.</p>
+      <p class="caption" id="demo-caption">Fresh capture of the current native Mica view (October 1, 2026): local commands, Unicode output, scrollback search, clear focus, break and paused timer states, and dark and light themes. Captured offscreen; no coding agent is invoked. The memory readout belongs to the capture process. This source build includes improvements made after the downloadable alpha.</p>
       <details class="demo-transcript"><summary>Demo transcript and download</summary>
-        <p>The Mica Demo window has Shell, Preview and Agent tabs. Scripted typing runs a local <code>printf</code> command that prints a greeting with CJK text, an emoji and an accent, then <code>seq 1 60</code> prints numbered lines. The demo starts a 25-minute focus timer, scrolls back, finds the greeting in history, switches to Light, then returns to Dark and live output.</p>
+        <p>The Mica Demo window has Shell, Preview and Agent tabs. Scripted typing runs a local <code>printf</code> command that prints a greeting with CJK text, an emoji and an accent, then <code>seq 1 60</code> prints numbered lines. The demo shows the 25-minute focus timer, a break, and a paused phase with labeled Start, Pause and Resume actions, then scrolls back, finds the greeting in history, and switches themes.</p>
         <p><a href="assets/mica-demo.mp4" download>Download the 16-second MP4</a>. The video is silent and starts only when you press Play.</p>
       </details>
     </div>
@@ -301,10 +301,10 @@ make app &amp;&amp; open build/Mica.app</div>
 
       <div class="row flip">
         <div>
-          <h3>A focus timer that follows you.</h3>
-          <p>One timer is shared by every Mica window on your Mac, with a notification when a focus or break period ends. It lives in the status bar, so it never covers your output. End a phase from the Focus menu or the timer’s VoiceOver actions, and check completed focus sessions in its accessibility label.</p>
+          <h3>Know when to focus and when to pause.</h3>
+          <p>One timer is shared by every Mica window on your Mac. Its status bar spells out FOCUS, BREAK, or PAUSED, keeps the countdown visible, and gives you a labeled Start, Pause, or Resume control. Color and a progress ring make each phase easy to scan. When a phase ends, a macOS notification tells you whether to pause work or return to focus. End a phase from the Focus menu or the timer’s VoiceOver actions.</p>
         </div>
-        <div class="shot"><img src="assets/crop-timer-dark.png" width="1300" height="100" alt="The focus timer showing Ready and 60:00 with start and reset buttons, next to the current folder." loading="lazy"></div>
+        <div class="shot"><img src="assets/crop-timer-dark.png" width="1300" height="100" alt="The focus timer status strip with a clearly labeled phase, countdown, start or pause action, and reset control beside the current folder." loading="lazy"></div>
       </div>
 
       <div class="row">

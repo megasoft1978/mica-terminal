@@ -1310,8 +1310,10 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         x = 12 + [modeName sizeWithAttributes:attributes].width + 18 + 12;
     }
     NSDictionary *attributes = @{NSFontAttributeName:[NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold]};
-    CGFloat labelWidth = ceil([[self pomodoroStatusText] sizeWithAttributes:attributes].width);
-    CGFloat controlWidth = MAX(190, labelWidth + 96);
+    CGFloat labelWidth = ceil([[[self pomodoroStatusText] uppercaseString] sizeWithAttributes:attributes].width);
+    // Reserve a real, labeled action button plus the independent reset affordance.
+    // The status strip is a glanceable control, so users should not have to decode glyphs.
+    CGFloat controlWidth = MAX(224, labelWidth + 140);
     return NSMakeRect(x, floor((kStatusHeight - 23) / 2), controlWidth, 23);
 }
 
@@ -1837,28 +1839,33 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     }
     NSDictionary *timerAttrs = @{
         NSFontAttributeName: [NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold],
-        NSForegroundColorAttributeName: NSColor.labelColor
+        NSForegroundColorAttributeName: timerColor
     };
-    [timerText drawAtPoint:NSMakePoint(NSMinX(timerControl) + 25,
+    [[timerText uppercaseString] drawAtPoint:NSMakePoint(NSMinX(timerControl) + 25,
         MicaCenteredTextBaseline(timerAttrs[NSFontAttributeName], timerControl.size.height) + NSMinY(timerControl))
         withAttributes:timerAttrs];
-    CGFloat actionX = NSMaxX(timerControl) - 55;
+    CGFloat actionX = NSMaxX(timerControl) - 95;
     [MicaSeparatorColor() setStroke];
     NSBezierPath *actionDivider = [NSBezierPath bezierPath];
-    [actionDivider moveToPoint:NSMakePoint(actionX - 7, NSMinY(timerControl) + 5)];
-    [actionDivider lineToPoint:NSMakePoint(actionX - 7, NSMaxY(timerControl) - 5)];
+    [actionDivider moveToPoint:NSMakePoint(actionX - 8, NSMinY(timerControl) + 5)];
+    [actionDivider lineToPoint:NSMakePoint(actionX - 8, NSMaxY(timerControl) - 5)];
     [actionDivider stroke];
     NSDictionary *actionAttrs = @{
         NSFontAttributeName: [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold],
+        NSForegroundColorAttributeName: NSColor.controlAccentColor
+    };
+    NSString *actionTitle = timer.phase == MICA_POMODORO_IDLE ? @"Start" :
+        (mica_pomodoro_is_paused(&timer) ? @"Resume" : @"Pause");
+    [actionTitle drawAtPoint:NSMakePoint(actionX,
+        MicaCenteredTextBaseline(actionAttrs[NSFontAttributeName], timerControl.size.height) + NSMinY(timerControl))
+        withAttributes:actionAttrs];
+    NSDictionary *resetAttrs = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:12 weight:NSFontWeightMedium],
         NSForegroundColorAttributeName: MicaSecondaryLabelColor(1.0)
     };
-    NSString *toggleGlyph = mica_pomodoro_is_running(&timer) ? @"Ⅱ" : @"▶";
-    [toggleGlyph drawAtPoint:NSMakePoint(actionX,
-        MicaCenteredTextBaseline(actionAttrs[NSFontAttributeName], timerControl.size.height) + NSMinY(timerControl))
-        withAttributes:actionAttrs];
-    [@"↻" drawAtPoint:NSMakePoint(actionX + 27,
-        MicaCenteredTextBaseline(actionAttrs[NSFontAttributeName], timerControl.size.height) + NSMinY(timerControl))
-        withAttributes:actionAttrs];
+    [@"↻" drawAtPoint:NSMakePoint(NSMaxX(timerControl) - 24,
+        MicaCenteredTextBaseline(resetAttrs[NSFontAttributeName], timerControl.size.height) + NSMinY(timerControl))
+        withAttributes:resetAttrs];
     contextX = NSMaxX(timerControl) + 12;
 
     NSString *folderName = tab.cwd.length ? tab.cwd : @"/";
@@ -3473,10 +3480,10 @@ static NSDictionary *MicaScalarDictionary(id object) {
             settings.authorizationStatus != UNAuthorizationStatusProvisional) return;
         double seconds = mica_pomodoro_remaining(&self->_pomodoro, MicaContinuousTimeSeconds());
         UNMutableNotificationContent *content = [UNMutableNotificationContent new];
-        content.title = self.pomodoro.phase == MICA_POMODORO_FOCUS ? @"Focus complete" : @"Break complete";
+        content.title = self.pomodoro.phase == MICA_POMODORO_FOCUS ? @"Focus time is over" : @"Break time is over";
         content.body = self.pomodoro.phase == MICA_POMODORO_FOCUS
-            ? [NSString stringWithFormat:@"Time to pause and take a %ld-minute break.", (long)self.pomodoroCycleBreakMinutes]
-            : @"Break complete. It’s time to get back to focus.";
+            ? [NSString stringWithFormat:@"Pause work and take a %ld-minute break.", (long)self.pomodoroCycleBreakMinutes]
+            : @"Your break is over. It’s time to get back to focus.";
         content.sound = UNNotificationSound.defaultSound;
         UNTimeIntervalNotificationTrigger *trigger = [UNTimeIntervalNotificationTrigger
             triggerWithTimeInterval:MAX(1, seconds) repeats:NO];

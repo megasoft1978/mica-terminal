@@ -2749,7 +2749,7 @@ static int MicaRunUISelfTest(void) {
             !timerWindowB.autoStartFocus && !timerWindowB.autoStartBreaks;
         NSRect timerControl = [timerWindowA.terminalView pomodoroControlRect];
         MicaUITestSendMouse(timerWindowA, NSEventTypeLeftMouseDown,
-            NSMakePoint(NSMinX(timerControl) + 72, NSMidY(timerControl)), 0);
+            NSMakePoint(NSMaxX(timerControl) - 68, NSMidY(timerControl)), 0);
         [timerWindowB refreshPomodoroState];
         BOOL timerStartShared = timerOptionsShared && timerControl.size.width >= 180 &&
             timerWindowA.pomodoro.phase == MICA_POMODORO_FOCUS && timerWindowB.focusDurationMinutes == 50 &&
@@ -2760,7 +2760,8 @@ static int MicaRunUISelfTest(void) {
         BOOL timerToggleAccessible = NO;
         for (NSString *label in timerAXLabels)
             if ([label hasPrefix:@"Focus timer, Focus,"] &&
-                [label containsString:@"0 focus sessions completed"]) timerToggleAccessible = YES;
+                [label containsString:@"0 focus sessions completed"] &&
+                [label containsString:@"Pause timer"]) timerToggleAccessible = YES;
         BOOL timerControlsAccessible = timerToggleAccessible && [timerAXLabels containsObject:@"Reset focus timer"];
         [timerWindowB togglePomodoroPause:nil];
         [timerWindowA refreshPomodoroState];
@@ -2791,10 +2792,11 @@ static int MicaRunUISelfTest(void) {
         NSRect visibleTimerRect = [timerWindowB.terminalView pomodoroControlRect];
         NSDictionary *visibleTimerAttributes = @{NSFontAttributeName:
             [NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold]};
-        CGFloat visibleTimerTextWidth = ceil([visibleTimerStatus sizeWithAttributes:visibleTimerAttributes].width);
+        CGFloat visibleTimerTextWidth = ceil([[visibleTimerStatus uppercaseString]
+            sizeWithAttributes:visibleTimerAttributes].width);
         BOOL timerPhaseVisible = [visibleTimerStatus hasPrefix:@"Break · "] &&
             [visibleTimerStatus containsString:@":"] && ![visibleTimerStatus containsString:@"done"] &&
-            visibleTimerRect.size.width >= visibleTimerTextWidth + 96;
+            visibleTimerRect.size.width >= visibleTimerTextWidth + 140;
         timerSkipFocusShared = timerSkipFocusShared && timerCountAccessible && timerPhaseVisible && pausedPhaseVisible;
         [timerWindowB skipPomodoroPhase:nil];
         [timerWindowA refreshPomodoroState];

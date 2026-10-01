@@ -36,10 +36,10 @@
 <summary>Watch the animated demo (16 seconds)</summary>
 
 <p align="center">
-  <img src="docs/assets/mica-demo.gif" alt="Latest Mica UI showing local command output, scrollback search, a focus timer, and dark and light themes" width="900">
+  <img src="docs/assets/mica-demo.gif" alt="Mica's status strip clearly shows focus, break and paused timer states with labeled controls, alongside terminal output and dark and light themes" width="900">
 </p>
 
-A fresh offscreen capture of the current native Mica view (October 1, 2026). Local commands print Unicode text and numbered lines, then the demo scrolls, searches history, starts the focus timer and switches themes. It does not invoke a coding agent. The memory readout belongs to the capture process. Close this section to hide the animation, or [watch the MP4 with playback controls](https://megasoft1978.github.io/mica-terminal/#demo).
+A fresh offscreen capture of the current native Mica view (October 1, 2026). Local commands print Unicode text and numbered lines, then the demo shows the focus, break and paused timer states, scrolls and searches history, and switches themes. It does not invoke a coding agent. The memory readout belongs to the capture process. Close this section to hide the animation, or [watch the MP4 with playback controls](https://megasoft1978.github.io/mica-terminal/#demo).
 
 </details>
 
@@ -62,7 +62,7 @@ iTerm2 plus Wispr Flow is about 770 MB before you add a timer. Dictation adds a 
 - **A window per project.** Named tabs, folders, configured startup commands and open project windows reopen after quitting, including when you launch another project. Project launchers keep their own configured layouts. The Dock icon shows the mark of the project in front. The status bar shows the git branch, and **Session → New Worktree Tab…** gives an agent its own checkout.
 - **Agents stay ordinary programs.** Run Codex, Claude Code, `lazygit` or anything else in a normal `zsh` tab. Mica reads the visible screen for signs of work or a question and shows it on the tab, and posts a notification when a program asks for attention.
 - **Good dictation that stays on your Mac.** Hold left <kbd>⌥</kbd>, speak, edit the text, press Return. It uses NVIDIA’s Parakeet speech model through Core ML; Mica downloads the 630 MB model in the background on first launch, with progress in the status bar, so dictation is ready when you need it. Nothing you say is sent anywhere.
-- **A focus timer that follows you.** One timer shared by every Mica window. The status strip keeps the focus/break phase and countdown visible, with distinct paused labels; notifications say when to take a break or return to focus. End a phase from the **Focus** menu or VoiceOver actions; completed sessions remain in the menu and accessibility label.
+- **A focus timer that follows you.** One timer shared by every Mica window. The status strip clearly labels **FOCUS**, **BREAK**, or **PAUSED · FOCUS/BREAK**, keeps the countdown in view, and gives you a labeled **Start**, **Pause**, or **Resume** control. Focus and break use separate colors and a progress ring. When a phase ends, macOS tells you whether to pause work or return to focus. End a phase from the **Focus** menu or VoiceOver actions; completed sessions remain in the menu and accessibility label.
 - **Still a real terminal.** Choose how much scrollback to keep (650 lines by default, up to 20,000 with its memory cost shown in Settings), search Unicode output and keep your reading position while retained history receives new output, Command-click links, drag tabs, choose a cursor and a dark, light or system-following theme. If a program over SSH asks to set your clipboard, Mica asks you first.
 
 ## Install
