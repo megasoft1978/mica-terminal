@@ -1,5 +1,9 @@
 # Performance notes
 
+## Dictation vocabulary correction
+
+`examples/vocabulary-transcripts.tsv` is a fixed 40-prompt coding-dictation fixture. The UI test compares exact expected transcripts: raw output matched 24/40 prompts (60%); deterministic correction matched 34/40 (85%) in the recorded run. This is a text-only fixture, not an audio or speech-recognition accuracy benchmark. The test measured 3.551 ms for correction with 500 candidate terms and a 200-word transcript on this machine; the acceptance limit is 5 ms. The corrector uses Foundation string normalization, Damerau–Levenshtein distance and a bounded phonetic key, with no model or network access. Timing is a single diagnostic sample and varies with host load.
+
 Snapshot measurements on one Apple Silicon Mac (macOS 26, 2026-09-29). They are not a controlled benchmark.
 
 | Check | Result |

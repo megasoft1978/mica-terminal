@@ -30,7 +30,7 @@ This roadmap tracks open work only. Shipped features are summarized below so the
 
 - Optional agent/workspace sidebar.
 - Timer session labels, daily goal and local history; menu-bar timer extra.
-- Local dictation vocabulary and snippets; review-before-insert draft.
+- Dictation snippets and a review-before-insert draft.
 - Worktree picker and cleanup; agent resume adapters.
 - Bounded scrollback restore; changed-files summary.
 - Quick-terminal drop-down; Liquid Glass on the tab strip.

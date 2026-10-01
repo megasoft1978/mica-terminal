@@ -1,0 +1,41 @@
+raw	expected
+Open Mica Terminal settings	Open MicaTerminal settings
+The Mica-Terminal window is ready	The MicaTerminal window is ready
+Use Mica_Terminal for this task	Use MicaTerminal for this task
+I opened MicaTerminal today	I opened MicaTerminal today
+Check the lib v term parser	Check the libvterm parser
+The lib-vterm parser handles escapes	The libvterm parser handles escapes
+Look at mica app m	Look at mica_app.m
+Update the mica app header	Update the mica_app header
+Run make sanitize after edits	Run make sanitize after edits
+Use the make stress target	Use the make stress target
+The App Kit view owns drawing	The AppKit view owns drawing
+Use Cocoa for the settings window	Use Cocoa for the settings window
+Check the NS User Defaults suite	Check the NSUserDefaults suite
+The Foundation API is enough	The Foundation API is enough
+Read the Git branch name	Read the Git branch name
+Inspect the git ls files output	Inspect the git ls-files output
+Use a pseudo terminal for tests	Use a pseudo-terminal for tests
+The PTY harness starts a shell	The PTY harness starts a shell
+Keep the terminal parser deterministic	Keep the terminal parser deterministic
+The vocabulary file stays local	The vocabulary file stays local
+Open project settings from the menu	Open project settings from the menu
+The command palette has both actions	The command palette has both actions
+Correct only clear term matches	Correct only clear term matches
+Never rewrite common words	Never rewrite common words
+The README documents local storage	The README documents local storage
+Run the UI audit after layout changes	Run the UI audit after layout changes
+Inspect each generated PNG	Inspect each generated PNG
+The branch name is mica terminal	The branch name is micaTerminal
+Use the mica terminal process	Use the micaTerminal process
+The Mica Terminal app has tabs	The MicaTerminal app has tabs
+Open the micaterminal project	Open the MicaTerminal project
+Check the vterm screen callbacks	Check the vterm screen callbacks
+Use Unicode names in tracked files	Use Unicode names in tracked files
+Paths can contain spaces too	Paths can contain spaces too
+The undo restores the raw transcript	The undo restores the raw transcript
+Keep aliases in the vocabulary text	Keep aliases in the vocabulary text
+Avoid changing unrelated commands	Avoid changing unrelated commands
+The timer should continue running	The timer should continue running
+Build the MicaTerminal application	Build the MicaTerminal application
+Fix the mica-terminal spelling	Fix the MicaTerminal spelling

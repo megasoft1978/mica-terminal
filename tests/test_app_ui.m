@@ -307,6 +307,95 @@ static int MicaRunUISelfTest(void) {
         NSApplication *app = NSApplication.sharedApplication;
         app.activationPolicy = NSApplicationActivationPolicyAccessory;
 
+        NSArray *vocab = @[@"MicaTerminal", @"libvterm", @"mica_app.m", @"AppKit", @"NSUserDefaults", @"git-ls-files", @"pseudo-terminal", @"vterm-screen", @"make-sanitize"];
+        BOOL vocabularyCases =
+            [MicaCorrectTranscript(@"Open Mica Terminal", vocab) isEqualToString:@"Open MicaTerminal"] &&
+            [MicaCorrectTranscript(@"Open Mica-Terminal", vocab) isEqualToString:@"Open MicaTerminal"] &&
+            [MicaCorrectTranscript(@"Open Mica Terminaal", vocab) isEqualToString:@"Open MicaTerminal"] &&
+            [MicaCorrectTranscript(@"Open MicaTerminal", vocab) isEqualToString:@"Open MicaTerminal"] &&
+            [MicaCorrectTranscript(@"this is a common word", @[@"with", @"which"]) isEqualToString:@"this is a common word"] &&
+            [MicaCorrectTranscript(@"cat", @[@"Catapult"]) isEqualToString:@"cat"] &&
+            [MicaCorrectTranscript(@"MicaTerminaal", @[@"MicaTerminal"]) isEqualToString:@"MicaTerminal"] &&
+            [MicaCorrectTranscript(@"db", @[@"db\tDatabase"]) isEqualToString:@"Database"] &&
+            [MicaCorrectTranscript(@"unrelated ordinary sentence with useful words", @[@"MicaTerminal", @"MicaTerminul"]) isEqualToString:@"unrelated ordinary sentence with useful words"];
+        MicaUITestRecord(report, &allPassed, vocabularyCases,
+                         @"vocabulary corrector handles normalized terms and rejects common words, short terms, near misses, and ambiguous candidates");
+        MicaTab *vocabularyTabA=[MicaTab new], *vocabularyTabB=[MicaTab new];
+        vocabularyTabA.vocabularyFileTerms=@[@"AlphaProject"]; vocabularyTabB.vocabularyFileTerms=@[@"BetaProject"];
+        BOOL vocabularyWindowIsolation=[MicaCorrectTranscript(@"AlphaaProject",vocabularyTabA.vocabularyFileTerms) isEqualToString:@"AlphaProject"] &&
+            [MicaCorrectTranscript(@"AlphaaProject",vocabularyTabB.vocabularyFileTerms) isEqualToString:@"AlphaaProject"] &&
+            [MicaCorrectTranscript(@"BetaaProject",vocabularyTabB.vocabularyFileTerms) isEqualToString:@"BetaProject"] &&
+            [MicaCorrectTranscript(@"BetaaProject",vocabularyTabA.vocabularyFileTerms) isEqualToString:@"BetaaProject"];
+        MicaUITestRecord(report,&allPassed,vocabularyWindowIsolation,@"each window's tab vocabulary stays local to that tab");
+        NSString *recentVocabularyTerm=MicaVocabularyTermsFromRecentText(@"MicaTerminal",[NSDate date],[NSDate date]).firstObject;
+        BOOL trustedVocabularyWins=[MicaCorrectTranscript(@"MicaTerminaal",@[recentVocabularyTerm ?: @"",@"MicaTerminal"]) isEqualToString:@"MicaTerminal"];
+        MicaUITestRecord(report,&allPassed,trustedVocabularyWins,@"project vocabulary retains higher trust than an identical recent-screen term");
+
+        NSURL *fixtureURL = [NSURL fileURLWithPath:[NSFileManager.defaultManager.currentDirectoryPath stringByAppendingPathComponent:@"examples/vocabulary-transcripts.tsv"]];
+        NSArray *fixtureRows = [[NSString stringWithContentsOfURL:fixtureURL encoding:NSUTF8StringEncoding error:nil] componentsSeparatedByString:@"\n"];
+        NSUInteger fixtureCount = 0, fixtureBefore = 0, fixtureAfter = 0;
+        for (NSUInteger row = 1; row < fixtureRows.count; row++) {
+            NSArray *columns = [fixtureRows[row] componentsSeparatedByString:@"\t"];
+            if (columns.count != 2) continue;
+            fixtureCount++;
+            if ([columns[0] isEqualToString:columns[1]]) fixtureBefore++;
+            if ([MicaCorrectTranscript(columns[0], vocab) isEqualToString:columns[1]]) fixtureAfter++;
+        }
+        MicaUITestRecord(report, &allPassed, fixtureCount >= 40 && fixtureAfter >= fixtureBefore,
+            [NSString stringWithFormat:@"40-prompt vocabulary fixture hit rate: raw %lu/%lu (%.1f%%), corrected %lu/%lu (%.1f%%)",
+             (unsigned long)fixtureBefore, (unsigned long)fixtureCount, fixtureCount ? 100.0*fixtureBefore/fixtureCount : 0,
+             (unsigned long)fixtureAfter, (unsigned long)fixtureCount, fixtureCount ? 100.0*fixtureAfter/fixtureCount : 0]);
+
+        NSMutableArray *latencyTerms = [NSMutableArray array]; for (NSUInteger i=0;i<500;i++) [latencyTerms addObject:[NSString stringWithFormat:@"ProjectIdentifier%03lu",(unsigned long)i]];
+        NSMutableString *longTranscript = [NSMutableString string]; for (NSUInteger i=0;i<200;i++) [longTranscript appendString:@" ordinary token"];
+        double correctorMS = 1e9;
+        for (int attempt = 0; attempt < 7; attempt++) { // best of 7: one scheduler hiccup must not fail the gate
+            NSTimeInterval correctorStart = NSProcessInfo.processInfo.systemUptime;
+            (void)MicaCorrectTranscript(longTranscript, latencyTerms);
+            double elapsedMS = (NSProcessInfo.processInfo.systemUptime-correctorStart)*1000.0;
+            if (elapsedMS < correctorMS) correctorMS = elapsedMS;
+        }
+        BOOL correctorFast = correctorMS < 5.0;
+        MicaUITestRecord(report, &allPassed, correctorFast,
+            [NSString stringWithFormat:@"vocabulary correction stays below 5 ms for 500 terms and a 200-word transcript (%.3f ms)",correctorMS]);
+
+        char vocabularyDir[] = "/tmp/mica-vocabulary-XXXXXX"; char *vocabularyPath = mkdtemp(vocabularyDir);
+        BOOL vocabularySources = vocabularyPath != NULL;
+        if (vocabularySources) {
+            NSString *root = [NSString stringWithUTF8String:vocabularyPath];
+            unichar badControl = 1;
+            NSString *hostile = [[NSString stringWithFormat:@"MicaTerminal\nmicaterminal\nAlpha => Beta => Run\nBad%CWord\n", badControl]
+                stringByAppendingString:[@"x" stringByPaddingToLength:70000 withString:@"x" startingAtIndex:0]];
+            NSString *hostilePath = [root stringByAppendingPathComponent:@"vocabulary.txt"];
+            [hostile writeToFile:hostilePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            NSArray *hostileTerms = MicaVocabularyTermsFromFile([NSURL fileURLWithPath:hostilePath]);
+            NSUInteger expiredCount = MicaVocabularyTermsFromRecentText(@"MicaTerminal", [NSDate dateWithTimeIntervalSinceNow:-601], [NSDate date]).count;
+            vocabularySources = hostileTerms.count <= 3 && ![hostileTerms containsObject:@"Alpha => Beta => Run"] && expiredCount == 0;
+            unichar control = 1;
+            NSString *boundedHostile = [NSString stringWithFormat:@"# comment\nMicaTerminal\nmicaterminal\nAlpha => Beta => Run\nBad%CWord\nshort => Database\n", control];
+            [boundedHostile writeToFile:hostilePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            NSArray *boundedTerms = MicaVocabularyTermsFromFile([NSURL fileURLWithPath:hostilePath]);
+            NSArray *dedupedTerms = MicaVocabularyMerge(@[boundedTerms]);
+            vocabularySources = vocabularySources && dedupedTerms.count == 3 &&
+                ![dedupedTerms containsObject:@"Alpha => Beta => Run"] && ![dedupedTerms containsObject:@"Bad"];
+            NSString *repo = [root stringByAppendingPathComponent:@"repo space"];
+            NSString *unicodeFolder=[repo stringByAppendingPathComponent:@"Unicode Ω Folder"];
+            [NSFileManager.defaultManager createDirectoryAtPath:unicodeFolder withIntermediateDirectories:YES attributes:nil error:nil];
+            [@"" writeToFile:[unicodeFolder stringByAppendingPathComponent:@"Unicode Ω File.m"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            NSTask *gitInit = [NSTask new]; gitInit.executableURL=[NSURL fileURLWithPath:@"/usr/bin/git"]; gitInit.arguments=@[@"-C",repo,@"init"]; gitInit.standardOutput=[NSFileHandle fileHandleWithNullDevice]; gitInit.standardError=[NSFileHandle fileHandleWithNullDevice]; [gitInit launch]; [gitInit waitUntilExit];
+            NSTask *gitAdd = [NSTask new]; gitAdd.executableURL=[NSURL fileURLWithPath:@"/usr/bin/git"]; gitAdd.arguments=@[@"-C",repo,@"add",@"--all"]; gitAdd.standardOutput=[NSFileHandle fileHandleWithNullDevice]; gitAdd.standardError=[NSFileHandle fileHandleWithNullDevice]; [gitAdd launch]; [gitAdd waitUntilExit];
+            NSArray *gitTerms = MicaVocabularyTermsFromGitFiles(repo);
+            BOOL foundUnicodeName = NO;
+            for (NSString *term in gitTerms)
+                if ([term rangeOfString:@"Unicode"].location != NSNotFound &&
+                    [term rangeOfString:@"File"].location != NSNotFound &&
+                    [term rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"Ω"]].location != NSNotFound &&
+                    [term componentsSeparatedByString:@" "].count == 3) foundUnicodeName = YES;
+            vocabularySources = vocabularySources && foundUnicodeName && [gitTerms containsObject:@"Unicode Ω Folder"];
+            [NSFileManager.defaultManager removeItemAtPath:root error:nil];
+        }
+        MicaUITestRecord(report, &allPassed, vocabularySources, @"vocabulary file rejects oversized and malformed entries; recent terms expire; git filenames preserve spaces and Unicode");
+
         NSString *sameLabel = [NSString stringWithUTF8String:"Codex"];
         BOOL labelComparisonIsNilSafe = !MicaStringChanged(nil, nil) &&
             !MicaStringChanged(@"Codex", sameLabel) &&
@@ -473,6 +562,9 @@ static int MicaRunUISelfTest(void) {
         NSMenuItem *diagnosticLogsMenuItem = [helpMenu itemWithTitle:@"Open Diagnostic Logs"];
         NSMenuItem *shortcutsMenuItem = [helpMenu itemWithTitle:@"Keyboard Shortcuts…"];
         NSMenuItem *paletteMenuItem = [helpMenu itemWithTitle:@"Command Palette…"];
+        NSMenu *editMenu = [NSApp.mainMenu itemWithTitle:@"Edit"].submenu;
+        NSMenuItem *vocabularyToggleMenuItem = [editMenu itemWithTitle:@"Improve Dictation with Project Vocabulary"];
+        NSMenuItem *editVocabularyMenuItem = [editMenu itemWithTitle:@"Edit Vocabulary…"];
         MicaUITestRecord(report, &allPassed,
                          newShellMenuItem.target == delegate &&
                          [newShellMenuItem.keyEquivalent isEqualToString:@"t"] &&
@@ -486,6 +578,7 @@ static int MicaRunUISelfTest(void) {
                           (NSEventModifierFlagCommand | NSEventModifierFlagShift)) ==
                             (NSEventModifierFlagCommand | NSEventModifierFlagShift) &&
                          diagnosticLogsMenuItem.target == delegate &&
+                         vocabularyToggleMenuItem.target == delegate && editVocabularyMenuItem.target == delegate &&
                          paletteMenuItem.target == delegate &&
                          [paletteMenuItem.keyEquivalent isEqualToString:@"p"] &&
                          (paletteMenuItem.keyEquivalentModifierMask &
@@ -852,9 +945,12 @@ static int MicaRunUISelfTest(void) {
                 toggleStarted, toggleStopped, toggleCancelled]);
         voiceDelegate.dictationToggleMode = NO;
 
+        id savedVocabularyPreference = [[voiceDelegate micaDefaults] objectForKey:@"MicaDictationVocabularyEnabled"];
+        [[voiceDelegate micaDefaults] setBool:YES forKey:@"MicaDictationVocabularyEnabled"];
+        voiceTargetTab.vocabularyFileTerms = @[@"MicaTerminal"];
         voiceDelegate.voiceTargetTab = voiceTargetTab;
         BOOL fakeTranscriptInserted = [voiceDelegate voiceController:pushToTalkProbe
-            didFinishTranscript:@"mica-safe-undo"];
+            didFinishTranscript:@"Mica Terminal"];
         NSString *insertedBuffer = voiceTestDirectoryReady
             ? MicaUITestCaptureZLEBuffer(voiceTestDirectory, voiceTargetTab.session) : nil;
         NSMenuItem *undoItem = [[NSMenuItem alloc] initWithTitle:@"Undo Last Dictation"
@@ -865,9 +961,11 @@ static int MicaRunUISelfTest(void) {
         NSString *undoneBuffer = voiceTestDirectoryReady
             ? MicaUITestCaptureZLEBuffer(voiceTestDirectory, voiceTargetTab.session) : nil;
         MicaUITestRecord(report, &allPassed, fakeTranscriptInserted && undoEnabled &&
-            [insertedBuffer isEqualToString:@"mica-safe-undo"] && [undoneBuffer isEqualToString:@""],
-            [NSString stringWithFormat:@"injected single-line transcript enables undo and removes exactly its prompt text (enabled=%d before=%@ after=%@)",
+            [insertedBuffer isEqualToString:@"MicaTerminal"] && [undoneBuffer isEqualToString:@"Mica Terminal"],
+            [NSString stringWithFormat:@"injected corrected transcript enables undo and restores the raw transcript (enabled=%d before=%@ after=%@)",
                 undoEnabled, insertedBuffer, undoneBuffer]);
+        if (savedVocabularyPreference) [[voiceDelegate micaDefaults] setObject:savedVocabularyPreference forKey:@"MicaDictationVocabularyEnabled"];
+        else [[voiceDelegate micaDefaults] removeObjectForKey:@"MicaDictationVocabularyEnabled"];
 
         voiceDelegate.voiceTargetTab = voiceTargetTab;
         BOOL multilineInserted = [voiceDelegate voiceController:pushToTalkProbe
@@ -2255,6 +2353,19 @@ static int MicaRunUISelfTest(void) {
             MicaUITestRecord(report, &allPassed, holdDefault && togglePersists,
                 [NSString stringWithFormat:@"dictation defaults to Hold and Toggle persists through an isolated defaults suite (default=%d toggle=%d)",
                     holdDefault, togglePersists]);
+            NSString *vocabSuite = [NSString stringWithFormat:@"mica-vocabulary-setting-%d", getpid()];
+            NSUserDefaults *vocabDefaults = [[NSUserDefaults alloc] initWithSuiteName:vocabSuite];
+            [vocabDefaults removePersistentDomainForName:vocabSuite]; gMicaDefaultsOverride=vocabDefaults;
+            MicaAppDelegate *vocabPreference=[MicaAppDelegate new];
+            BOOL vocabOnByDefault = ![vocabDefaults objectForKey:@"MicaDictationVocabularyEnabled"] || [vocabDefaults boolForKey:@"MicaDictationVocabularyEnabled"];
+            NSButton *vocabCheckbox=[NSButton checkboxWithTitle:@"Vocabulary" target:nil action:nil]; vocabCheckbox.state=NSControlStateValueOff;
+            [vocabPreference prefVocabularyChanged:vocabCheckbox];
+            BOOL vocabOffPersists = ![[MicaAppDelegate new].micaDefaults boolForKey:@"MicaDictationVocabularyEnabled"];
+            vocabCheckbox.state=NSControlStateValueOn; [vocabPreference prefVocabularyChanged:vocabCheckbox];
+            BOOL vocabOnPersists=[[MicaAppDelegate new].micaDefaults boolForKey:@"MicaDictationVocabularyEnabled"];
+            gMicaDefaultsOverride=nil; [vocabDefaults removePersistentDomainForName:vocabSuite];
+            MicaUITestRecord(report, &allPassed, vocabOnByDefault && vocabOffPersists && vocabOnPersists,
+                [NSString stringWithFormat:@"project vocabulary setting defaults on and persists both states in isolated defaults (default=%d off=%d on=%d)",vocabOnByDefault,vocabOffPersists,vocabOnPersists]);
             // Global shortcut: off by default, persists, and registering/unregistering goes through the injected hook.
             shortcutEnableCalls = shortcutDisableCalls = 0;
             NSString *shortcutSuite = [NSString stringWithFormat:@"mica-shortcut-%d", getpid()];

@@ -2,6 +2,7 @@
 #import "mica.h"
 #import "mica_diagnostics.h"
 #import "mica_voice_controller.h"
+#import "mica_vocabulary.h"
 #import "mica_pomodoro.h"
 #import <UserNotifications/UserNotifications.h>
 #import <Carbon/Carbon.h>
@@ -268,6 +269,11 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 @property(nonatomic, assign) uint64_t revision;
 @property(nonatomic, assign) uint64_t attentionCount;
 @property(nonatomic, copy) NSString *gitBranch;
+@property(nonatomic, copy) NSArray<NSString *> *vocabularyFileTerms;
+@property(nonatomic, copy) NSArray<NSString *> *gitVocabularyTerms;
+@property(nonatomic, copy) NSString *recentVisibleText;
+@property(nonatomic, strong) NSDate *recentVisibleCapturedAt;
+@property(nonatomic, assign) NSTimeInterval recentVisibleCheckedAt;
 @property(nonatomic, assign) NSTimeInterval lastAgentNotificationAt;
 @property(nonatomic, assign) NSTimeInterval gitBranchCheckedAt;
 @property(nonatomic, assign) NSTimeInterval lastSelectedAt;
@@ -550,6 +556,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, assign) NSTimeInterval lastPomodoroTickAt;
 @property(nonatomic, assign) BOOL dictationToggleMode;
 @property(nonatomic, copy) NSString *lastDictationText;
+@property(nonatomic, copy) NSString *lastDictationRawText;
 @property(nonatomic, weak) MicaTab *lastDictationTab;
 @property(nonatomic, assign) BOOL dictationUndoValid;
 @property(nonatomic, strong) NSPanel *commandPalettePanel;
@@ -566,6 +573,8 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (NSString *)windowTitleForTab:(MicaTab *)tab;
 - (void)newTabWithName:(NSString *)name command:(NSString *)command;
 - (void)addTabWithName:(NSString *)name cwd:(NSString *)cwd command:(NSString *)command prefilled:(BOOL)prefilled;
+- (void)refreshVocabularyForTab:(MicaTab *)tab;
+- (NSString *)visibleTextForTab:(MicaTab *)tab;
 - (void)closeActiveTab;
 - (void)selectRelativeTab:(NSInteger)delta;
 - (void)selectTabAtIndex:(NSInteger)index;
@@ -4433,6 +4442,11 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     AddMenuItem(editMenu, @"Quick Select…", @selector(toggleQuickSelect:), @"u", NSEventModifierFlagCommand | NSEventModifierFlagShift).target = self.terminalView;
     AddMenuItem(editMenu, @"Paste", @selector(paste:), @"v", NSEventModifierFlagCommand);
     AddMenuItem(editMenu, @"Undo Last Dictation", @selector(undoLastDictation:), @"", 0).target = self;
+    NSMenuItem *vocabularyToggle = AddMenuItem(editMenu, @"Improve Dictation with Project Vocabulary", @selector(toggleVocabularyPreference:), @"", 0);
+    vocabularyToggle.target = self;
+    vocabularyToggle.state = (![[self micaDefaults] objectForKey:@"MicaDictationVocabularyEnabled"] ||
+        [[self micaDefaults] boolForKey:@"MicaDictationVocabularyEnabled"]) ? NSControlStateValueOn : NSControlStateValueOff;
+    AddMenuItem(editMenu, @"Edit Vocabulary…", @selector(editVocabulary:), @"", 0).target = self;
     AddMenuItem(editMenu, @"Find in Scrollback…", @selector(findInScrollback:), @"f", NSEventModifierFlagCommand).target = self.terminalView;
     AddMenuItem(editMenu, @"Find Next", @selector(findNextMatch:), @"g", NSEventModifierFlagCommand).target = self.terminalView;
     AddMenuItem(editMenu, @"Find Previous", @selector(findPreviousMatch:), @"g",
@@ -4793,10 +4807,42 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     tab.revision = UINT64_MAX;
     [self.tabs addObject:tab];
     self.activeIndex = (NSInteger)self.tabs.count - 1;
+    [self refreshVocabularyForTab:tab];
     if (tab.session && NSApp.isActive) mica_session_focus(tab.session, true);
     [self updateWindowTitle];
     [self resizeActiveSession];
     [self.terminalView setNeedsDisplay:YES];
+}
+
+- (void)refreshVocabularyForTab:(MicaTab *)tab {
+    if (!tab.cwd.length) return;
+    NSString *tabPath=tab.cwd;
+    tab.vocabularyFileTerms=MicaVocabularyTermsFromFile([NSURL fileURLWithPath:
+        [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Mica/vocabulary.txt"]]);
+    tab.gitBranch=MicaGitBranchForDirectory(tabPath);
+    __weak MicaTab *weakTab=tab; __weak typeof(self) weakSelf=self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{
+        NSArray *terms=MicaVocabularyTermsFromGitFiles(tabPath);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            MicaTab *strongTab=weakTab; MicaAppDelegate *strongSelf=weakSelf;
+            if (strongTab && strongSelf && [strongSelf.tabs containsObject:strongTab] && [strongTab.cwd isEqualToString:tabPath]) strongTab.gitVocabularyTerms=terms;
+        });
+    });
+}
+
+- (NSString *)visibleTextForTab:(MicaTab *)tab {
+    if (!tab.session) return @"";
+    NSMutableString *text=[NSMutableString string];
+    int rows=mica_session_rows(tab.session), cols=mica_session_cols(tab.session);
+    for (int row=0;row<rows;row++) {
+        for (int col=0;col<cols;col++) {
+            MicaCell cell;
+            if (mica_session_get_cell(tab.session,row,col,&cell) && cell.chars[0]>=0x20 && cell.chars[0]<=0x7f)
+                [text appendFormat:@"%C",(unichar)cell.chars[0]];
+        }
+        [text appendString:@"\n"];
+    }
+    return text;
 }
 
 - (void)newTabWithName:(NSString *)name command:(NSString *)command {
@@ -5049,6 +5095,7 @@ static BOOL MicaValidBranchName(NSString *name) {
         if (liveDirectory.length) {
             workingDirectory = liveDirectory;
             tab.cwd = liveDirectory;
+            [self refreshVocabularyForTab:tab];
         }
     }
     [self.voiceController startPushToTalkForWorkingDirectory:workingDirectory];
@@ -5088,10 +5135,20 @@ static BOOL MicaValidBranchName(NSString *name) {
     MicaTab *target = self.voiceTargetTab;
     if (!target || ![self.tabs containsObject:target] || !target.session ||
         !mica_session_is_running(target.session)) return NO;
-    NSData *bytes = [transcript dataUsingEncoding:NSUTF8StringEncoding];
+    BOOL improve = ![[self micaDefaults] objectForKey:@"MicaDictationVocabularyEnabled"] ||
+        [[self micaDefaults] boolForKey:@"MicaDictationVocabularyEnabled"];
+    NSString *visibleText = target.recentVisibleText.length ? target.recentVisibleText : [self visibleTextForTab:target];
+    NSDate *capturedAt = target.recentVisibleCapturedAt ?: [NSDate date];
+    NSArray *recentTerms = MicaVocabularyTermsFromRecentText(visibleText, capturedAt, [NSDate date]);
+    NSArray *terms = MicaVocabularyMerge(@[target.vocabularyFileTerms ?: @[],
+        self.projectName ? @[self.projectName] : @[], target.gitBranch ? @[target.gitBranch] : @[],
+        target.gitVocabularyTerms ?: @[], recentTerms]);
+    NSString *corrected = improve ? MicaCorrectTranscript(transcript, terms) : transcript;
+    NSData *bytes = [corrected dataUsingEncoding:NSUTF8StringEncoding];
     if (!bytes.length) return NO;
     mica_session_paste(target.session, bytes.bytes, bytes.length);
-    self.lastDictationText = transcript;
+    self.lastDictationText = corrected;
+    self.lastDictationRawText = transcript;
     self.lastDictationTab = target;
     self.dictationUndoValid = [transcript rangeOfCharacterFromSet:
         NSCharacterSet.newlineCharacterSet].location == NSNotFound;
@@ -5218,6 +5275,7 @@ static BOOL MicaValidBranchName(NSString *name) {
         // System mode lets AppKit's semantic chrome colors follow the OS appearance.
         controller.window.appearance = gMicaFollowSystemTheme ? nil :
             [NSAppearance appearanceNamed:light ? NSAppearanceNameAqua : NSAppearanceNameDarkAqua];
+        controller.preferencesWindow.appearance = controller.window.appearance;
         [controller.terminalView setNeedsDisplay:YES];
     }
     NSMenuItem *item = [[NSApp.mainMenu itemWithTitle:@"View"].submenu itemWithTitle:@"Light Terminal Theme"];
@@ -5323,6 +5381,30 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     [[self micaDefaults] setBool:self.dictationToggleMode forKey:@"MicaDictationToggleMode"];
 }
 
+- (void)prefVocabularyChanged:(NSButton *)sender {
+    [[self micaDefaults] setBool:sender.state == NSControlStateValueOn forKey:@"MicaDictationVocabularyEnabled"];
+}
+
+- (void)editVocabulary:(id)sender {
+    (void)sender;
+    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Mica/vocabulary.txt"];
+    [NSFileManager.defaultManager createDirectoryAtPath:path.stringByDeletingLastPathComponent
+        withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil];
+    if (![NSFileManager.defaultManager fileExistsAtPath:path])
+        [@"# One term per line; spoken form => Canonical spelling\n" writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    [[NSWorkspace sharedWorkspace] selectFile:path inFileViewerRootedAtPath:path.stringByDeletingLastPathComponent];
+}
+
+- (void)toggleVocabularyPreference:(id)sender {
+    BOOL enabled = ![[self micaDefaults] objectForKey:@"MicaDictationVocabularyEnabled"] ||
+        [[self micaDefaults] boolForKey:@"MicaDictationVocabularyEnabled"];
+    enabled = !enabled;
+    [[self micaDefaults] setBool:enabled forKey:@"MicaDictationVocabularyEnabled"];
+    if ([sender isKindOfClass:NSMenuItem.class]) ((NSMenuItem *)sender).state = enabled ? NSControlStateValueOn : NSControlStateValueOff;
+    NSButton *button = (NSButton *)[self.preferencesWindow.contentView viewWithTag:108];
+    if ([button isKindOfClass:NSButton.class]) button.state = enabled ? NSControlStateValueOn : NSControlStateValueOff;
+}
+
 - (void)undoLastDictation:(id)sender {
     (void)sender;
     MicaTab *tab = self.lastDictationTab;
@@ -5333,7 +5415,10 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
             __unused NSRange enclosing, __unused BOOL *stop) { count++; }];
     for (NSUInteger i = 0; i < count; i++) mica_session_key(tab.session, VTERM_KEY_BACKSPACE, VTERM_MOD_NONE);
     self.dictationUndoValid = NO;
+    NSData *raw = [self.lastDictationRawText dataUsingEncoding:NSUTF8StringEncoding];
+    if (raw.length) mica_session_paste(tab.session, raw.bytes, raw.length);
     self.lastDictationText = nil;
+    self.lastDictationRawText = nil;
     self.lastDictationTab = nil;
     [self.terminalView setNeedsDisplay:YES];
 }
@@ -5348,6 +5433,9 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
         ((NSStepper *)[self.preferencesWindow.contentView viewWithTag:101]).doubleValue = self.terminalView.terminalFont.pointSize;
         ((NSButton *)[self.preferencesWindow.contentView viewWithTag:105]).state =
             [[self micaDefaults] boolForKey:@"MicaGlobalShortcut"] ? NSControlStateValueOn : NSControlStateValueOff;
+        ((NSButton *)[self.preferencesWindow.contentView viewWithTag:108]).state =
+            (![[self micaDefaults] objectForKey:@"MicaDictationVocabularyEnabled"] ||
+             [[self micaDefaults] boolForKey:@"MicaDictationVocabularyEnabled"]) ? NSControlStateValueOn : NSControlStateValueOff;
         {
         [(NSPopUpButton *)[self.preferencesWindow.contentView viewWithTag:106]
                 selectItemAtIndex:[MicaAppDelegate scrollbackIndexForLines:[self storedScrollbackLines]]];
@@ -5355,29 +5443,39 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
                 selectItemAtIndex:self.dictationToggleMode ? 1 : 0];
         }
         [self refreshPreferencesSizeLabel];
+        self.preferencesWindow.appearance = gMicaFollowSystemTheme ? nil :
+            [NSAppearance appearanceNamed:gMicaLightTheme ? NSAppearanceNameAqua : NSAppearanceNameDarkAqua];
         [self.preferencesWindow makeKeyAndOrderFront:nil];
         return;
     }
     self.dictationToggleMode = [[self micaDefaults] boolForKey:@"MicaDictationToggleMode"];
-    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 460, 374)
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 460, 454)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
     window.title = @"Mica Settings";
     window.releasedWhenClosed = NO;
+    window.appearance = gMicaFollowSystemTheme ? nil :
+        [NSAppearance appearanceNamed:gMicaLightTheme ? NSAppearanceNameAqua : NSAppearanceNameDarkAqua];
+    NSAppearance *settingsAppearance = window.appearance ?: NSApp.effectiveAppearance;
+    __block NSColor *settingsBackground;
+    [settingsAppearance performAsCurrentDrawingAppearance:^{ settingsBackground = NSColor.windowBackgroundColor; }];
+    window.backgroundColor = settingsBackground;
     NSView *content = window.contentView;
+    content.wantsLayer = YES;
+    content.layer.backgroundColor = settingsBackground.CGColor;
     NSArray<NSString *> *labels = @[@"Theme", @"Cursor", @"Text size"];
     for (NSUInteger i = 0; i < labels.count; i++) {
         NSTextField *caption = [NSTextField labelWithString:labels[i]];
         caption.alignment = NSTextAlignmentRight;
-        caption.frame = NSMakeRect(20, 290 - 40 * i, 90, 18);
+        caption.frame = NSMakeRect(20, 330 - 40 * i, 90, 18);
         [content addSubview:caption];
     }
-    NSPopUpButton *theme = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 285, 200, 26) pullsDown:NO];
+    NSPopUpButton *theme = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 325, 200, 26) pullsDown:NO];
     [theme addItemsWithTitles:@[@"Dark", @"Light", @"System"]];
     [theme selectItemAtIndex:gMicaFollowSystemTheme ? 2 : (gMicaLightTheme ? 1 : 0)];
     theme.tag = 102;
     theme.target = self; theme.action = @selector(prefThemeChanged:);
     [content addSubview:theme];
-    NSPopUpButton *cursor = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 245, 200, 26) pullsDown:NO];
+    NSPopUpButton *cursor = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 285, 200, 26) pullsDown:NO];
     [cursor addItemsWithTitles:@[@"Block", @"Bar", @"Underline"]];
     [cursor selectItemAtIndex:gMicaCursorStyle];
     cursor.tag = 103;
@@ -5386,9 +5484,9 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     NSTextField *sizeValue = [NSTextField labelWithString:@""];
     sizeValue.tag = 104;
     sizeValue.font = [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightRegular];
-    sizeValue.frame = NSMakeRect(122, 210, 44, 18);
+    sizeValue.frame = NSMakeRect(122, 250, 44, 18);
     [content addSubview:sizeValue];
-    NSStepper *stepper = [[NSStepper alloc] initWithFrame:NSMakeRect(168, 205, 19, 27)];
+    NSStepper *stepper = [[NSStepper alloc] initWithFrame:NSMakeRect(168, 245, 19, 27)];
     stepper.minValue = 8; stepper.maxValue = 28; stepper.increment = 1;
     stepper.doubleValue = self.terminalView.terminalFont.pointSize;
     stepper.tag = 101;
@@ -5397,30 +5495,37 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     NSTextField *sizeHint = [NSTextField labelWithString:@"Also ⌘+  ⌘−  ⌘0 in a terminal."];
     sizeHint.textColor = MicaSecondaryLabelColor(1.0);
     sizeHint.font = [NSFont systemFontOfSize:11];
-    sizeHint.frame = NSMakeRect(122, 186, 320, 14);
+    sizeHint.frame = NSMakeRect(122, 226, 320, 14);
     [content addSubview:sizeHint];
     NSTextField *scrollbackCaption = [NSTextField labelWithString:@"Scrollback"];
     scrollbackCaption.alignment = NSTextAlignmentRight;
-    scrollbackCaption.frame = NSMakeRect(20, 154, 90, 18);
+    scrollbackCaption.frame = NSMakeRect(20, 194, 90, 18);
     [content addSubview:scrollbackCaption];
-    NSPopUpButton *scrollback = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 149, 200, 26) pullsDown:NO];
+    NSPopUpButton *scrollback = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 189, 200, 26) pullsDown:NO];
     [scrollback addItemsWithTitles:@[@"650 lines · about 5 MB", @"2,000 lines · about 16 MB", @"5,000 lines · about 40 MB", @"20,000 lines · about 160 MB"]];
     [scrollback selectItemAtIndex:[MicaAppDelegate scrollbackIndexForLines:[self storedScrollbackLines]]];
     scrollback.tag = 106;
-    scrollback.frame = NSMakeRect(122, 149, 260, 26);
+    scrollback.frame = NSMakeRect(122, 189, 260, 26);
     scrollback.target = self; scrollback.action = @selector(prefScrollbackChanged:);
     [content addSubview:scrollback];
     NSButton *shortcut = [NSButton checkboxWithTitle:@"Show Mica with a global shortcut (⌃⌥Space)" target:self
                                               action:@selector(prefShortcutChanged:)];
-    shortcut.frame = NSMakeRect(120, 100, 320, 20);
+    NSButton *vocabulary = [NSButton checkboxWithTitle:@"Improve dictation with project vocabulary" target:self action:@selector(prefVocabularyChanged:)];
+    vocabulary.frame = NSMakeRect(120, 158, 330, 20);
+    vocabulary.state = (![[self micaDefaults] objectForKey:@"MicaDictationVocabularyEnabled"] ||
+        [[self micaDefaults] boolForKey:@"MicaDictationVocabularyEnabled"]) ? NSControlStateValueOn : NSControlStateValueOff;
+    vocabulary.tag = 108; [content addSubview:vocabulary];
+    NSButton *editVocabulary = [NSButton buttonWithTitle:@"Edit Vocabulary…" target:self action:@selector(editVocabulary:)];
+    editVocabulary.frame = NSMakeRect(120, 128, 170, 24); [content addSubview:editVocabulary];
+    shortcut.frame = NSMakeRect(120, 96, 320, 20);
     shortcut.tag = 105;
     shortcut.state = [[self micaDefaults] boolForKey:@"MicaGlobalShortcut"] ? NSControlStateValueOn : NSControlStateValueOff;
     [content addSubview:shortcut];
-    NSTextField *dictationCaption = [NSTextField labelWithString:@"Dictation key behaviour"];
+    NSTextField *dictationCaption = [NSTextField labelWithString:@"Dictation"];
     dictationCaption.alignment = NSTextAlignmentRight;
-    dictationCaption.frame = NSMakeRect(20, 66, 90, 18);
+    dictationCaption.frame = NSMakeRect(20, 56, 90, 18);
     [content addSubview:dictationCaption];
-    NSPopUpButton *dictationMode = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 61, 200, 26) pullsDown:NO];
+    NSPopUpButton *dictationMode = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 51, 200, 26) pullsDown:NO];
     [dictationMode addItemsWithTitles:@[@"Hold", @"Toggle"]];
     [dictationMode selectItemAtIndex:self.dictationToggleMode ? 1 : 0];
     dictationMode.tag = 107; dictationMode.target = self; dictationMode.action = @selector(prefDictationModeChanged:);
@@ -5645,6 +5750,14 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
         uint64_t revision = mica_session_revision(tab.session);
         if (revision != tab.revision) {
             tab.revision = revision;
+            if (now - tab.recentVisibleCheckedAt >= 1.0 || !tab.recentVisibleText.length) {
+                tab.recentVisibleCheckedAt = now;
+                NSString *snapshot=[self visibleTextForTab:tab];
+                NSString *ring=tab.recentVisibleText.length ? [tab.recentVisibleText stringByAppendingFormat:@"\n%@",snapshot] : snapshot;
+                if (ring.length>32768) ring=[ring substringFromIndex:ring.length-32768];
+                tab.recentVisibleText=ring;
+                tab.recentVisibleCapturedAt=[NSDate date];
+            }
             if (currentCommand.length && !activityScanPerformed && now - tab.lastActivityScanAt >= 0.50) {
                 tab.lastActivityScanAt = now;
                 activityScanPerformed = YES;
@@ -5684,6 +5797,7 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
                 MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"folder changed tab=%@ folder=%@",
                     lookupTab.name ?: @"Terminal", cwd]);
                 lookupTab.cwd = cwd;
+                [strongSelf refreshVocabularyForTab:lookupTab];
                 [strongSelf.terminalView setNeedsDisplayInRect:NSMakeRect(0, 0,
                     strongSelf.terminalView.bounds.size.width, kStatusHeight)];
             });

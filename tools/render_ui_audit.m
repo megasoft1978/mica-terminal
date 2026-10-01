@@ -231,7 +231,8 @@ int main(int argc, const char *argv[]) {
         SaveViewImage(light800.terminalView, out, @"18-light-800-wide");
         [light openPreferences:nil];
         SaveViewImage(light.preferencesWindow.contentView, out, @"10-settings-light");
-        gMicaLightTheme = NO;
+        gMicaFollowSystemTheme = NO;
+        [main setLightTheme:NO];
         [main openPreferences:nil];
         SaveViewImage(main.preferencesWindow.contentView, out, @"11-settings-dark");
     }
