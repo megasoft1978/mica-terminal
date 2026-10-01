@@ -28,5 +28,15 @@ The alpha 8 ZIP matches its published checksum, but the DMG does not: published 
 
 1. Bump `MICA_VERSION`/`MICA_REVISION` in `include/mica.h` and `CFBundleShortVersionString`/`CFBundleVersion` in `Info.plist` (keep them equal).
 2. `make validate && make dmg` (or `make notarize SIGN_ID="Developer ID Application: … (TEAMID)"` once the certificate and notary profile exist).
-3. Tag and push: `git tag v0.1.0 && git push origin v0.1.0`. The `Release` workflow checks the tag against `Info.plist`, runs the tests, builds `Mica.dmg`, `Mica.zip` and `SHA256SUMS.txt`, and publishes them. It requires repository secrets `DEVELOPER_ID_P12_BASE64`, `DEVELOPER_ID_P12_PASSWORD`, `NOTARY_APPLE_ID`, `NOTARY_TEAM_ID` and `NOTARY_APP_PASSWORD`. Missing credentials stop the workflow before building; it never publishes an ad-hoc fallback. Before publishing it validates the app signature, app/DMG stapled tickets and final checksums. Local ad-hoc packaging remains available with `make dmg SIGN_ID=-`.
+3. Publish the verified local artifacts and push the tag:
+
+   ```sh
+   TAG=v0.1.0
+   gh release create "$TAG" build/Mica.dmg build/Mica.zip build/SHA256SUMS.txt \
+     --title "Mica ${TAG#v}" --generate-notes
+   git tag "$TAG"
+   git push origin "$TAG"
+   ```
+
+   The `Release` workflow checks the tag against `Info.plist`, then builds and publishes when repository secrets `DEVELOPER_ID_P12_BASE64`, `DEVELOPER_ID_P12_PASSWORD`, `NOTARY_APPLE_ID`, `NOTARY_TEAM_ID` and `NOTARY_APP_PASSWORD` are configured. If a release already exists for the pushed tag, it skips the CI build; this supports publishing the locally signed and notarized artifacts above without duplicating them. The workflow never publishes an ad-hoc fallback. Local ad-hoc packaging remains available with `make dmg SIGN_ID=-`.
 4. After verifying the uploaded assets, update README/site download links and release notes to the new tag. Update the site’s visible version, ZIP size and JSON-LD `softwareVersion`, `fileSize` and `downloadUrl`; regenerate the inline-script CSP hash after changing JSON-LD. The current links pin the verified alpha 8 ZIP while its alternative DMG manifest awaits correction. [GitHub’s release-link documentation](https://docs.github.com/en/repositories/releasing-projects-on-github/linking-to-releases) describes moving latest-release links; pinned asset URLs keep the download consistent with the displayed version and audit.

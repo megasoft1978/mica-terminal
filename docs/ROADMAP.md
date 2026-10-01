@@ -24,6 +24,7 @@ A verified list of what would make Mica better at its job (one light app for the
 - The activity indicator stops spinning when macOS Reduce Motion is on.
 - Dictation animation timing belongs to each project window, so one window's refresh throttle cannot suppress another window's listening indicator. A two-window regression checks both directions without starting a microphone or speech helper.
 - Ending the current timer phase is available through the Focus menu and the timer's VoiceOver Actions rotor, with phase-specific labels and an idle-disabled menu action. Tests exercise the accessibility handler and shared-window state.
+- The focus timer now gives its phase and countdown priority in the status strip: focus, break, and each paused phase are explicit in text and reinforced with native green, orange, and neutral tints. Completed-focus count stays available in the timer menu and VoiceOver label; phase-change notifications say when to pause or return to focus. Dark/light audit captures cover each active and paused phase.
 - Developer ID signing now uses Apple's secure timestamp, which notarization requires.
 - Stale claims in the README, site and docs were corrected against the code.
 
@@ -32,12 +33,12 @@ A verified list of what would make Mica better at its job (one light app for the
 | # | Gap | Evidence | Effort |
 | --- | --- | --- | --- |
 | 1 | Compact scrollback storage | Rows store meaningful prefixes, intern up to 16 row-local scalar styles/colors, and keep the previous scalar format for more varied rows; combined Unicode retains full cells and links remain separately tracked. The retained-line limit is unchanged; continue measuring search/resize latency before considering a larger allowance | Medium–large |
-| 2 | Pomodoro timer UI | Phase, countdown and pause/reset controls are visible; completed-focus count appears beside the countdown and in VoiceOver/menu labels. Skip has a Focus menu item and VoiceOver action. Users can independently auto-start the next break and focus; both remain on by default for compatibility | Small–medium |
+| 2 | Pomodoro timer UI | Done: phase and countdown lead the status strip; paused focus/break are explicit; session count stays in the menu and VoiceOver; phase notifications call out the next action. Skip and independent auto-start remain available | Done |
 | 3 | Optional agent/project sidebar | Branch, folder, agent state and notification data already exist. cmux documents a workspace rail that makes this context visible; prototype a compact native sidebar without squeezing the terminal by default | Medium |
 | 4 | Reliable command landmarks | Mica has zsh preexec/precmd hooks and terminal search. Formal command start/finish/exit markers could support prompt navigation and focused output selection; keep visual state inference as a fallback | Medium |
 | 5 | More shell choices | The shell is `/bin/zsh -l -i` and `$SHELL` is ignored; hooks and completion are zsh-specific. Add other shells only with startup-file preservation and PTY tests | Medium–large |
 | 6 | Split panes | Common in Ghostty, Warp and cmux, but layout, focus and resize code assume one grid per tab | Large |
-| 7 | Reliable releases and an update path | Alpha 8 has a valid Developer ID signature and stapled app/DMG tickets. Its published DMG checksum is stale; packaging now hashes after stapling and CI verifies the manifest. Correct the existing release manifest, then evaluate an updater | Medium |
+| 7 | Reliable releases and an update path | Alpha 9 has a valid Developer ID signature and stapled app/DMG tickets; the ZIP and DMG checksums are generated after stapling. CI skips the build when a locally notarized release already exists for the tag. An updater remains open | Medium |
 | 8 | Quick terminal that drops down from the top of the screen | Settings has an opt-in global shortcut (⌃⌥Space) that brings Mica forward; no drop-down window yet | Medium |
 | 9 | More complete session recovery | Current restore recreates windows/tabs, not live PTYs or scrollback. Preserve process safety and make re-executed startup commands obvious before pursuing durable sessions | Large |
 

@@ -58,6 +58,31 @@ static void Scene(MicaAppDelegate *delegate) {
     delegate.memoryLabel = @"58 MB";
 }
 
+static void RenderTimerStates(MicaAppDelegate *delegate, NSString *directory, NSString *theme) {
+    NSTimeInterval now = MicaContinuousTimeSeconds();
+    struct {
+        MicaPomodoroPhase phase;
+        NSString *name;
+        NSTimeInterval remaining;
+    } states[] = {
+        { MICA_POMODORO_FOCUS, @"focus", 24 * 60 + 18 },
+        { MICA_POMODORO_BREAK, @"break", 4 * 60 + 18 },
+        { MICA_POMODORO_PAUSED_FOCUS, @"paused-focus", 24 * 60 + 18 },
+        { MICA_POMODORO_PAUSED_BREAK, @"paused-break", 4 * 60 + 18 },
+    };
+    for (NSUInteger i = 0; i < sizeof(states) / sizeof(states[0]); i++) {
+        MicaPomodoro timer = {0};
+        timer.phase = states[i].phase;
+        timer.deadline = now + states[i].remaining;
+        timer.paused_remaining = states[i].remaining;
+        timer.completed_focuses = 3;
+        delegate.pomodoro = timer;
+        [delegate.terminalView setNeedsDisplay:YES];
+        NSString *name = [NSString stringWithFormat:@"timer-%@-%@", theme, states[i].name];
+        SaveViewImage(delegate.terminalView, directory, name);
+    }
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         NSString *out = argc > 1 ? @(argv[1]) : @"build/ui-audit";
@@ -69,6 +94,7 @@ int main(int argc, const char *argv[]) {
         MicaAppDelegate *main = MakeWindow(1100, 440, tabs, @"Fieldnote");
         Scene(main);
         SaveViewImage(main.terminalView, out, @"01-dark-default");
+        RenderTimerStates(main, out, @"dark");
 
         main.uiMode = MicaUIModeTab;
         [main.terminalView setNeedsDisplay:YES];
@@ -155,6 +181,7 @@ int main(int argc, const char *argv[]) {
         [light setLightTheme:YES];
         Scene(light);
         SaveViewImage(light.terminalView, out, @"09-light-default");
+        RenderTimerStates(light, out, @"light");
         light.uiMode = MicaUIModeTab;
         SaveViewImage(light.terminalView, out, @"14-light-tab-picker");
         light.uiMode = MicaUIModeScroll;

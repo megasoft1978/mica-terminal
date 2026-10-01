@@ -1039,7 +1039,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
             mica_pomodoro_remaining(&state, MicaContinuousTimeSeconds());
         NSUInteger secondsLeft = (NSUInteger)ceil(remaining);
         NSString *phaseLabel = state.phase == MICA_POMODORO_IDLE ? @"Ready" :
-            (paused ? (focus ? @"Focus paused" : @"Break paused") : (focus ? @"Focus" : @"Break"));
+            (paused ? (focus ? @"Paused focus" : @"Paused break") : (focus ? @"Focus" : @"Break"));
         NSString *actionLabel = state.phase == MICA_POMODORO_IDLE ? @"Start focus" :
             (paused ? @"Resume timer" : @"Pause timer");
         NSString *timerLabel = [NSString stringWithFormat:@"Focus timer, %@, %02lu:%02lu remaining, %@, %llu focus session%@ completed",
@@ -1325,10 +1325,9 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         mica_pomodoro_remaining(&timer, MicaContinuousTimeSeconds());
     NSUInteger secondsLeft = (NSUInteger)ceil(remaining);
     NSString *phase = timer.phase == MICA_POMODORO_IDLE ? @"Ready" :
-        (paused ? @"Paused" : (focus ? @"Focus" : @"Break"));
-    return [NSString stringWithFormat:@"%@ · %02lu:%02lu · %llu done", phase,
-        (unsigned long)(secondsLeft / 60), (unsigned long)(secondsLeft % 60),
-        (unsigned long long)timer.completed_focuses];
+        (paused ? (focus ? @"Paused focus" : @"Paused break") : (focus ? @"Focus" : @"Break"));
+    return [NSString stringWithFormat:@"%@ · %02lu:%02lu", phase,
+        (unsigned long)(secondsLeft / 60), (unsigned long)(secondsLeft % 60)];
 }
 
 - (void)showPomodoroControlMenu:(id)sender {
@@ -3476,8 +3475,8 @@ static NSDictionary *MicaScalarDictionary(id object) {
         UNMutableNotificationContent *content = [UNMutableNotificationContent new];
         content.title = self.pomodoro.phase == MICA_POMODORO_FOCUS ? @"Focus complete" : @"Break complete";
         content.body = self.pomodoro.phase == MICA_POMODORO_FOCUS
-            ? [NSString stringWithFormat:@"Time for a %ld-minute break.", (long)self.pomodoroCycleBreakMinutes]
-            : @"Break complete. Your next focus block is ready.";
+            ? [NSString stringWithFormat:@"Time to pause and take a %ld-minute break.", (long)self.pomodoroCycleBreakMinutes]
+            : @"Break complete. It’s time to get back to focus.";
         content.sound = UNNotificationSound.defaultSound;
         UNTimeIntervalNotificationTrigger *trigger = [UNTimeIntervalNotificationTrigger
             triggerWithTimeInterval:MAX(1, seconds) repeats:NO];

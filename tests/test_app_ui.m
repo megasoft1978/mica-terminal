@@ -2765,6 +2765,7 @@ static int MicaRunUISelfTest(void) {
         [timerWindowB togglePomodoroPause:nil];
         [timerWindowA refreshPomodoroState];
         BOOL timerPauseShared = timerWindowA.pomodoro.phase == MICA_POMODORO_PAUSED_FOCUS;
+        BOOL pausedPhaseVisible = [[timerWindowA.terminalView pomodoroStatusText] hasPrefix:@"Paused focus · "];
         NSMenuItem *skipTimerMenu = [[NSMenuItem alloc] initWithTitle:@"End Current Phase"
             action:@selector(skipPomodoroPhase:) keyEquivalent:@""];
         BOOL timerSkipMenuAccessible = [timerWindowA validateMenuItem:skipTimerMenu] &&
@@ -2791,9 +2792,10 @@ static int MicaRunUISelfTest(void) {
         NSDictionary *visibleTimerAttributes = @{NSFontAttributeName:
             [NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold]};
         CGFloat visibleTimerTextWidth = ceil([visibleTimerStatus sizeWithAttributes:visibleTimerAttributes].width);
-        BOOL timerCountVisible = [visibleTimerStatus containsString:@"1 done"] &&
+        BOOL timerPhaseVisible = [visibleTimerStatus hasPrefix:@"Break · "] &&
+            [visibleTimerStatus containsString:@":"] && ![visibleTimerStatus containsString:@"done"] &&
             visibleTimerRect.size.width >= visibleTimerTextWidth + 96;
-        timerSkipFocusShared = timerSkipFocusShared && timerCountAccessible && timerCountVisible;
+        timerSkipFocusShared = timerSkipFocusShared && timerCountAccessible && timerPhaseVisible && pausedPhaseVisible;
         [timerWindowB skipPomodoroPhase:nil];
         [timerWindowA refreshPomodoroState];
         BOOL timerSkipBreakShared = timerWindowA.pomodoro.phase == MICA_POMODORO_FOCUS &&
@@ -2803,11 +2805,24 @@ static int MicaRunUISelfTest(void) {
         BOOL timerResetShared = timerWindowB.pomodoro.phase == MICA_POMODORO_IDLE;
         timerResetShared = timerResetShared && ![timerWindowB validateMenuItem:skipTimerMenu] &&
             [skipTimerMenu.title isEqualToString:@"End Current Phase"];
+        MicaPomodoro phaseLabelProbe = {0};
+        phaseLabelProbe.phase = MICA_POMODORO_FOCUS;
+        phaseLabelProbe.deadline = MicaContinuousTimeSeconds() + 90;
+        timerWindowB.pomodoro = phaseLabelProbe;
+        BOOL timerLabelsAllPhases = [[timerWindowB.terminalView pomodoroStatusText] hasPrefix:@"Focus · "];
+        phaseLabelProbe.phase = MICA_POMODORO_PAUSED_BREAK;
+        phaseLabelProbe.paused_remaining = 45;
+        timerWindowB.pomodoro = phaseLabelProbe;
+        timerLabelsAllPhases = timerLabelsAllPhases &&
+            [[timerWindowB.terminalView pomodoroStatusText] hasPrefix:@"Paused break · "];
+        timerWindowB.pomodoro = (MicaPomodoro){0};
+        timerLabelsAllPhases = timerLabelsAllPhases &&
+            [[timerWindowB.terminalView pomodoroStatusText] hasPrefix:@"Ready · "];
         MicaUITestRecord(report, &allPassed, timerDefaultsShared && timerStartShared && timerControlsAccessible &&
-            timerPauseShared && timerSkipFocusShared && timerSkipBreakShared && timerResetShared,
-            [NSString stringWithFormat:@"timer controls preserve independent checkbox auto-start choices, show completed focus count, and expose accessible skip actions across windows (options=%d start=%d accessible=%d count=%d pause=%d focus-skip=%d break-skip=%d reset=%d)",
-                timerOptionsShared, timerStartShared, timerControlsAccessible, timerCountVisible, timerPauseShared,
-                timerSkipFocusShared, timerSkipBreakShared, timerResetShared]);
+            timerPauseShared && timerSkipFocusShared && timerSkipBreakShared && timerResetShared && timerLabelsAllPhases,
+            [NSString stringWithFormat:@"timer controls preserve independent checkbox auto-start choices, prioritize the visible phase and countdown, and expose completed focus count and skip actions accessibly across windows (options=%d start=%d accessible=%d phase=%d pause=%d focus-skip=%d break-skip=%d reset=%d labels=%d)",
+                timerOptionsShared, timerStartShared, timerControlsAccessible, timerPhaseVisible, timerPauseShared,
+                timerSkipFocusShared, timerSkipBreakShared, timerResetShared, timerLabelsAllPhases]);
         for (MicaAppDelegate *window in @[timerWindowA, timerWindowB]) {
             window.voiceController = [[MicaVoiceController alloc]
                 initWithHelperURL:[NSURL fileURLWithPath:@"/usr/bin/false"]];
