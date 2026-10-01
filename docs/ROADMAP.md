@@ -6,6 +6,7 @@ This roadmap tracks open work only. Shipped features are summarized below so the
 
 - The Command Palette (<kbd>⌘⇧P</kbd>) searches the menu action tree, displays current menu shortcuts and switches among tabs with folder, branch and activity context. It also exposes per-tab notification mute controls.
 - Dictation supports Hold (default) and Toggle modes. Edit → Undo Last Dictation removes the latest inserted transcript only while no later prompt text has been typed.
+- Local deterministic dictation correction uses the user's vocabulary file, project name, Git branch and tracked file names, and recently visible terminal text. It is enabled by default, can be switched off, and Undo Last Dictation restores the raw transcript after correction. It uses no additional speech model.
 - Quick Select (<kbd>⌘⇧U</kbd>) labels visible URLs, existing file paths and git hashes. Typing a label copies it; holding Option opens a URL or reveals a file.
 - OSC 133 A/B/C/D shell markers are emitted by Mica's zsh integration and recognized by the session parser. The parser retains the latest advisory phase and command exit status; per-row landmarks, prompt navigation and last-command output selection/copy remain open.
 - Agent notifications distinguish “needs input” from “finished”, use no sound, and can be muted per tab. Mica handles terminal notification sequences and clicking a notification returns to its window and tab.
@@ -31,6 +32,7 @@ This roadmap tracks open work only. Shipped features are summarized below so the
 - Optional agent/workspace sidebar.
 - Timer session labels, daily goal and local history; menu-bar timer extra.
 - Dictation snippets and a review-before-insert draft.
+- Native speech-model vocabulary boosting with an additional model remains unimplemented; the pinned FluidAudio API availability has not been verified.
 - Worktree picker and cleanup; agent resume adapters.
 - Bounded scrollback restore; changed-files summary.
 - Quick-terminal drop-down; Liquid Glass on the tab strip.

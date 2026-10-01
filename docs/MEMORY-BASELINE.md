@@ -18,6 +18,8 @@ The stack this replaces on the same Mac: **iTerm2 + Wispr Flow ≈ 770 MB**, bef
 
 Dictation adds a helper process only while you are dictating and it exits afterwards, so the idle number above stays the number you live with. While it recognizes speech the helper measures **about 30–37 MB**, so Mica plus a live dictation is roughly **95 MB** in total (see below).
 
+These figures cover the shipped deterministic vocabulary correction, which runs in the app before transcript insertion. They do not include native speech-model vocabulary boosting: that feature and its extra model are not currently shipped, so there is no boosting memory or latency measurement to add. The correction latency and transcript-fixture results are recorded by the vocabulary checks in `make test`; they are not process-memory measurements.
+
 ## Memory while dictating
 
 Measured with `scripts/measure-dictation-memory.py`, which starts the app's real helper, speaks a 7-second sentence into it in real time through macOS `say`, then adds 3 seconds of silence, sampling `phys_footprint` throughout. Three runs on 2026-09-29:
