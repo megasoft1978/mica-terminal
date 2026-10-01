@@ -538,6 +538,10 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, assign) int pomodoroLockFD;
 @property(nonatomic, assign) BOOL pomodoroOwnsLock;
 @property(nonatomic, assign) NSTimeInterval lastPomodoroTickAt;
+@property(nonatomic, assign) BOOL dictationToggleMode;
+@property(nonatomic, copy) NSString *lastDictationText;
+@property(nonatomic, weak) MicaTab *lastDictationTab;
+@property(nonatomic, assign) BOOL dictationUndoValid;
 #if defined(MICA_APP_NO_MAIN)
 @property(nonatomic, strong) NSURL *pomodoroStorageDirectoryOverride;
 #endif
@@ -561,6 +565,8 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)setCursorStyle:(id)sender;
 - (void)openPreferences:(id)sender;
 - (void)prefShortcutChanged:(NSButton *)sender;
+- (void)prefDictationModeChanged:(NSPopUpButton *)sender;
+- (void)undoLastDictation:(id)sender;
 - (void)applyStoredShortcutPreference;
 - (NSInteger)storedScrollbackLines;
 + (NSInteger)scrollbackIndexForLines:(NSInteger)lines;
@@ -1174,7 +1180,13 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
                       NSEventModifierFlagShift | NSEventModifierFlagFunction)) != 0;
         [_leftOptionTimer invalidate];
         _leftOptionTimer = nil;
-        if (!_leftOptionUsedWithAnotherKey) {
+        if (!_leftOptionUsedWithAnotherKey && self.owner.dictationToggleMode) {
+            MicaVoiceControllerState state = self.owner.voiceController.state;
+            if (state == MicaVoiceControllerStatePreparing || state == MicaVoiceControllerStateListening)
+                [self.owner finishPushToTalk];
+            else [self.owner beginDictationForActiveTab];
+            _leftOptionStartedDictation = NO;
+        } else if (!_leftOptionUsedWithAnotherKey) {
             _leftOptionTimer = [NSTimer scheduledTimerWithTimeInterval:0.28
                 target:self selector:@selector(leftOptionPressedAlone:) userInfo:nil repeats:NO];
         }
@@ -1185,7 +1197,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         _leftOptionIsDown = NO;
         _leftOptionUsedWithAnotherKey = NO;
         _leftOptionStartedDictation = NO;
-        if (shouldFinish) [self.owner finishPushToTalk];
+        if (shouldFinish && !self.owner.dictationToggleMode) [self.owner finishPushToTalk];
     }
 }
 
@@ -2021,8 +2033,8 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     NSString *statusText = voice.statusText ?: @"";
     if (state == MicaVoiceControllerStateListening) {
         NSUInteger seconds = (NSUInteger)MAX(0, voice.elapsedSeconds);
-        statusText = [NSString stringWithFormat:@"Listening · %02lu:%02lu",
-                  (unsigned long)(seconds / 60), (unsigned long)(seconds % 60)];
+        statusText = self.owner.dictationToggleMode ? @"Listening · press ⌥ to stop" :
+            [NSString stringWithFormat:@"Listening · %02lu:%02lu", (unsigned long)(seconds / 60), (unsigned long)(seconds % 60)];
     } else if (state == MicaVoiceControllerStatePreparing) {
         statusText = @"Preparing speech…";
     } else if (state == MicaVoiceControllerStateTranscribing) {
@@ -2092,7 +2104,8 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         NSParagraphStyleAttributeName: tailStyle
     };
     // Keep a column free on the right for key hints (room for more controls later).
-    NSString *keyHint = state == MicaVoiceControllerStateListening ? @"Release ⌥ to insert   Esc to cancel" : @"";
+    NSString *keyHint = state == MicaVoiceControllerStateListening ?
+        (self.owner.dictationToggleMode ? @"Esc to cancel" : @"Release ⌥ to insert   Esc to cancel") : @"";
     NSDictionary *hintAttrs = @{
         NSFontAttributeName: [NSFont systemFontOfSize:kDictationLabelFontSize - 0.5],
         NSForegroundColorAttributeName: NSColor.tertiaryLabelColor
@@ -2506,6 +2519,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
 }
 
 - (void)keyDown:(NSEvent *)event {
+    if (self.owner.dictationUndoValid) self.owner.dictationUndoValid = NO;
     MicaTab *tab = self.owner.activeTab;
     NSEventModifierFlags flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
     BOOL command = (flags & NSEventModifierFlagCommand) != 0;
@@ -3879,6 +3893,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     } else {
         self.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     }
+    self.dictationToggleMode = [[self micaDefaults] boolForKey:@"MicaDictationToggleMode"];
     // A second window opened on top of another gets the classic cascade offset instead of hiding it.
     for (MicaAppDelegate *other in MicaControllers()) {
         if (other == self || !other.window) continue;
@@ -3986,6 +4001,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
     AddMenuItem(editMenu, @"Copy", @selector(copy:), @"c", NSEventModifierFlagCommand);
     AddMenuItem(editMenu, @"Paste", @selector(paste:), @"v", NSEventModifierFlagCommand);
+    AddMenuItem(editMenu, @"Undo Last Dictation", @selector(undoLastDictation:), @"", 0).target = self;
     AddMenuItem(editMenu, @"Find in Scrollback…", @selector(findInScrollback:), @"f", NSEventModifierFlagCommand).target = self.terminalView;
     AddMenuItem(editMenu, @"Find Next", @selector(findNextMatch:), @"g", NSEventModifierFlagCommand).target = self.terminalView;
     AddMenuItem(editMenu, @"Find Previous", @selector(findPreviousMatch:), @"g",
@@ -4188,6 +4204,10 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
+    if (item.action == @selector(undoLastDictation:)) {
+        item.toolTip = self.dictationUndoValid ? nil : @"Undo is available only until you type again";
+        return self.dictationUndoValid;
+    }
     if (item.action == @selector(skipPomodoroPhase:)) {
         [self refreshPomodoroState];
         MicaPomodoroPhase phase = self.pomodoro.phase;
@@ -4632,6 +4652,9 @@ static BOOL MicaValidBranchName(NSString *name) {
     NSData *bytes = [transcript dataUsingEncoding:NSUTF8StringEncoding];
     if (!bytes.length) return NO;
     mica_session_paste(target.session, bytes.bytes, bytes.length);
+    self.lastDictationText = transcript;
+    self.lastDictationTab = target;
+    self.dictationUndoValid = YES;
     self.voiceTargetTab = nil;
     if (target == self.activeTab) {
         [self.terminalView clearSelection];
@@ -4854,6 +4877,26 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     }
 }
 
+- (void)prefDictationModeChanged:(NSPopUpButton *)sender {
+    self.dictationToggleMode = sender.indexOfSelectedItem == 1;
+    [[self micaDefaults] setBool:self.dictationToggleMode forKey:@"MicaDictationToggleMode"];
+}
+
+- (void)undoLastDictation:(id)sender {
+    (void)sender;
+    MicaTab *tab = self.lastDictationTab;
+    if (!self.dictationUndoValid || !tab.session || ![self.tabs containsObject:tab]) return;
+    __block NSUInteger count = 0;
+    [self.lastDictationText enumerateSubstringsInRange:NSMakeRange(0, self.lastDictationText.length)
+        options:NSStringEnumerationByComposedCharacterSequences usingBlock:^(__unused NSString *part, __unused NSRange range,
+            __unused NSRange enclosing, __unused BOOL *stop) { count++; }];
+    for (NSUInteger i = 0; i < count; i++) mica_session_key(tab.session, VTERM_KEY_BACKSPACE, VTERM_MOD_NONE);
+    self.dictationUndoValid = NO;
+    self.lastDictationText = nil;
+    self.lastDictationTab = nil;
+    [self.terminalView setNeedsDisplay:YES];
+}
+
 - (void)openPreferences:(id)sender {
     (void)sender;
     if (self.preferencesWindow) {
@@ -4865,14 +4908,17 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
         ((NSButton *)[self.preferencesWindow.contentView viewWithTag:105]).state =
             [[self micaDefaults] boolForKey:@"MicaGlobalShortcut"] ? NSControlStateValueOn : NSControlStateValueOff;
         {
-            [(NSPopUpButton *)[self.preferencesWindow.contentView viewWithTag:106]
+        [(NSPopUpButton *)[self.preferencesWindow.contentView viewWithTag:106]
                 selectItemAtIndex:[MicaAppDelegate scrollbackIndexForLines:[self storedScrollbackLines]]];
+            [(NSPopUpButton *)[self.preferencesWindow.contentView viewWithTag:107]
+                selectItemAtIndex:self.dictationToggleMode ? 1 : 0];
         }
         [self refreshPreferencesSizeLabel];
         [self.preferencesWindow makeKeyAndOrderFront:nil];
         return;
     }
-    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 460, 336)
+    self.dictationToggleMode = [[self micaDefaults] boolForKey:@"MicaDictationToggleMode"];
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 460, 374)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
     window.title = @"Mica Settings";
     window.releasedWhenClosed = NO;
@@ -4929,14 +4975,23 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     shortcut.tag = 105;
     shortcut.state = [[self micaDefaults] boolForKey:@"MicaGlobalShortcut"] ? NSControlStateValueOn : NSControlStateValueOff;
     [content addSubview:shortcut];
-    NSBox *rule = [[NSBox alloc] initWithFrame:NSMakeRect(20, 74, 420, 1)];
+    NSTextField *dictationCaption = [NSTextField labelWithString:@"Dictation key behaviour"];
+    dictationCaption.alignment = NSTextAlignmentRight;
+    dictationCaption.frame = NSMakeRect(20, 66, 90, 18);
+    [content addSubview:dictationCaption];
+    NSPopUpButton *dictationMode = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 61, 200, 26) pullsDown:NO];
+    [dictationMode addItemsWithTitles:@[@"Hold", @"Toggle"]];
+    [dictationMode selectItemAtIndex:self.dictationToggleMode ? 1 : 0];
+    dictationMode.tag = 107; dictationMode.target = self; dictationMode.action = @selector(prefDictationModeChanged:);
+    [content addSubview:dictationMode];
+    NSBox *rule = [[NSBox alloc] initWithFrame:NSMakeRect(20, 40, 420, 1)];
     rule.boxType = NSBoxSeparator;
     [content addSubview:rule];
     NSButton *project = [NSButton buttonWithTitle:@"Project Settings…" target:self action:@selector(openProjectSettings:)];
-    project.frame = NSMakeRect(20, 24, 200, 30);
+    project.frame = NSMakeRect(20, 0, 200, 30);
     project.enabled = self.projectLayoutPath.length > 0;
     NSButton *timer = [NSButton buttonWithTitle:@"Timer Settings…" target:self action:@selector(openPomodoroSettings:)];
-    timer.frame = NSMakeRect(240, 24, 200, 30);
+    timer.frame = NSMakeRect(240, 0, 200, 30);
     [content addSubview:project];
     [content addSubview:timer];
     self.preferencesWindow = window;

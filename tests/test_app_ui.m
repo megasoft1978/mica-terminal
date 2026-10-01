@@ -1997,6 +1997,26 @@ static int MicaRunUISelfTest(void) {
             MicaUITestRecord(report, &allPassed, lightSurvives && systemSurvives && darkSurvives,
                 [NSString stringWithFormat:@"Dark, Light and System theme settings load in a fresh delegate from an isolated defaults suite (light=%d system=%d dark=%d mode=%@)",
                     lightSurvives, systemSurvives, darkSurvives, [isolatedDefaults stringForKey:@"MicaThemeMode"]]);
+            NSString *dictationSuite = [NSString stringWithFormat:@"mica-dictation-mode-%d", getpid()];
+            NSUserDefaults *dictationDefaults = [[NSUserDefaults alloc] initWithSuiteName:dictationSuite];
+            [dictationDefaults removePersistentDomainForName:dictationSuite];
+            gMicaDefaultsOverride = dictationDefaults;
+            MicaAppDelegate *dictationPreference = [MicaAppDelegate new];
+            dictationPreference.dictationToggleMode = [dictationDefaults boolForKey:@"MicaDictationToggleMode"];
+            NSPopUpButton *dictationModePicker = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+            [dictationModePicker addItemsWithTitles:@[@"Hold", @"Toggle"]];
+            BOOL holdDefault = !dictationPreference.dictationToggleMode;
+            [dictationModePicker selectItemAtIndex:1];
+            [dictationPreference prefDictationModeChanged:dictationModePicker];
+            MicaAppDelegate *restoredDictationPreference = [MicaAppDelegate new];
+            restoredDictationPreference.dictationToggleMode = [dictationDefaults boolForKey:@"MicaDictationToggleMode"];
+            BOOL togglePersists = restoredDictationPreference.dictationToggleMode;
+            [dictationModePicker selectItemAtIndex:0];
+            [dictationPreference prefDictationModeChanged:dictationModePicker];
+            gMicaDefaultsOverride = nil; [dictationDefaults removePersistentDomainForName:dictationSuite];
+            MicaUITestRecord(report, &allPassed, holdDefault && togglePersists,
+                [NSString stringWithFormat:@"dictation defaults to Hold and Toggle persists through an isolated defaults suite (default=%d toggle=%d)",
+                    holdDefault, togglePersists]);
             // Global shortcut: off by default, persists, and registering/unregistering goes through the injected hook.
             shortcutEnableCalls = shortcutDisableCalls = 0;
             NSString *shortcutSuite = [NSString stringWithFormat:@"mica-shortcut-%d", getpid()];

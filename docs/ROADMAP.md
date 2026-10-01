@@ -30,6 +30,15 @@ A verified list of what would make Mica better at its job (one light app for the
 
 ## Still open, ranked by value against effort
 
+Cycle 6 follow-up priorities:
+
+| # | Gap | Evidence | Effort |
+| --- | --- | --- | --- |
+| 1 | Command palette and tab switcher | ⌘⇧P currently enters the tab-navigation mode; it does not yet search menu actions. | Medium |
+| 2 | OSC 133 command landmarks | Existing command-completion OSC 777 is not a per-row prompt/command mark and does not support output selection or navigation. | Medium–large |
+| 3 | Keyboard Quick Select | URLs, paths and hashes do not yet have temporary keyboard hint labels. | Medium |
+| 4 | Notification state and mute | Agent notifications do not distinguish waiting from completion, and per-tab mute is not available. | Medium |
+
 | # | Gap | Evidence | Effort |
 | --- | --- | --- | --- |
 | 1 | Compact scrollback storage | Rows store meaningful prefixes, intern up to 16 row-local scalar styles/colors, and keep the previous scalar format for more varied rows; combined Unicode retains full cells and links remain separately tracked. The retained-line limit is unchanged; continue measuring search/resize latency before considering a larger allowance | Medium–large |

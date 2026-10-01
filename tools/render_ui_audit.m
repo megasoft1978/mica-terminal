@@ -116,6 +116,9 @@ int main(int argc, const char *argv[]) {
         [voice setValue:@(0.7) forKey:@"audioLevel"];
         [voice setValue:@NO forKey:@"hasProgress"];
         SaveViewImage(main.terminalView, out, @"05-dictation-listening");
+        main.dictationToggleMode = YES;
+        SaveViewImage(main.terminalView, out, @"05b-dictation-toggle-listening");
+        main.dictationToggleMode = NO;
         [voice setValue:@(MicaVoiceControllerStateFailed) forKey:@"state"];
         [voice setValue:@"Microphone access is off. Enable Mica in System Settings → Privacy & Security → Microphone." forKey:@"statusText"];
         SaveViewImage(main.terminalView, out, @"06-dictation-failed");
