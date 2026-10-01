@@ -1443,6 +1443,57 @@ static int MicaRunUISelfTest(void) {
             [NSString stringWithFormat:@"Codex and lazygit animate only after recent output; idle and waiting states stay distinct (%@ → %@; git active=%d idle=%d input=%d)",
                 firstAgentLabel, updatedAgentLabel, lazygitOutputAnimates, idleLazygitStopsAnimating,
                 lazygitInputDoesNotShowLoading]);
+        NSMutableArray<NSString *> *agentNotificationTitles = [NSMutableArray array];
+        delegate.testAgentNotificationHandler = ^(NSString *title, NSString *body, MicaTab *tab) {
+            (void)body; (void)tab;
+            [agentNotificationTitles addObject:title ?: @""];
+        };
+        agentLabelTab.completionLabel = @"codex";
+        BOOL waitingTitle = [[delegate agentNotificationTitleForTab:agentLabelTab waiting:YES] isEqual:@"Codex needs input"];
+        BOOL finishedTitle = [[delegate agentNotificationTitleForTab:agentLabelTab waiting:NO] isEqual:@"Codex finished"];
+        NSMenu *muteMenu = [delegate notificationMenuForTab:agentLabelTab];
+        NSMenuItem *muteItem = muteMenu.itemArray.firstObject;
+        BOOL muteMenuStartsOff = muteItem.state == NSControlStateValueOff;
+        [delegate toggleMuteNotificationsForTab:muteItem];
+        agentLabelTab.needsAttention = YES;
+        [delegate postAgentNotification:@"please continue" title:[delegate agentNotificationTitleForTab:agentLabelTab waiting:YES]
+                                 forTab:agentLabelTab];
+        BOOL muteSuppressesNotice = agentNotificationTitles.count == 0;
+        BOOL mutedBadgeRemains = [delegate.terminalView activityStateForTab:agentLabelTab] == MicaTabActivityStateNeedsAttention;
+        NSMenu *mutedMenu = [delegate notificationMenuForTab:agentLabelTab];
+        BOOL muteMenuShowsOn = [mutedMenu.itemArray.firstObject state] == NSControlStateValueOn;
+        [delegate toggleMuteNotificationsForTab:mutedMenu.itemArray.firstObject];
+        [delegate postAgentNotification:@"please continue" title:[delegate agentNotificationTitleForTab:agentLabelTab waiting:YES]
+                                 forTab:agentLabelTab];
+        [delegate postAgentNotification:@"work complete" title:[delegate agentNotificationTitleForTab:agentLabelTab waiting:NO]
+                                 forTab:agentLabelTab];
+        NSArray *mutePaletteRows = [delegate paletteRows];
+        NSUInteger agentLabelIndex = [delegate.tabs indexOfObjectIdenticalTo:agentLabelTab];
+        NSUInteger mutePaletteIndex = [mutePaletteRows indexOfObjectPassingTest:^BOOL(NSDictionary *row, NSUInteger idx, BOOL *stop) {
+            (void)idx; (void)stop;
+            return [row[@"kind"] isEqual:@"mute"] && [row[@"title"] hasPrefix:@"Mute notifications for"] &&
+                [row[@"tabIndex"] unsignedIntegerValue] == agentLabelIndex;
+        }];
+        BOOL paletteCanMute = mutePaletteIndex != NSNotFound;
+        if (paletteCanMute) {
+            delegate.commandPaletteRows = mutePaletteRows;
+            delegate.commandPaletteTable = [NSTableView new];
+            [delegate.commandPaletteTable addTableColumn:[[NSTableColumn alloc] initWithIdentifier:@"name"]];
+            delegate.commandPaletteTable.dataSource = (id)delegate;
+            delegate.commandPaletteTable.delegate = (id)delegate;
+            [delegate.commandPaletteTable reloadData];
+            [delegate.commandPaletteTable selectRowIndexes:[NSIndexSet indexSetWithIndex:mutePaletteIndex] byExtendingSelection:NO];
+            [delegate runCommandPaletteSelection:nil];
+            paletteCanMute = agentLabelTab.muteNotifications;
+            agentLabelTab.muteNotifications = NO;
+        }
+        MicaUITestRecord(report, &allPassed, waitingTitle && finishedTitle && muteMenuStartsOff && muteMenuShowsOn &&
+            muteSuppressesNotice && mutedBadgeRemains && paletteCanMute && [agentNotificationTitles isEqual:@[@"Codex needs input", @"Codex finished"]],
+            [NSString stringWithFormat:@"agent notices label waiting and finished states; per-tab mute suppresses notices while preserving the badge (titles=%@ mute=%d/%d badge=%d palette=%d)",
+                agentNotificationTitles, muteMenuStartsOff, muteMenuShowsOn, mutedBadgeRemains, paletteCanMute]);
+        delegate.testAgentNotificationHandler = nil;
+        agentLabelTab.needsAttention = NO;
+        agentLabelTab.completionLabel = nil;
         MicaUITestRecord(report, &allPassed, delegate.terminalView.terminalFont.pointSize >= 16,
                          @"default terminal font remains at least 16 points");
         MicaUITestRecord(report, &allPassed, kTabTitleFontSize == 12.0 && kHeaderHeight == 28.0,
@@ -2225,7 +2276,8 @@ static int MicaRunUISelfTest(void) {
             MicaAppDelegate *stateOwner = [MicaAppDelegate new];
             stateOwner.tabs = [NSMutableArray array];
             NSString *safeTempFolder = @"/private/tmp";
-            MicaTab *savedTab = [MicaTab new]; savedTab.name = @"Remembered"; savedTab.cwd = safeTempFolder; savedTab.command = @"printf MICA_RESTORED";
+            MicaTab *savedTab = [MicaTab new]; savedTab.name = @"Remembered"; savedTab.cwd = safeTempFolder;
+            savedTab.command = @"printf MICA_RESTORED"; savedTab.muteNotifications = YES;
             [stateOwner.tabs addObject:savedTab]; [MicaControllers() addObject:stateOwner];
             NSString *stateDirectory = [NSTemporaryDirectory() stringByAppendingPathComponent:
                 [NSString stringWithFormat:@"mica-state-%d", getpid()]];
@@ -2237,7 +2289,8 @@ static int MicaRunUISelfTest(void) {
             BOOL stateRoundTrips = [savedState[@"tabs"] count] == 1 &&
                 [savedState[@"tabs"][0][@"name"] isEqual:@"Remembered"] &&
                 [savedState[@"tabs"][0][@"cwd"] isEqual:safeTempFolder] &&
-                [savedState[@"tabs"][0][@"command"] isEqual:@"printf MICA_RESTORED"];
+                [savedState[@"tabs"][0][@"command"] isEqual:@"printf MICA_RESTORED"] &&
+                [savedState[@"tabs"][0][@"muteNotifications"] boolValue];
             NSDictionary *stateAttributes = [NSFileManager.defaultManager attributesOfItemAtPath:statePath error:nil];
             NSDictionary *directoryAttributes = [NSFileManager.defaultManager attributesOfItemAtPath:stateDirectory error:nil];
             BOOL privateStatePermissions = [stateAttributes[NSFilePosixPermissions] unsignedShortValue] == 0600 &&
@@ -2248,7 +2301,8 @@ static int MicaRunUISelfTest(void) {
             BOOL restoredSession = restoredStateOwner.tabs.count == 1 &&
                 [restoredStateOwner.activeTab.name isEqual:@"Remembered"] &&
                 [restoredStateOwner.activeTab.cwd isEqual:MicaStandardizedWorkingDirectory(@"/tmp")] &&
-                [restoredStateOwner.activeTab.command isEqual:@"printf MICA_RESTORED"];
+                [restoredStateOwner.activeTab.command isEqual:@"printf MICA_RESTORED"] &&
+                restoredStateOwner.activeTab.muteNotifications;
             for (NSValue *value in [restoredStateOwner detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
             NSDictionary *missingFolderState = @{@"version":@1,@"windows":@[@{@"tabs":@[@{
                 @"name":@"Missing folder",@"cwd":[stateDirectory stringByAppendingPathComponent:@"deleted-folder"]}]}]};
@@ -2276,6 +2330,10 @@ static int MicaRunUISelfTest(void) {
                 [hostileJSON writeToFile:statePath atomically:YES];
                 hostileIgnored = hostileIgnored && [stateOwner readSessionState].count == 0;
             }
+            NSDictionary *numericMuteState = @{@"version":@1,@"windows":@[@{@"tabs":@[@{
+                @"name":@"Bad mute type",@"cwd":safeTempFolder,@"muteNotifications":@1}]}]};
+            [[NSJSONSerialization dataWithJSONObject:numericMuteState options:0 error:nil] writeToFile:statePath atomically:YES];
+            hostileIgnored = hostileIgnored && [stateOwner readSessionState].count == 0;
             NSString *fileLink = [stateDirectory stringByAppendingPathComponent:@"file-link"];
             symlink("/etc/hosts", fileLink.fileSystemRepresentation);
             NSDictionary *linkHostile = @{@"version":@1,@"windows":@[@{@"tabs":@[@{@"name":@"Link",@"cwd":fileLink}]}]};

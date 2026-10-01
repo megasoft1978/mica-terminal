@@ -275,6 +275,7 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 @property(nonatomic, copy) NSString *pendingClipboardText;
 @property(nonatomic, assign) BOOL syncHeld;
 @property(nonatomic, assign) BOOL needsAttention;
+@property(nonatomic, assign) BOOL muteNotifications;
 @property(nonatomic, assign) uint64_t commandCompletionCount;
 @property(nonatomic, assign) BOOL tracksCompletion;
 @property(nonatomic, assign) BOOL completedCommand;
@@ -555,6 +556,9 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, strong) NSTableView *commandPaletteTable;
 @property(nonatomic, copy) NSArray<NSDictionary *> *commandPaletteRows;
 #if defined(MICA_APP_NO_MAIN)
+@property(nonatomic, copy) void (^testAgentNotificationHandler)(NSString *title, NSString *body, MicaTab *tab);
+#endif
+#if defined(MICA_APP_NO_MAIN)
 @property(nonatomic, strong) NSURL *pomodoroStorageDirectoryOverride;
 #endif
 - (MicaTab *)activeTab;
@@ -590,7 +594,10 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)prefScrollbackChanged:(NSPopUpButton *)sender;
 - (void)refreshPreferencesSizeLabel;
 - (void)newWorktreeTab:(id)sender;
-- (void)postAgentNotification:(NSString *)words forTab:(MicaTab *)tab;
+- (void)postAgentNotification:(NSString *)words title:(NSString *)title forTab:(MicaTab *)tab;
+- (void)toggleMuteNotificationsForTab:(id)sender;
+- (NSMenu *)notificationMenuForTab:(MicaTab *)tab;
+- (NSString *)agentNotificationTitleForTab:(MicaTab *)tab waiting:(BOOL)waiting;
 - (void)startWindowWithArguments:(NSArray<NSString *> *)arguments;
 - (void)openProjectWindowWithArguments:(NSArray<NSString *> *)arguments;
 - (void)takeMenuOwnership;
@@ -2894,6 +2901,12 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
 
 - (void)rightMouseDown:(NSEvent *)event {
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    NSInteger tabIndex = [self tabIndexAtPoint:point];
+    if (tabIndex != NSNotFound) {
+        MicaTab *tab = self.owner.tabs[(NSUInteger)tabIndex];
+        [NSMenu popUpContextMenu:[self.owner notificationMenuForTab:tab] withEvent:event forView:self];
+        return;
+    }
     if (NSPointInRect(point, [self pomodoroControlRect])) {
         [self showPomodoroControlMenu:nil];
         return;
@@ -3869,30 +3882,58 @@ static NSDictionary *MicaScalarDictionary(id object) {
 }
 
 // A macOS notification carrying the words an agent sent. At most one per tab every ten seconds.
-- (void)postAgentNotification:(NSString *)words forTab:(MicaTab *)tab {
+- (NSMenu *)notificationMenuForTab:(MicaTab *)tab {
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:tab.name ?: @"Tab"];
+    NSMenuItem *mute = [[NSMenuItem alloc] initWithTitle:@"Mute notifications"
+        action:@selector(toggleMuteNotificationsForTab:) keyEquivalent:@""];
+    mute.target = self;
+    mute.representedObject = tab;
+    mute.state = tab.muteNotifications ? NSControlStateValueOn : NSControlStateValueOff;
+    [menu addItem:mute];
+    return menu;
+}
+
+- (NSString *)agentNotificationTitleForTab:(MicaTab *)tab waiting:(BOOL)waiting {
+    NSString *agent = MicaAgentNameForTab(tab);
+    if (!agent.length) agent = MicaAgentNameForText(tab.completionLabel) ?: (tab.completionLabel.length ? tab.completionLabel : @"Agent");
+    return [NSString stringWithFormat:@"%@ %@", agent, waiting ? @"needs input" : @"finished"];
+}
+
+- (void)toggleMuteNotificationsForTab:(id)sender {
+    MicaTab *tab = [sender isKindOfClass:NSMenuItem.class] ? [(NSMenuItem *)sender representedObject] : self.activeTab;
+    if (![tab isKindOfClass:MicaTab.class]) return;
+    tab.muteNotifications = !tab.muteNotifications;
+    [self saveSessionState];
+}
+
+- (void)postAgentNotification:(NSString *)words title:(NSString *)title forTab:(MicaTab *)tab {
+    if (!tab || tab.muteNotifications || !words.length) return;
+#if defined(MICA_APP_NO_MAIN)
+    if (self.testAgentNotificationHandler) self.testAgentNotificationHandler(title, words, tab);
+#endif
 #if !defined(MICA_APP_NO_MAIN)
     NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
-    if (now - tab.lastAgentNotificationAt < 10.0) return;
+    BOOL finished = [title hasSuffix:@"finished"];
+    if (!finished && now - tab.lastAgentNotificationAt < 10.0) return;
     tab.lastAgentNotificationAt = now;
     static BOOL authorizationRequested;
     UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
     if (!authorizationRequested) {
         authorizationRequested = YES;
-        [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert | UNAuthorizationOptionSound
+        [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert
             completionHandler:^(BOOL granted, NSError *error) { (void)granted; (void)error; }];
     }
     UNMutableNotificationContent *content = [UNMutableNotificationContent new];
-    content.title = self.projectName.length ? [NSString stringWithFormat:@"%@ · %@", self.projectName, tab.name ?: @"Terminal"]
-                                            : (tab.name ?: @"Mica");
+    content.title = title.length ? title : (tab.name ?: @"Mica");
     content.body = words;
-    content.sound = UNNotificationSound.defaultSound;
+    content.sound = nil;
     content.userInfo = @{ @"window": @(self.window.windowNumber), @"tab": @([self.tabs indexOfObjectIdenticalTo:tab]) };
     NSString *identifier = [NSString stringWithFormat:@"mica-agent-%ld-%lu", (long)self.window.windowNumber,
         (unsigned long)[self.tabs indexOfObjectIdenticalTo:tab]];
     [center addNotificationRequest:[UNNotificationRequest requestWithIdentifier:identifier content:content trigger:nil]
         withCompletionHandler:nil];
 #else
-    (void)words; (void)tab;
+    (void)words; (void)title; (void)tab;
 #endif
 }
 
@@ -3917,8 +3958,10 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
        willPresentNotification:(UNNotification *)notification
          withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler {
     (void)center;
-    (void)notification;
-    completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionSound);
+    if ([notification.request.identifier hasPrefix:@"mica-agent-"])
+        completionHandler(UNNotificationPresentationOptionBanner);
+    else
+        completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionSound);
 }
 
 - (MicaTab *)activeTab {
@@ -4126,6 +4169,12 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 - (NSArray<NSDictionary *> *)paletteRows {
     NSMutableArray *rows = [NSMutableArray array];
     [self collectPaletteItemsFromMenu:NSApp.mainMenu into:rows];
+    for (NSUInteger index = 0; index < self.tabs.count; index++) {
+        MicaTab *tab = self.tabs[index];
+        [rows addObject:@{@"title":[NSString stringWithFormat:@"%@ notifications for %@", tab.muteNotifications ? @"Unmute" : @"Mute", tab.name ?: @"Terminal"],
+                          @"detail":@"Per-tab notification setting", @"tabIndex":@(index),
+                          @"kind":@"mute"}];
+    }
     NSArray *tabs = [self.tabs sortedArrayUsingComparator:^NSComparisonResult(MicaTab *a, MicaTab *b) {
         if (a == self.activeTab) return NSOrderedAscending;
         if (b == self.activeTab) return NSOrderedDescending;
@@ -4255,6 +4304,14 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSDictionary *entry = self.commandPaletteRows[(NSUInteger)row];
     [self.commandPalettePanel orderOut:nil];
     if ([entry[@"kind"] isEqualToString:@"tab"]) [self selectTabAtIndex:[entry[@"tabIndex"] integerValue]];
+    else if ([entry[@"kind"] isEqualToString:@"mute"]) {
+        NSInteger index = [entry[@"tabIndex"] integerValue];
+        if (index >= 0 && index < (NSInteger)self.tabs.count) {
+            MicaTab *tab = self.tabs[(NSUInteger)index];
+            tab.muteNotifications = !tab.muteNotifications;
+            [self saveSessionState];
+        }
+    }
     else {
         NSMenuItem *item = entry[@"item"];
         if (![self validateMenuItem:item]) { self.commandPalettePanel = nil; return; }
@@ -4500,6 +4557,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
             cwd = NSHomeDirectory();
         [self addTabWithName:spec[@"name"] cwd:cwd command:command
                    prefilled:[spec[@"prefilled"] boolValue]];
+        if (self.tabs.count && [spec[@"muteNotifications"] isKindOfClass:NSNumber.class])
+            self.tabs.lastObject.muteNotifications = [spec[@"muteNotifications"] boolValue];
     }
     if (self.tabs.count == 0) {
         NSString *cwd = configuration[@"cwd"] ?: NSFileManager.defaultManager.currentDirectoryPath;
@@ -4587,6 +4646,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         for (id tab in window[@"tabs"]) {
             if (![tab isKindOfClass:NSDictionary.class] || ![tab[@"name"] isKindOfClass:NSString.class] ||
                 ![tab[@"cwd"] isKindOfClass:NSString.class] ||
+                (tab[@"muteNotifications"] &&
+                    (![tab[@"muteNotifications"] isKindOfClass:NSNumber.class] ||
+                     CFGetTypeID((__bridge CFTypeRef)tab[@"muteNotifications"]) != CFBooleanGetTypeID())) ||
                 (tab[@"command"] && (![tab[@"command"] isKindOfClass:NSString.class] ||
                     [tab[@"command"] length] > 4096))) return @[];
             NSString *name = tab[@"name"], *cwd = tab[@"cwd"];
@@ -4622,7 +4684,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
                 char resolvedPath[PATH_MAX];
                 if (realpath(cwd.fileSystemRepresentation, resolvedPath)) cwd = @(resolvedPath);
             }
-            NSMutableDictionary *savedTab = [@{@"name":name, @"cwd":cwd} mutableCopy];
+            NSMutableDictionary *savedTab = [@{@"name":name, @"cwd":cwd,
+                @"muteNotifications":@(tab.muteNotifications)} mutableCopy];
             if (tab.command.length && tab.command.length <= 4096) savedTab[@"command"] = tab.command;
             [tabs addObject:savedTab];
         }
@@ -5488,8 +5551,14 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
                 if (!NSApp.isActive && self.attentionRequest == 0)
                     self.attentionRequest = [NSApp requestUserAttention:NSInformationalRequest];
                 // Away from Mica: say what the program asked, and bring you back to that tab when clicked.
-                if (agentWords && !NSApp.isActive)
-                    [self postAgentNotification:[NSString stringWithUTF8String:agentWords] forTab:tab];
+                if (agentWords && !NSApp.isActive) {
+                    NSString *detail = nil;
+                    NSString *activity = MicaAgentActivityForSession(tab.session, &detail);
+                    BOOL waiting = [activity isEqualToString:@"Needs input"];
+                    NSString *title = waiting ? [self agentNotificationTitleForTab:tab waiting:YES] :
+                        [NSString stringWithFormat:@"%@ update", MicaAgentNameForTab(tab) ?: @"Agent"];
+                    [self postAgentNotification:[NSString stringWithUTF8String:agentWords] title:title forTab:tab];
+                }
                 redraw = YES;
             }
             free(agentWords);
@@ -5502,6 +5571,10 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
             tab.completionStatus = mica_session_command_exit_status(tab.session);
             if (tab != self.activeTab || !NSApp.isActive) {
                 tab.needsAttention = YES;
+                NSString *label = tab.completionLabel.length ? tab.completionLabel : @"Command";
+                NSString *result = tab.completionStatus == 0 ? @"finished" : [NSString stringWithFormat:@"failed (%d)", tab.completionStatus];
+                [self postAgentNotification:[NSString stringWithFormat:@"%@ %@", label, result]
+                    title:[self agentNotificationTitleForTab:tab waiting:NO] forTab:tab];
                 if (!NSApp.isActive && self.attentionRequest == 0)
                     self.attentionRequest = [NSApp requestUserAttention:NSInformationalRequest];
             }
