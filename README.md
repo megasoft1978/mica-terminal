@@ -11,15 +11,15 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.9"><img src="https://img.shields.io/badge/release-0.1.0--alpha.9-blue" alt="Release 0.1.0 alpha 9"></a>
+  <a href="https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.10"><img src="https://img.shields.io/badge/release-0.1.0--alpha.10-blue" alt="Release 0.1.0 alpha 10"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B%20%C2%B7%20Apple%20silicon-555" alt="macOS 14 or later, Apple silicon">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
 </p>
 
 <p align="center">
   <a href="https://megasoft1978.github.io/mica-terminal/">Website</a> ·
-  <a href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.9/Mica.zip"><strong>Download</strong></a> ·
-  <a href="https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.9">Release notes</a> ·
+  <a href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.10/Mica.zip"><strong>Download</strong></a> ·
+  <a href="https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.10">Release notes</a> ·
   <a href="LICENSE">MIT license</a>
 </p>
 
@@ -67,11 +67,11 @@ iTerm2 plus Wispr Flow is about 770 MB before you add a timer. Dictation adds a 
 
 ## Install
 
-1. [Download Mica.zip](https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.9/Mica.zip) (Apple silicon, macOS 14 or later), extract it, and move Mica to Applications.
+1. [Download Mica.zip](https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.10/Mica.zip) (Apple silicon, macOS 14 or later), extract it, and move Mica to Applications.
 2. Mica is signed with a Developer ID and notarized by Apple, so it opens normally. Alpha builds may still change quickly.
-3. Mica asks for the microphone only when you start dictation. Checksums are in `SHA256SUMS.txt` on the [release page](https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.9).
+3. Mica asks for the microphone only when you start dictation. Checksums are in `SHA256SUMS.txt` on the [release page](https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.10).
 
-The alpha 9 ZIP and DMG checksums both match their published manifest. See the [release notes](https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.9).
+The alpha 10 ZIP and DMG checksums both match their published manifest. See the [release notes](https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.10).
 
 ### Build from source
 
