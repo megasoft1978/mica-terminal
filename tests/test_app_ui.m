@@ -176,7 +176,8 @@ static void MicaUITestLaunchSpeechHelper(MicaVoiceController *controller) {
 static BOOL MicaUITestExitTabs(NSArray<MicaTab *> *tabs) {
     // Let finite fixture commands release stdin before typing `exit`; otherwise
     // their output can appear ready while the shell still owns the PTY.
-    for (int attempt = 0; attempt < 500; attempt++) {
+    NSDate *commandDeadline = [NSDate dateWithTimeIntervalSinceNow:30.0];
+    while ([commandDeadline timeIntervalSinceNow] > 0) {
         BOOL commandRunning = NO;
         for (MicaTab *tab in tabs) {
             mica_session_poll(tab.session, 10);
@@ -190,7 +191,8 @@ static BOOL MicaUITestExitTabs(NSArray<MicaTab *> *tabs) {
         if (!mica_session_is_running(tab.session)) continue;
         mica_session_write(tab.session, "exit\n", 5);
     }
-    for (int attempt = 0; attempt < 500; attempt++) {
+    NSDate *exitDeadline = [NSDate dateWithTimeIntervalSinceNow:30.0];
+    while ([exitDeadline timeIntervalSinceNow] > 0) {
         BOOL running = NO;
         for (MicaTab *tab in tabs) {
             mica_session_poll(tab.session, 10);
@@ -610,8 +612,20 @@ static int MicaRunUISelfTest(void) {
             "printf '\\033]133;A\\033\\\\'; sleep 1", 8, 80);
         [landmarkUIDelegate.tabs addObject:landmarkUITab];
         [landmarkUIDelegate.terminalView updateGridSize];
-        for (int attempt = 0; attempt < 200 && mica_session_osc133_state(landmarkUITab.session) != 'A'; attempt++) {
+        BOOL commandOutputFinished = NO;
+        NSDate *landmarkDeadline = [NSDate dateWithTimeIntervalSinceNow:30.0];
+        while (!commandOutputFinished && [landmarkDeadline timeIntervalSinceNow] > 0) {
             mica_session_poll(landmarkUITab.session, 10);
+            BOOL hasFinishedMark = NO;
+            for (int row = 0; row < mica_session_rows(landmarkUITab.session); row++) {
+                if (mica_session_row_landmark(landmarkUITab.session, row, NULL) & MICA_LANDMARK_FINISHED) {
+                    hasFinishedMark = YES;
+                    break;
+                }
+            }
+            commandOutputFinished = hasFinishedMark &&
+                mica_session_osc133_state(landmarkUITab.session) == 'A' &&
+                MicaUITestFindText(landmarkUITab.session, @"MICA-OUTPUT-FIXTURE", NULL, NULL);
             usleep(10000);
         }
         [landmarkUIDelegate.terminalView selectLastCommandOutput:nil];
