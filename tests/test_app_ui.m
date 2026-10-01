@@ -322,6 +322,16 @@ static int MicaRunUISelfTest(void) {
             [MicaCorrectTranscript(@"unrelated ordinary sentence with useful words", @[@"MicaTerminal", @"MicaTerminul"]) isEqualToString:@"unrelated ordinary sentence with useful words"];
         MicaUITestRecord(report, &allPassed, vocabularyCases,
                          @"vocabulary corrector handles normalized terms and rejects common words, short terms, near misses, and ambiguous candidates");
+        NSUserDefaults *boostDefaults = [[NSUserDefaults alloc] initWithSuiteName:@"MicaBoostPreferenceTest"];
+        [boostDefaults removePersistentDomainForName:@"MicaBoostPreferenceTest"];
+        BOOL boostPreference = ![boostDefaults boolForKey:@"MicaDictationVocabularyBoostEnabled"];
+        [boostDefaults setBool:YES forKey:@"MicaDictationVocabularyBoostEnabled"];
+        boostPreference = boostPreference && [boostDefaults boolForKey:@"MicaDictationVocabularyBoostEnabled"];
+        NSMutableArray *boostTerms = [NSMutableArray array];
+        for (NSUInteger i=0; i<510; i++) [boostTerms addObject:[NSString stringWithFormat:@"ProjectTerm%lu", (unsigned long)i]];
+        boostPreference = boostPreference && MicaVocabularyMerge(@[boostTerms]).count == 500;
+        MicaUITestRecord(report, &allPassed, boostPreference,
+            @"vocabulary boost preference defaults off, persists when enabled, and merged terms cap at 500");
         MicaTab *vocabularyTabA=[MicaTab new], *vocabularyTabB=[MicaTab new];
         vocabularyTabA.vocabularyFileTerms=@[@"AlphaProject"]; vocabularyTabB.vocabularyFileTerms=@[@"BetaProject"];
         BOOL vocabularyWindowIsolation=[MicaCorrectTranscript(@"AlphaaProject",vocabularyTabA.vocabularyFileTerms) isEqualToString:@"AlphaProject"] &&

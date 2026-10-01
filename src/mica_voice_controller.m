@@ -81,13 +81,14 @@ float _displayLevel;
     NSString *path = self.helperURL.path;
     if (self.prefetchTask.isRunning || ![NSFileManager.defaultManager isExecutableFileAtPath:path]) return;
     NSDate *modified = [NSFileManager.defaultManager attributesOfItemAtPath:path error:nil][NSFileModificationDate];
-    NSString *stamp = [NSString stringWithFormat:@"%.0f", modified.timeIntervalSince1970];
+    BOOL boost = self.vocabularyBoostEnabled;
+    NSString *stamp = [NSString stringWithFormat:@"%.0f:%d", modified.timeIntervalSince1970, boost];
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     if ([[defaults stringForKey:@"MicaWarmedHelperStamp"] isEqualToString:stamp]) return;
     NSTask *task = [NSTask new];
     NSPipe *output = [NSPipe pipe];
     task.executableURL = self.helperURL;
-    task.arguments = @[@"warm"];
+    task.arguments = self.vocabularyBoostEnabled ? @[@"warm", @"--boost"] : @[@"warm"];
     task.standardInput = NSFileHandle.fileHandleWithNullDevice;
     task.standardOutput = output;
     task.standardError = NSFileHandle.fileHandleWithNullDevice;
@@ -286,7 +287,21 @@ float _displayLevel;
     [self setState:MicaVoiceControllerStatePreparing
             status:@"Starting local speech recognition…"
           progress:-1];
-    [self launchHelperWithArguments:@[@"stream"] inputData:nil keepsInputOpen:YES];
+    NSMutableArray<NSString *> *arguments = [NSMutableArray arrayWithObject:@"stream"];
+    if (self.vocabularyBoostEnabled && self.vocabularyBoostTerms.count) {
+        NSMutableArray *terms = [NSMutableArray array];
+        for (NSString *entry in self.vocabularyBoostTerms) {
+            NSArray *parts = [entry componentsSeparatedByString:@"\t"];
+            NSString *canonical = parts.lastObject;
+            if (canonical.length < 4) continue;
+            NSMutableDictionary *term = [@{@"text":canonical} mutableCopy];
+            if (parts.count > 1 && [parts.firstObject length] >= 4) term[@"aliases"] = @[parts.firstObject];
+            [terms addObject:term]; if (terms.count == 230) break;
+        }
+        NSData *json = [NSJSONSerialization dataWithJSONObject:terms options:0 error:nil];
+        if (json.length) [arguments addObjectsFromArray:@[@"--vocabulary", [json base64EncodedStringWithOptions:0]]];
+    }
+    [self launchHelperWithArguments:arguments inputData:nil keepsInputOpen:YES];
     if (self.process) [self startAudioCapture];
 }
 

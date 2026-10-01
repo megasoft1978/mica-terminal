@@ -66,7 +66,7 @@ private struct MicaVoiceCLI {
         case "stream":
             await transcribeStream()
         case "warm":
-            await warmModels()
+            await warmModels(boost: arguments.contains("--boost"))
         default:
             fail("Unknown voice helper command: \(command)")
         }
@@ -75,7 +75,7 @@ private struct MicaVoiceCLI {
     /// Downloads the speech model if it is missing (reporting progress as JSON lines) and loads it once
     /// so Core ML builds its compiled cache. Run by the app in the background after first launch and
     /// after each update, so the first dictation does not wait.
-    private static func warmModels() async {
+    private static func warmModels(boost: Bool) async {
         let cacheDirectory = modelCacheDirectory()
         let alreadyDownloaded = AsrModels.modelsExist(at: cacheDirectory, version: .ultra)
         let progressThrottle = DownloadProgressThrottle()
@@ -99,6 +99,10 @@ private struct MicaVoiceCLI {
                     }
                 }
             )
+            if boost {
+                emit(HelperMessage(type: "status", message: "Downloading vocabulary boost model…"))
+                _ = try await CtcModels.downloadAndLoad(variant: .ctc110m)
+            }
             exit(0)
         } catch {
             emit(HelperMessage(type: "error", message: "\(error.localizedDescription)"))
@@ -107,6 +111,7 @@ private struct MicaVoiceCLI {
     }
 
     private static func transcribeStream() async {
+        let arguments = Array(CommandLine.arguments.dropFirst())
         let preparationStartedAt = ProcessInfo.processInfo.systemUptime
         do {
             let cacheDirectory = modelCacheDirectory()
@@ -169,6 +174,25 @@ private struct MicaVoiceCLI {
             )
             let manager = SlidingWindowAsrManager(config: streamingConfig)
             try await manager.loadModels(models)
+            if let index = arguments.firstIndex(of: "--vocabulary"), arguments.indices.contains(index + 1),
+               let data = Data(base64Encoded: arguments[index + 1]),
+               let rawTerms = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                let terms = rawTerms.compactMap { item -> CustomVocabularyTerm? in
+                    guard let text = item["text"] as? String, text.count >= 4 else { return nil }
+                    return CustomVocabularyTerm(text: text, aliases: item["aliases"] as? [String])
+                }
+                if !terms.isEmpty {
+                    do {
+                        emit(HelperMessage(type: "status", message: "Loading vocabulary boost model…"))
+                        let ctc = try await CtcModels.downloadAndLoad(variant: .ctc110m)
+                        try await manager.configureVocabularyBoosting(
+                            vocabulary: CustomVocabularyContext(terms: terms), ctcModels: ctc
+                        )
+                    } catch {
+                        emit(HelperMessage(type: "status", message: "Vocabulary boost unavailable; using project correction"))
+                    }
+                }
+            }
             let updates = await manager.transcriptionUpdates
             try await manager.startStreaming(source: .microphone)
             let recognitionStartedAt = ProcessInfo.processInfo.systemUptime
