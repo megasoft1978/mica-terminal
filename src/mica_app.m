@@ -432,9 +432,24 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 }
 
 @class MicaAppDelegate;
+@class MicaTerminalView;
 @interface MicaTabAccessibilityElement : NSAccessibilityElement
 @property(nonatomic, copy) BOOL (^pressHandler)(void);
 @end
+
+@interface MicaAgentSidebarView : NSView
+@property(nonatomic, weak) MicaAppDelegate *owner;
+- (void)refreshRows;
+@end
+
+@interface MicaWindowContentView : NSView
+@property(nonatomic, weak) MicaAppDelegate *owner;
+@property(nonatomic, strong) MicaTerminalView *terminalView;
+@property(nonatomic, strong) MicaAgentSidebarView *sidebarView;
+@property(nonatomic, getter=isSidebarVisible) BOOL sidebarVisible;
+- (void)setSidebarVisible:(BOOL)visible;
+@end
+
 @implementation MicaTabAccessibilityElement
 - (BOOL)accessibilityPerformPress { return self.pressHandler ? self.pressHandler() : NO; }
 @end
@@ -511,6 +526,8 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
                                        UNUserNotificationCenterDelegate>
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, strong) MicaTerminalView *terminalView;
+@property(nonatomic, strong) MicaWindowContentView *windowContentView;
+@property(nonatomic, assign) BOOL sidebarVisible;
 @property(nonatomic, strong) NSMutableArray<MicaTab *> *tabs;
 @property(nonatomic, assign) NSInteger activeIndex;
 @property(nonatomic, copy) NSString *projectName;
@@ -616,6 +633,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)teardownWindow;
 - (NSArray<NSValue *> *)detachSessionsForTermination;
 - (void)prefThemeChanged:(NSPopUpButton *)sender;
+- (void)toggleSidebar:(id)sender;
 @property(nonatomic, strong) NSWindow *preferencesWindow;
 @property(nonatomic, assign) BOOL observesSystemAppearance;
 - (void)toggleLightTheme:(id)sender;
@@ -650,6 +668,97 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)updatePomodoroTimer;
 - (NSString *)currentPomodoroNotificationIdentifier;
 @property(nonatomic, assign) MicaUIMode uiMode;
+@end
+
+@implementation MicaAgentSidebarView
+- (BOOL)isFlipped { return YES; }
+- (void)refreshRows { [self setNeedsDisplay:YES]; }
+- (void)drawRect:(NSRect)dirtyRect {
+    (void)dirtyRect;
+    [NSColor.windowBackgroundColor setFill]; NSRectFill(self.bounds);
+    NSDictionary *titleAttrs = @{NSFontAttributeName:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold], NSForegroundColorAttributeName:NSColor.secondaryLabelColor};
+    [@"TABS" drawAtPoint:NSMakePoint(14, 14) withAttributes:titleAttrs];
+    CGFloat y = 42;
+    for (NSUInteger i = 0; i < self.owner.tabs.count; i++, y += 56) {
+        MicaTab *tab = self.owner.tabs[i];
+        NSRect row = NSMakeRect(6, y - 5, self.bounds.size.width - 12, 51);
+        BOOL selected = (NSInteger)i == self.owner.activeIndex;
+        if (selected) { [NSColor.selectedContentBackgroundColor setFill]; [[NSBezierPath bezierPathWithRoundedRect:row xRadius:6 yRadius:6] fill]; }
+        NSColor *fg = selected ? NSColor.selectedMenuItemTextColor : NSColor.labelColor;
+        NSDictionary *nameAttrs = @{NSFontAttributeName:[NSFont systemFontOfSize:13 weight:NSFontWeightMedium], NSForegroundColorAttributeName:fg};
+        NSDictionary *detailAttrs = @{NSFontAttributeName:[NSFont systemFontOfSize:10], NSForegroundColorAttributeName:selected ? fg : NSColor.secondaryLabelColor};
+        NSString *name = tab.name.length ? tab.name : @"Terminal";
+        [name drawInRect:NSMakeRect(14, y, self.bounds.size.width - 42, 17) withAttributes:nameAttrs];
+        NSString *folder = tab.cwd.lastPathComponent.length ? tab.cwd.lastPathComponent : @"/";
+        NSString *branch = tab.gitBranch.length ? [NSString stringWithFormat:@" · %@", tab.gitBranch] : @"";
+        [([folder stringByAppendingString:branch]) drawInRect:NSMakeRect(14, y + 20, self.bounds.size.width - 25, 15) withAttributes:detailAttrs];
+        MicaTabActivityState state = [self.owner.terminalView activityStateForTab:tab];
+        NSString *stateText = state == MicaTabActivityStateWaiting ? @"Needs input" :
+            state == MicaTabActivityStateRunning ? @"Running" : state == MicaTabActivityStateComplete ? @"Finished" :
+            state == MicaTabActivityStateNeedsAttention ? @"Needs attention" : @"Idle";
+        NSColor *stateColor = state == MicaTabActivityStateWaiting ? NSColor.systemOrangeColor :
+            state == MicaTabActivityStateNeedsAttention ? NSColor.systemRedColor : NSColor.secondaryLabelColor;
+        [stateText drawInRect:NSMakeRect(14, y + 36, self.bounds.size.width - 28, 13)
+            withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:9], NSForegroundColorAttributeName:selected ? fg : stateColor}];
+        NSString *symbol = state == MicaTabActivityStateWaiting ? @"!" : state == MicaTabActivityStateRunning ? @"●" : state == MicaTabActivityStateComplete ? @"✓" : @"";
+        if (symbol.length) [symbol drawAtPoint:NSMakePoint(self.bounds.size.width - 25, y + 1) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:12 weight:NSFontWeightBold], NSForegroundColorAttributeName:state == MicaTabActivityStateWaiting ? NSColor.systemOrangeColor : fg}];
+        if (tab.needsAttention) [@"•" drawAtPoint:NSMakePoint(self.bounds.size.width - 23, y + 20) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:14 weight:NSFontWeightBold], NSForegroundColorAttributeName:NSColor.systemRedColor}];
+    }
+}
+- (void)mouseDown:(NSEvent *)event {
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    NSInteger index = (NSInteger)floor((point.y - 42) / 56.0);
+    if (index >= 0 && index < (NSInteger)self.owner.tabs.count) [self.owner selectTabAtIndex:index];
+}
+- (BOOL)acceptsFirstResponder { return YES; }
+- (void)keyDown:(NSEvent *)event {
+    NSInteger delta = event.keyCode == 126 ? -1 : event.keyCode == 125 ? 1 : 0;
+    if (delta) [self.owner selectTabAtIndex:MAX(0, MIN((NSInteger)self.owner.tabs.count - 1, self.owner.activeIndex + delta))];
+    else [super keyDown:event];
+}
+- (BOOL)isAccessibilityElement { return NO; }
+- (NSArray *)accessibilityChildren {
+    NSMutableArray *children = [NSMutableArray array];
+    for (NSUInteger i = 0; i < self.owner.tabs.count; i++) {
+        MicaTab *tab = self.owner.tabs[i];
+        MicaTabActivityState activity = [self.owner.terminalView activityStateForTab:tab];
+        NSString *state = activity == MicaTabActivityStateWaiting ? @"Needs input" :
+            activity == MicaTabActivityStateRunning ? @"Running" : activity == MicaTabActivityStateComplete ? @"Finished" :
+            activity == MicaTabActivityStateNeedsAttention ? @"Needs attention" : @"Idle";
+        NSString *label = [NSString stringWithFormat:@"%@%@, folder %@, branch %@, %@%@", tab.name ?: @"Terminal", (NSInteger)i == self.owner.activeIndex ? @", selected" : @"", tab.cwd.lastPathComponent ?: @"/", tab.gitBranch ?: @"no branch", state, tab.needsAttention ? @", unread attention" : @""];
+        MicaTabAccessibilityElement *element = [MicaTabAccessibilityElement accessibilityElementWithRole:NSAccessibilityButtonRole frame:[self.window convertRectToScreen:[self convertRect:NSMakeRect(6, 37 + i * 56, self.bounds.size.width - 12, 51) toView:nil]] label:label parent:self];
+        __weak typeof(self) weakSelf = self; element.pressHandler = ^BOOL { [weakSelf.owner selectTabAtIndex:(NSInteger)i]; return YES; };
+        [children addObject:element];
+    }
+    return children;
+}
+@end
+
+@implementation MicaWindowContentView
+- (void)layout {
+    [super layout];
+    CGFloat width = self.sidebarVisible ? 220 : 0;
+    self.sidebarView.frame = NSMakeRect(0, 0, width, self.bounds.size.height);
+    self.terminalView.frame = NSMakeRect(width, 0, MAX(0, self.bounds.size.width - width), self.bounds.size.height);
+    [self.terminalView updateGridSize];
+}
+- (void)setSidebarVisible:(BOOL)visible {
+    if (_sidebarVisible == visible) return;
+    _sidebarVisible = visible;
+    if (visible) {
+        MicaAgentSidebarView *sidebar = [MicaAgentSidebarView new];
+        sidebar.owner = self.owner;
+        sidebar.autoresizingMask = NSViewHeightSizable;
+        self.sidebarView = sidebar;
+        [self addSubview:sidebar positioned:NSWindowBelow relativeTo:self.terminalView];
+    } else {
+        [self.sidebarView removeFromSuperview];
+        self.sidebarView = nil;
+    }
+    [self setNeedsLayout:YES];
+    [self layoutSubtreeIfNeeded];
+    [self.owner resizeActiveSession];
+}
 @end
 
 @interface MicaPaletteSearchField : NSTextField
@@ -4118,11 +4227,16 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     self.window.backgroundColor = NSColor.windowBackgroundColor;
     self.window.minSize = NSMakeSize(600, 300);
     self.window.delegate = self;
-    self.terminalView = [[MicaTerminalView alloc] initWithFrame:self.window.contentView.bounds];
+    self.windowContentView = [[MicaWindowContentView alloc] initWithFrame:self.window.contentView.bounds];
+    self.windowContentView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    self.windowContentView.owner = self;
+    self.terminalView = [[MicaTerminalView alloc] initWithFrame:self.windowContentView.bounds];
     self.terminalView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     self.terminalView.owner = self;
     self.terminalView.terminalFont = MicaTerminalFont(kFontSizeDefault);
-    [self.window setContentView:self.terminalView];
+    self.windowContentView.terminalView = self.terminalView;
+    [self.windowContentView addSubview:self.terminalView];
+    [self.window setContentView:self.windowContentView];
     NSURL *voiceHelperURL = [NSBundle.mainBundle.bundleURL URLByAppendingPathComponent:@"Contents/Helpers/mica-voice"];
     self.voiceController = [[MicaVoiceController alloc] initWithHelperURL:voiceHelperURL];
     self.voiceController.delegate = self;
@@ -4460,6 +4574,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     [main addItem:editRoot];
     NSMenuItem *viewRoot = [[NSMenuItem alloc] initWithTitle:@"View" action:nil keyEquivalent:@""];
     NSMenu *viewMenu = [[NSMenu alloc] initWithTitle:@"View"];
+    AddMenuItem(viewMenu, @"Show Sidebar", @selector(toggleSidebar:), @"", 0).target = self;
+    [viewMenu addItem:NSMenuItem.separatorItem];
     AddMenuItem(viewMenu, @"Light Terminal Theme", @selector(toggleLightTheme:), @"l",
                 NSEventModifierFlagCommand | NSEventModifierFlagOption).target = self;
     [viewMenu addItem:NSMenuItem.separatorItem];
@@ -5204,7 +5320,20 @@ static BOOL MicaValidBranchName(NSString *name) {
     tab.needsAttention = NO;
     if (tab.session && NSApp.isActive) mica_session_focus(tab.session, true);
     [self updateWindowTitle];
+    [self.windowContentView.sidebarView refreshRows];
     [self resizeActiveSession];
+}
+
+- (void)toggleSidebar:(id)sender {
+    (void)sender;
+    self.sidebarVisible = !self.sidebarVisible;
+    self.windowContentView.sidebarVisible = self.sidebarVisible;
+    NSMenu *viewMenu = [NSApp.mainMenu itemWithTitle:@"View"].submenu;
+    NSMenuItem *item = nil;
+    for (NSMenuItem *candidate in viewMenu.itemArray)
+        if (candidate.action == @selector(toggleSidebar:)) { item = candidate; break; }
+    item.title = self.sidebarVisible ? @"Hide Sidebar" : @"Show Sidebar";
+    item.state = self.sidebarVisible ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
 - (void)toggleTabPicker {
@@ -5864,6 +5993,7 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
             self.terminalView.bounds.size.width, kHeaderHeight);
         [self.terminalView setNeedsDisplayInRect:header];
     }
+    [self.windowContentView.sidebarView refreshRows];
     if (redraw) [self.terminalView setNeedsDisplay:YES];
     NSTimeInterval pollEndedAt = NSProcessInfo.processInfo.systemUptime;
     NSTimeInterval pollDuration = pollEndedAt - pollStartedAt;

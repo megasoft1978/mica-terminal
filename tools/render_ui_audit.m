@@ -28,11 +28,16 @@ static MicaAppDelegate *MakeWindow(CGFloat width, CGFloat height, NSArray<NSStri
         backing:NSBackingStoreBuffered defer:NO];
     delegate.window.releasedWhenClosed = NO;
     delegate.window.appearance = [NSAppearance appearanceNamed:gMicaLightTheme ? NSAppearanceNameAqua : NSAppearanceNameDarkAqua];
-    delegate.terminalView = [[MicaTerminalView alloc] initWithFrame:delegate.window.contentView.bounds];
+    delegate.windowContentView = [[MicaWindowContentView alloc] initWithFrame:delegate.window.contentView.bounds];
+    delegate.windowContentView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    delegate.windowContentView.owner = delegate;
+    delegate.terminalView = [[MicaTerminalView alloc] initWithFrame:delegate.windowContentView.bounds];
     delegate.terminalView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     delegate.terminalView.owner = delegate;
     delegate.terminalView.terminalFont = MicaTerminalFont(15);
-    [delegate.window setContentView:delegate.terminalView];
+    delegate.windowContentView.terminalView = delegate.terminalView;
+    [delegate.windowContentView addSubview:delegate.terminalView];
+    [delegate.window setContentView:delegate.windowContentView];
     [delegate installMenus];
     for (NSString *name in tabNames)
         [delegate addTabWithName:name cwd:NSHomeDirectory() command:nil prefilled:NO];
@@ -98,6 +103,15 @@ int main(int argc, const char *argv[]) {
         SaveViewImage(main.terminalView, out, @"quick-select-dark");
         [main.terminalView toggleQuickSelect:nil];
         RenderTimerStates(main, out, @"dark");
+        main.sidebarVisible = YES;
+        main.windowContentView.sidebarVisible = YES;
+        [main.windowContentView.sidebarView refreshRows];
+        for (NSNumber *width in @[@600, @800, @1200]) {
+            NSRect frame = main.window.frame; frame.size.width = width.doubleValue; [main.window setFrame:frame display:YES];
+            SaveViewImage(main.windowContentView, out, [NSString stringWithFormat:@"sidebar-dark-%@", width]);
+        }
+        main.sidebarVisible = NO; main.windowContentView.sidebarVisible = NO;
+        NSRect mainFrame = main.window.frame; mainFrame.size.width = 1100; [main.window setFrame:mainFrame display:YES];
 
         main.uiMode = MicaUIModeTab;
         [main.terminalView setNeedsDisplay:YES];
@@ -199,6 +213,14 @@ int main(int argc, const char *argv[]) {
         SaveViewImage(light.terminalView, out, @"quick-select-light");
         [light.terminalView toggleQuickSelect:nil];
         RenderTimerStates(light, out, @"light");
+        light.sidebarVisible = YES; light.windowContentView.sidebarVisible = YES;
+        [light.windowContentView.sidebarView refreshRows];
+        for (NSNumber *width in @[@600, @800, @1200]) {
+            NSRect frame = light.window.frame; frame.size.width = width.doubleValue; [light.window setFrame:frame display:YES];
+            SaveViewImage(light.windowContentView, out, [NSString stringWithFormat:@"sidebar-light-%@", width]);
+        }
+        light.sidebarVisible = NO; light.windowContentView.sidebarVisible = NO;
+        NSRect lightFrame = light.window.frame; lightFrame.size.width = 1100; [light.window setFrame:lightFrame display:YES];
         light.uiMode = MicaUIModeTab;
         SaveViewImage(light.terminalView, out, @"14-light-tab-picker");
         light.uiMode = MicaUIModeScroll;

@@ -585,7 +585,12 @@ static int MicaRunUISelfTest(void) {
         delegate.terminalView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         delegate.terminalView.owner = delegate;
         delegate.terminalView.terminalFont = MicaTerminalFont(kFontSizeDefault);
-        [delegate.window setContentView:delegate.terminalView];
+        delegate.windowContentView = [[MicaWindowContentView alloc] initWithFrame:delegate.window.contentView.bounds];
+        delegate.windowContentView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        delegate.windowContentView.owner = delegate;
+        delegate.windowContentView.terminalView = delegate.terminalView;
+        [delegate.windowContentView addSubview:delegate.terminalView];
+        [delegate.window setContentView:delegate.windowContentView];
         [delegate installMenus];
 
         NSMenu *sessionMenu = [NSApp.mainMenu itemWithTitle:@"Session"].submenu;
@@ -1504,6 +1509,74 @@ static int MicaRunUISelfTest(void) {
                          [NSString stringWithFormat:@"PTY fixture output (emoji label=%d, RGB block=%d, emoji glyph=%d, history=%lu)",
                           emojiLabelFound, colorBlockFound, emojiCellFound,
                           (unsigned long)mica_session_history_lines(fixtureTab.session)]);
+        NSRect sidebarOriginalWindowFrame = delegate.window.frame;
+        NSInteger columnsBeforeSidebarResize = mica_session_cols(delegate.activeTab.session);
+        NSRect widerSidebarFrame = sidebarOriginalWindowFrame; widerSidebarFrame.size.width = 1200;
+        [delegate.window setFrame:widerSidebarFrame display:YES];
+        [delegate.windowContentView setNeedsLayout:YES]; [delegate.windowContentView layoutSubtreeIfNeeded];
+        [delegate resizeActiveSession];
+        for (int attempt = 0; attempt < 40 && mica_session_cols(delegate.activeTab.session) <= columnsBeforeSidebarResize; attempt++)
+            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+        NSInteger sidebarOriginalIndex = delegate.activeIndex;
+        MicaTab *sidebarResizeTab = delegate.activeTab;
+        NSString *savedFixtureCommand = fixtureTab.currentCommand;
+        NSString *savedFixtureActivity = fixtureTab.agentActivity;
+        BOOL savedFixtureAttention = fixtureTab.needsAttention;
+        NSMenuItem *sidebarMenuItem = [[NSApp.mainMenu itemWithTitle:@"View"].submenu itemWithTitle:@"Show Sidebar"];
+        BOOL sidebarDefaultOff = !delegate.sidebarVisible && delegate.windowContentView.sidebarView == nil &&
+            sidebarMenuItem != nil && sidebarMenuItem.state == NSControlStateValueOff;
+        NSInteger sidebarOriginalCols = mica_session_cols(sidebarResizeTab.session);
+        [delegate toggleSidebar:nil];
+        BOOL sidebarVisible = delegate.sidebarVisible && delegate.windowContentView.sidebarView != nil &&
+            delegate.terminalView.frame.origin.x == 220 && delegate.terminalView.bounds.size.width < delegate.windowContentView.bounds.size.width &&
+            [sidebarMenuItem.title isEqualToString:@"Hide Sidebar"] && sidebarMenuItem.state == NSControlStateValueOn;
+        fixtureTab.currentCommand = @"codex"; fixtureTab.agentActivity = @"Needs input"; fixtureTab.needsAttention = YES;
+        [delegate.windowContentView.sidebarView refreshRows];
+        NSArray *sidebarElements = [delegate.windowContentView.sidebarView accessibilityChildren];
+        BOOL sidebarStateAccessible = sidebarElements.count == delegate.tabs.count &&
+            [sidebarElements[0] accessibilityLabel].length && [[sidebarElements[0] accessibilityLabel] containsString:@"Needs input"] &&
+            [[sidebarElements[0] accessibilityLabel] containsString:@"unread attention"];
+        ((MicaTabAccessibilityElement *)sidebarElements[1]).pressHandler();
+        NSArray *selectedSidebarElements = [delegate.windowContentView.sidebarView accessibilityChildren];
+        BOOL sidebarActivationSelects = delegate.activeIndex == 1 &&
+            [[selectedSidebarElements[1] accessibilityLabel] containsString:@"selected"] &&
+            ![[selectedSidebarElements[0] accessibilityLabel] containsString:@"selected"];
+        [delegate selectTabAtIndex:sidebarOriginalIndex];
+        MicaAppDelegate *otherSidebarWindow = [MicaAppDelegate new];
+        otherSidebarWindow.tabs = [NSMutableArray array]; otherSidebarWindow.activeIndex = 0;
+        otherSidebarWindow.windowContentView = [[MicaWindowContentView alloc] initWithFrame:NSMakeRect(0, 0, 700, 400)];
+        otherSidebarWindow.windowContentView.owner = otherSidebarWindow;
+        otherSidebarWindow.terminalView = [MicaTerminalView new]; otherSidebarWindow.terminalView.owner = otherSidebarWindow;
+        otherSidebarWindow.windowContentView.terminalView = otherSidebarWindow.terminalView;
+        [otherSidebarWindow.windowContentView addSubview:otherSidebarWindow.terminalView];
+        [otherSidebarWindow toggleSidebar:nil];
+        BOOL sidebarWindowIsolation = otherSidebarWindow.sidebarVisible && delegate.sidebarVisible;
+        NSInteger resizedSidebarCols = mica_session_cols(sidebarResizeTab.session);
+        for (int attempt = 0; attempt < 40 && resizedSidebarCols >= sidebarOriginalCols; attempt++) {
+            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+            resizedSidebarCols = mica_session_cols(sidebarResizeTab.session);
+        }
+        BOOL sidebarResizePreservesPTY = sidebarOriginalCols > resizedSidebarCols && fixtureReady &&
+            MicaUITestFindText(fixtureTab.session, @"UI-TRUECOLOR", NULL, NULL);
+        [delegate toggleSidebar:nil];
+        for (int attempt = 0; attempt < 40 && mica_session_cols(sidebarResizeTab.session) < sidebarOriginalCols; attempt++)
+            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+        BOOL sidebarHiddenReleasesView = !delegate.sidebarVisible && delegate.windowContentView.sidebarView == nil &&
+            delegate.terminalView.frame.origin.x == 0 && mica_session_cols(sidebarResizeTab.session) >= sidebarOriginalCols &&
+            [sidebarMenuItem.title isEqualToString:@"Show Sidebar"] && sidebarMenuItem.state == NSControlStateValueOff;
+        [delegate.window setFrame:sidebarOriginalWindowFrame display:YES];
+        [delegate.windowContentView setNeedsLayout:YES]; [delegate.windowContentView layoutSubtreeIfNeeded];
+        [delegate resizeActiveSession];
+        [otherSidebarWindow toggleSidebar:nil];
+        fixtureTab.currentCommand = savedFixtureCommand;
+        fixtureTab.agentActivity = savedFixtureActivity;
+        fixtureTab.needsAttention = savedFixtureAttention;
+        [delegate selectTabAtIndex:sidebarOriginalIndex];
+        MicaUITestRecord(report, &allPassed, sidebarDefaultOff && sidebarVisible && sidebarStateAccessible && sidebarActivationSelects &&
+            sidebarWindowIsolation && sidebarResizePreservesPTY && sidebarHiddenReleasesView,
+            [NSString stringWithFormat:@"optional sidebar is per-window, exposes fake agent attention state, selects tabs, resizes the PTY without losing fixture output, and releases hidden views (visible=%d accessible=%d select=%d isolated=%d resize=%ld→%ld hidden=%d)",
+                sidebarDefaultOff && sidebarVisible, sidebarStateAccessible, sidebarActivationSelects, sidebarWindowIsolation,
+             (long)sidebarOriginalCols, (long)resizedSidebarCols, sidebarHiddenReleasesView]);
         NSString *agentDetail = nil;
         NSString *agentActivity = MicaAgentActivityForSession(fixtureTab.session, &agentDetail);
         MicaUITestRecord(report, &allPassed, [agentActivity isEqualToString:@"Working"] &&
