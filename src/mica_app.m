@@ -160,6 +160,11 @@ static BOOL gMicaLightTheme = NO;
 static BOOL gMicaFollowSystemTheme = NO;
 static BOOL gMicaTestIncreaseContrast = NO;
 static NSUserDefaults *gMicaDefaultsOverride;
+static NSStatusItem *gMicaTimerStatusItem;
+#if defined(MICA_APP_NO_MAIN)
+static BOOL (*gMicaTimerStatusItemLifecycleHook)(BOOL enable);
+static BOOL gMicaTimerStatusItemEnabledForTests;
+#endif
 
 // Optional global shortcut (Control-Option-Space) that brings Mica forward. Carbon hot keys need no
 // Accessibility permission. Registration goes through a replaceable function so tests never touch the system.
@@ -666,6 +671,10 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (BOOL)savePomodoroSettingsFromAccessory:(NSView *)accessory;
 - (void)savePomodoroState;
 - (void)updatePomodoroTimer;
+- (void)prefMenuBarTimerChanged:(NSButton *)sender;
+- (void)updateMenuBarTimer;
+- (void)applyMenuBarTimerPreference;
+- (NSDictionary<NSString *, id> *)menuBarTimerPresentationAtTime:(double)now;
 - (NSString *)currentPomodoroNotificationIdentifier;
 @property(nonatomic, assign) MicaUIMode uiMode;
 @end
@@ -3814,6 +3823,7 @@ static NSDictionary *MicaScalarDictionary(id object) {
     self.pomodoroLockURL = [directory URLByAppendingPathComponent:@"timer.lock"];
     self.pomodoroSettingsURL = [directory URLByAppendingPathComponent:@"settings.json"];
     [self refreshPomodoroState];
+    if (gMicaTimerStatusItem) [self updateMenuBarTimer];
 }
 
 - (NSString *)currentPomodoroNotificationIdentifier {
@@ -3865,6 +3875,7 @@ static NSDictionary *MicaScalarDictionary(id object) {
 #endif
     [self schedulePomodoroNotification];
     [self.terminalView setNeedsDisplay:YES];
+    if (gMicaTimerStatusItem) [self updateMenuBarTimer];
 }
 
 - (void)togglePomodoroPause:(id)sender {
@@ -3883,6 +3894,7 @@ static NSDictionary *MicaScalarDictionary(id object) {
 #endif
     [self schedulePomodoroNotification];
     [self.terminalView setNeedsDisplay:YES];
+    if (gMicaTimerStatusItem) [self updateMenuBarTimer];
 }
 
 - (void)resetPomodoro:(id)sender {
@@ -3899,6 +3911,7 @@ static NSDictionary *MicaScalarDictionary(id object) {
     [UNUserNotificationCenter.currentNotificationCenter removePendingNotificationRequestsWithIdentifiers:@[oldNotification]];
 #endif
     [self.terminalView setNeedsDisplay:YES];
+    if (gMicaTimerStatusItem) [self updateMenuBarTimer];
 }
 
 - (void)skipPomodoroPhase:(id)sender {
@@ -3929,6 +3942,7 @@ static NSDictionary *MicaScalarDictionary(id object) {
 #endif
     [self schedulePomodoroNotification];
     [self.terminalView setNeedsDisplay:YES];
+    if (gMicaTimerStatusItem) [self updateMenuBarTimer];
 }
 
 - (double)currentPomodoroFilesStamp {
@@ -3967,6 +3981,78 @@ static NSDictionary *MicaScalarDictionary(id object) {
     }
     if (self.pomodoro.phase != MICA_POMODORO_IDLE)
         [self.terminalView setNeedsDisplayInRect:NSMakeRect(0, 0, self.terminalView.bounds.size.width, kStatusHeight)];
+    if (gMicaTimerStatusItem) [self updateMenuBarTimer];
+}
+
+- (MicaAppDelegate *)menuBarTimerOwner {
+    if (NSApp.keyWindow) for (MicaAppDelegate *controller in MicaControllers())
+        if (controller.window == NSApp.keyWindow) return controller;
+    return MicaControllers().firstObject;
+}
+
+- (void)applyMenuBarTimerPreference {
+    BOOL enabled = [[self micaDefaults] boolForKey:@"MicaMenuBarTimer"];
+#if defined(MICA_APP_NO_MAIN)
+    if (gMicaTimerStatusItemLifecycleHook) {
+        if (enabled != gMicaTimerStatusItemEnabledForTests &&
+            gMicaTimerStatusItemLifecycleHook(enabled)) gMicaTimerStatusItemEnabledForTests = enabled;
+        return;
+    }
+#endif
+    if (enabled && !gMicaTimerStatusItem) {
+        gMicaTimerStatusItem = [NSStatusBar.systemStatusBar statusItemWithLength:NSVariableStatusItemLength];
+        gMicaTimerStatusItem.button.accessibilityLabel = @"Focus timer";
+        [self updateMenuBarTimer];
+    } else if (!enabled && gMicaTimerStatusItem) {
+        [NSStatusBar.systemStatusBar removeStatusItem:gMicaTimerStatusItem];
+        gMicaTimerStatusItem = nil;
+    }
+}
+
+- (void)prefMenuBarTimerChanged:(NSButton *)sender {
+    [[self micaDefaults] setBool:sender.state == NSControlStateValueOn forKey:@"MicaMenuBarTimer"];
+    [self applyMenuBarTimerPreference];
+}
+
+- (void)updateMenuBarTimer {
+    NSStatusItem *item = gMicaTimerStatusItem;
+    MicaAppDelegate *owner = [self menuBarTimerOwner];
+    if (!item || !owner) return;
+    NSDictionary *presentation = [owner menuBarTimerPresentationAtTime:MicaContinuousTimeSeconds()];
+    NSString *title = presentation[@"title"];
+    item.button.title = title;
+    item.button.accessibilityLabel = presentation[@"accessibilityLabel"];
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Focus Timer"];
+    NSMenuItem *status = [[NSMenuItem alloc] initWithTitle:title action:nil keyEquivalent:@""];
+    status.enabled = NO;
+    [menu addItem:status];
+    [menu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *toggleItem = [menu addItemWithTitle:presentation[@"toggle"] action:@selector(togglePomodoroPause:) keyEquivalent:@""];
+    toggleItem.target = owner;
+    NSMenuItem *skip = [menu addItemWithTitle:presentation[@"endTitle"] action:@selector(skipPomodoroPhase:) keyEquivalent:@""];
+    skip.target = owner;
+    skip.enabled = [presentation[@"endEnabled"] boolValue];
+    item.menu = menu;
+}
+
+- (NSDictionary<NSString *, id> *)menuBarTimerPresentationAtTime:(double)now {
+    MicaPomodoro timer = self.pomodoro;
+    BOOL focus = timer.phase == MICA_POMODORO_IDLE || timer.phase == MICA_POMODORO_FOCUS ||
+        timer.phase == MICA_POMODORO_PAUSED_FOCUS;
+    BOOL paused = mica_pomodoro_is_paused(&timer);
+    NSInteger minutes = focus ? self.focusDurationMinutes : self.breakDurationMinutes;
+    double seconds = timer.phase == MICA_POMODORO_IDLE ? MAX(1, minutes) * 60.0 : mica_pomodoro_remaining(&timer, now);
+    NSString *phase = timer.phase == MICA_POMODORO_IDLE ? @"Ready" :
+        paused ? (focus ? @"Paused focus" : @"Paused break") : (focus ? @"Focus" : @"Break");
+    NSInteger wholeSeconds = (NSInteger)seconds;
+    NSString *title = [NSString stringWithFormat:@"%@ %02ld:%02ld", phase, (long)(wholeSeconds / 60), (long)(wholeSeconds % 60)];
+    NSString *toggle = timer.phase == MICA_POMODORO_IDLE ? @"Start Focus" : (paused ? @"Resume Timer" : @"Pause Timer");
+    return @{@"title": title,
+        @"accessibilityLabel": [NSString stringWithFormat:@"%@, %02ld minutes %02ld seconds remaining", phase,
+            (long)(wholeSeconds / 60), (long)(wholeSeconds % 60)],
+        @"toggle": toggle,
+        @"endEnabled": @(timer.phase != MICA_POMODORO_IDLE),
+        @"endTitle": focus ? @"End Focus & Start Break" : @"End Break & Start Focus"};
 }
 
 - (void)requestPomodoroNotifications {
@@ -4262,6 +4348,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         [self loadStoredThemePreference];
         [self applyStoredShortcutPreference];
         [self applyStoredScrollbackPreference];
+        [self applyMenuBarTimerPreference];
         [NSApp addObserver:self forKeyPath:@"effectiveAppearance" options:NSKeyValueObservingOptionNew context:NULL];
         self.observesSystemAppearance = YES;
     } else {
@@ -4320,6 +4407,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 - (void)takeMenuOwnership {
     for (NSMenuItem *item in gControllerMenuItems) item.target = self;
     for (NSMenuItem *item in gViewMenuItems) item.target = self.terminalView;
+    if (gMicaTimerStatusItem) [self updateMenuBarTimer];
 }
 
 - (void)collectPaletteItemsFromMenu:(NSMenu *)menu into:(NSMutableArray<NSDictionary *> *)rows {
@@ -5577,6 +5665,8 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
         ((NSStepper *)[self.preferencesWindow.contentView viewWithTag:101]).doubleValue = self.terminalView.terminalFont.pointSize;
         ((NSButton *)[self.preferencesWindow.contentView viewWithTag:105]).state =
             [[self micaDefaults] boolForKey:@"MicaGlobalShortcut"] ? NSControlStateValueOn : NSControlStateValueOff;
+        ((NSButton *)[self.preferencesWindow.contentView viewWithTag:109]).state =
+            [[self micaDefaults] boolForKey:@"MicaMenuBarTimer"] ? NSControlStateValueOn : NSControlStateValueOff;
         ((NSButton *)[self.preferencesWindow.contentView viewWithTag:108]).state =
             (![[self micaDefaults] objectForKey:@"MicaDictationVocabularyEnabled"] ||
              [[self micaDefaults] boolForKey:@"MicaDictationVocabularyEnabled"]) ? NSControlStateValueOn : NSControlStateValueOff;
@@ -5593,7 +5683,7 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
         return;
     }
     self.dictationToggleMode = [[self micaDefaults] boolForKey:@"MicaDictationToggleMode"];
-    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 460, 454)
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 460, 494)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
     window.title = @"Mica Settings";
     window.releasedWhenClosed = NO;
@@ -5654,6 +5744,12 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     [content addSubview:scrollback];
     NSButton *shortcut = [NSButton checkboxWithTitle:@"Show Mica with a global shortcut (⌃⌥Space)" target:self
                                               action:@selector(prefShortcutChanged:)];
+    NSButton *menuBarTimer = [NSButton checkboxWithTitle:@"Show focus timer in the menu bar" target:self
+                                                   action:@selector(prefMenuBarTimerChanged:)];
+    menuBarTimer.frame = NSMakeRect(120, 84, 320, 20);
+    menuBarTimer.tag = 109;
+    menuBarTimer.state = [[self micaDefaults] boolForKey:@"MicaMenuBarTimer"] ? NSControlStateValueOn : NSControlStateValueOff;
+    [content addSubview:menuBarTimer];
     NSButton *vocabulary = [NSButton checkboxWithTitle:@"Improve dictation with project vocabulary" target:self action:@selector(prefVocabularyChanged:)];
     vocabulary.frame = NSMakeRect(120, 158, 330, 20);
     vocabulary.state = (![[self micaDefaults] objectForKey:@"MicaDictationVocabularyEnabled"] ||
@@ -5661,27 +5757,27 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     vocabulary.tag = 108; [content addSubview:vocabulary];
     NSButton *editVocabulary = [NSButton buttonWithTitle:@"Edit Vocabulary…" target:self action:@selector(editVocabulary:)];
     editVocabulary.frame = NSMakeRect(120, 128, 170, 24); [content addSubview:editVocabulary];
-    shortcut.frame = NSMakeRect(120, 72, 320, 20);
+    shortcut.frame = NSMakeRect(120, 107, 320, 20);
     shortcut.tag = 105;
     shortcut.state = [[self micaDefaults] boolForKey:@"MicaGlobalShortcut"] ? NSControlStateValueOn : NSControlStateValueOff;
     [content addSubview:shortcut];
     NSTextField *dictationCaption = [NSTextField labelWithString:@"Dictation"];
     dictationCaption.alignment = NSTextAlignmentRight;
-    dictationCaption.frame = NSMakeRect(20, 32, 90, 18);
+    dictationCaption.frame = NSMakeRect(20, 62, 90, 18);
     [content addSubview:dictationCaption];
-    NSPopUpButton *dictationMode = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 27, 200, 26) pullsDown:NO];
+    NSPopUpButton *dictationMode = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 57, 200, 26) pullsDown:NO];
     [dictationMode addItemsWithTitles:@[@"Hold", @"Toggle"]];
     [dictationMode selectItemAtIndex:self.dictationToggleMode ? 1 : 0];
     dictationMode.tag = 107; dictationMode.target = self; dictationMode.action = @selector(prefDictationModeChanged:);
     [content addSubview:dictationMode];
-    NSBox *rule = [[NSBox alloc] initWithFrame:NSMakeRect(20, 12, 420, 1)];
+    NSBox *rule = [[NSBox alloc] initWithFrame:NSMakeRect(20, 42, 420, 1)];
     rule.boxType = NSBoxSeparator;
     [content addSubview:rule];
     NSButton *project = [NSButton buttonWithTitle:@"Project Settings…" target:self action:@selector(openProjectSettings:)];
-    project.frame = NSMakeRect(20, 0, 200, 30);
+    project.frame = NSMakeRect(20, 28, 200, 30);
     project.enabled = self.projectLayoutPath.length > 0;
     NSButton *timer = [NSButton buttonWithTitle:@"Timer Settings…" target:self action:@selector(openPomodoroSettings:)];
-    timer.frame = NSMakeRect(240, 0, 200, 30);
+    timer.frame = NSMakeRect(240, 28, 200, 30);
     [content addSubview:project];
     [content addSubview:timer];
     self.preferencesWindow = window;
