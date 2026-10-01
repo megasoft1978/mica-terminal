@@ -54,7 +54,6 @@ Method and caveats: [MEMORY-BASELINE.md](MEMORY-BASELINE.md). cmux, Warp, Ghostt
 | Synchronized output, bracketed paste awareness | Done |
 | Local voice dictation, shared focus timer | Done (not offered by the others) |
 | Hold or Toggle dictation, project vocabulary correction and undo | Done; local correction is switchable and undo restores raw text before later prompt edits |
-| Optional native vocabulary boosting | Done; extra CTC model, off by default; memory and latency UNMEASURED |
 | Prompt landmarks and last-command output | Done: ⌘↑/⌘↓ at a prompt, output selection/copy and failed-command marker |
 | Light and dark themes, cursor styles, bundled font, settings | Done |
 | Fuzz, sanitizer and UI stress testing | Done |

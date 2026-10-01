@@ -67,7 +67,6 @@ Ship small improvements to repeated dictation, agent visibility and focus contro
 
 - Update README, ROADMAP and site only for accepted behavior. Extend `build/claim-audit.md` with exact proving tests.
 - Prepare consistent alpha.13 version/build metadata and draft release notes; keep public download links on alpha.12 until alpha.13 artifacts are published and verified.
-- Keep vocabulary-boost memory/latency labelled UNMEASURED unless reviewer measurements exist. Do not equate text fixtures with audio accuracy.
 - Existing competitor notes suffice for this scope; introduce no new current competitor claims.
 - Record commands, durations, results, inspected renders, matched idle-footprint samples and unavailable checks in `build/codex-report-9.md` (maximum 60 lines).
 
@@ -81,7 +80,7 @@ Ship small improvements to repeated dictation, agent visibility and focus contro
 - Agent resume adapters: require verified CLI contracts and explicit opt-in; restored tabs continue starting fresh shells.
 - Bounded scrollback restore and retained-history reflow: separate storage, privacy, hyperlink and anchor design.
 - Liquid Glass tab strip, splits, quick-terminal drop-down, broader shells and review-before-insert dictation.
-- Cycle 8 A2 load reproduction; boost/audio benchmarking and refreshed GIF/MP4. Existing unverified caveats remain documented.
+- Cycle 8 A2 load reproduction and refreshed GIF/MP4. Existing unverified caveats remain documented.
 
 ## Top three risks
 

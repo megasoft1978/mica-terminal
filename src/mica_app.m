@@ -4447,9 +4447,6 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     vocabularyToggle.state = (![[self micaDefaults] objectForKey:@"MicaDictationVocabularyEnabled"] ||
         [[self micaDefaults] boolForKey:@"MicaDictationVocabularyEnabled"]) ? NSControlStateValueOn : NSControlStateValueOff;
     AddMenuItem(editMenu, @"Edit Vocabulary…", @selector(editVocabulary:), @"", 0).target = self;
-    NSMenuItem *boostToggle = AddMenuItem(editMenu, @"Boost Vocabulary While Dictating (downloads extra model)", @selector(toggleVocabularyBoostPreference:), @"", 0);
-    boostToggle.target = self;
-    boostToggle.state = [[self micaDefaults] boolForKey:@"MicaDictationVocabularyBoostEnabled"] ? NSControlStateValueOn : NSControlStateValueOff;
     AddMenuItem(editMenu, @"Find in Scrollback…", @selector(findInScrollback:), @"f", NSEventModifierFlagCommand).target = self.terminalView;
     AddMenuItem(editMenu, @"Find Next", @selector(findNextMatch:), @"g", NSEventModifierFlagCommand).target = self.terminalView;
     AddMenuItem(editMenu, @"Find Previous", @selector(findPreviousMatch:), @"g",
@@ -5085,12 +5082,6 @@ static BOOL MicaValidBranchName(NSString *name) {
 - (void)beginDictationForActiveTab {
     MicaTab *tab = self.activeTab;
     if (!tab.session || !self.voiceController) return;
-    BOOL boosting = [[self micaDefaults] boolForKey:@"MicaDictationVocabularyBoostEnabled"];
-    self.voiceController.vocabularyBoostEnabled = boosting;
-    self.voiceController.vocabularyBoostTerms = MicaVocabularyMerge(@[tab.vocabularyFileTerms ?: @[],
-        self.projectName ? @[self.projectName] : @[], tab.gitBranch ? @[tab.gitBranch] : @[],
-        tab.gitVocabularyTerms ?: @[], MicaVocabularyTermsFromRecentText(tab.recentVisibleText ?: @"",
-            tab.recentVisibleCapturedAt ?: [NSDate date], [NSDate date])]);
     MicaVoiceControllerState state = self.voiceController.state;
     BOOL inProgress = state == MicaVoiceControllerStatePreparing || state == MicaVoiceControllerStateListening ||
         state == MicaVoiceControllerStateTranscribing;
@@ -5414,23 +5405,6 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     if ([button isKindOfClass:NSButton.class]) button.state = enabled ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
-- (void)prefVocabularyBoostChanged:(NSButton *)sender {
-    BOOL enabled = sender.state == NSControlStateValueOn;
-    [[self micaDefaults] setBool:enabled forKey:@"MicaDictationVocabularyBoostEnabled"];
-    self.voiceController.vocabularyBoostEnabled = enabled;
-    if (enabled) [self.voiceController prewarmSpeechModelIfNeeded];
-}
-
-- (void)toggleVocabularyBoostPreference:(id)sender {
-    BOOL enabled = ![[self micaDefaults] boolForKey:@"MicaDictationVocabularyBoostEnabled"];
-    [[self micaDefaults] setBool:enabled forKey:@"MicaDictationVocabularyBoostEnabled"];
-    self.voiceController.vocabularyBoostEnabled = enabled;
-    if ([sender isKindOfClass:NSMenuItem.class]) ((NSMenuItem *)sender).state = enabled ? NSControlStateValueOn : NSControlStateValueOff;
-    NSButton *button = (NSButton *)[self.preferencesWindow.contentView viewWithTag:109];
-    if ([button isKindOfClass:NSButton.class]) button.state = enabled ? NSControlStateValueOn : NSControlStateValueOff;
-    if (enabled) [self.voiceController prewarmSpeechModelIfNeeded];
-}
-
 - (void)undoLastDictation:(id)sender {
     (void)sender;
     MicaTab *tab = self.lastDictationTab;
@@ -5541,27 +5515,22 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     vocabulary.state = (![[self micaDefaults] objectForKey:@"MicaDictationVocabularyEnabled"] ||
         [[self micaDefaults] boolForKey:@"MicaDictationVocabularyEnabled"]) ? NSControlStateValueOn : NSControlStateValueOff;
     vocabulary.tag = 108; [content addSubview:vocabulary];
-    NSButton *boost = [NSButton checkboxWithTitle:@"Boost vocabulary while dictating (downloads extra model, about 64 MB)"
-        target:self action:@selector(prefVocabularyBoostChanged:)];
-    boost.frame = NSMakeRect(120, 68, 430, 20);
-    boost.state = [[self micaDefaults] boolForKey:@"MicaDictationVocabularyBoostEnabled"] ? NSControlStateValueOn : NSControlStateValueOff;
-    boost.tag = 109; [content addSubview:boost];
     NSButton *editVocabulary = [NSButton buttonWithTitle:@"Edit Vocabulary…" target:self action:@selector(editVocabulary:)];
     editVocabulary.frame = NSMakeRect(120, 128, 170, 24); [content addSubview:editVocabulary];
-    shortcut.frame = NSMakeRect(120, 96, 320, 20);
+    shortcut.frame = NSMakeRect(120, 72, 320, 20);
     shortcut.tag = 105;
     shortcut.state = [[self micaDefaults] boolForKey:@"MicaGlobalShortcut"] ? NSControlStateValueOn : NSControlStateValueOff;
     [content addSubview:shortcut];
     NSTextField *dictationCaption = [NSTextField labelWithString:@"Dictation"];
     dictationCaption.alignment = NSTextAlignmentRight;
-    dictationCaption.frame = NSMakeRect(20, 56, 90, 18);
+    dictationCaption.frame = NSMakeRect(20, 32, 90, 18);
     [content addSubview:dictationCaption];
-    NSPopUpButton *dictationMode = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 51, 200, 26) pullsDown:NO];
+    NSPopUpButton *dictationMode = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 27, 200, 26) pullsDown:NO];
     [dictationMode addItemsWithTitles:@[@"Hold", @"Toggle"]];
     [dictationMode selectItemAtIndex:self.dictationToggleMode ? 1 : 0];
     dictationMode.tag = 107; dictationMode.target = self; dictationMode.action = @selector(prefDictationModeChanged:);
     [content addSubview:dictationMode];
-    NSBox *rule = [[NSBox alloc] initWithFrame:NSMakeRect(20, 40, 420, 1)];
+    NSBox *rule = [[NSBox alloc] initWithFrame:NSMakeRect(20, 12, 420, 1)];
     rule.boxType = NSBoxSeparator;
     [content addSubview:rule];
     NSButton *project = [NSButton buttonWithTitle:@"Project Settings…" target:self action:@selector(openProjectSettings:)];

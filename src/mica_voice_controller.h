@@ -26,8 +26,6 @@ typedef NS_ENUM(NSInteger, MicaVoiceControllerState) {
 @property(nonatomic, assign, readonly) double progress;
 @property(nonatomic, assign, readonly) BOOL hasProgress;
 @property(nonatomic, assign, readonly) BOOL isPushToTalk;
-@property(nonatomic, copy) NSArray<NSString *> *vocabularyBoostTerms;
-@property(nonatomic, assign) BOOL vocabularyBoostEnabled;
 // Live microphone level 0...1 (smoothed) and whether audio is being recorded (also while the model loads).
 @property(nonatomic, assign, readonly) float audioLevel;
 @property(nonatomic, assign, readonly) BOOL isCapturing;

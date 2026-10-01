@@ -18,9 +18,8 @@ The stack this replaces on the same Mac: **iTerm2 + Wispr Flow ≈ 770 MB**, bef
 
 Dictation adds a helper process only while you are dictating and it exits afterwards, so the idle number above stays the number you live with. While it recognizes speech the helper measures **about 30–37 MB**, so Mica plus a live dictation is roughly **95 MB** in total (see below).
 
-These figures cover the deterministic vocabulary correction, which runs in the app before transcript insertion. Native vocabulary boosting is opt-in and downloads an extra FluidAudio CTC model.
+These figures cover the deterministic vocabulary correction, which runs in the app before transcript insertion.
 
-**UNMEASURED — vocabulary boosting:** Upstream FluidAudio 0.17.4 documentation reports roughly 64 MB additional peak memory (about 130 MB total vs 66 MB for TDT alone). Mica has not measured its helper RSS, dictation latency, or disk use with this option enabled. The extra model download is required; boosting stays off by default until Mica measurements are available.
 
 ## Memory while dictating
 

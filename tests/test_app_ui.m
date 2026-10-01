@@ -322,16 +322,10 @@ static int MicaRunUISelfTest(void) {
             [MicaCorrectTranscript(@"unrelated ordinary sentence with useful words", @[@"MicaTerminal", @"MicaTerminul"]) isEqualToString:@"unrelated ordinary sentence with useful words"];
         MicaUITestRecord(report, &allPassed, vocabularyCases,
                          @"vocabulary corrector handles normalized terms and rejects common words, short terms, near misses, and ambiguous candidates");
-        NSUserDefaults *boostDefaults = [[NSUserDefaults alloc] initWithSuiteName:@"MicaBoostPreferenceTest"];
-        [boostDefaults removePersistentDomainForName:@"MicaBoostPreferenceTest"];
-        BOOL boostPreference = ![boostDefaults boolForKey:@"MicaDictationVocabularyBoostEnabled"];
-        [boostDefaults setBool:YES forKey:@"MicaDictationVocabularyBoostEnabled"];
-        boostPreference = boostPreference && [boostDefaults boolForKey:@"MicaDictationVocabularyBoostEnabled"];
-        NSMutableArray *boostTerms = [NSMutableArray array];
-        for (NSUInteger i=0; i<510; i++) [boostTerms addObject:[NSString stringWithFormat:@"ProjectTerm%lu", (unsigned long)i]];
-        boostPreference = boostPreference && MicaVocabularyMerge(@[boostTerms]).count == 500;
-        MicaUITestRecord(report, &allPassed, boostPreference,
-            @"vocabulary boost preference defaults off, persists when enabled, and merged terms cap at 500");
+        NSMutableArray *mergeTerms = [NSMutableArray array];
+        for (NSUInteger i=0; i<510; i++) [mergeTerms addObject:[NSString stringWithFormat:@"ProjectTerm%lu", (unsigned long)i]];
+        MicaUITestRecord(report, &allPassed, MicaVocabularyMerge(@[mergeTerms]).count == 500,
+            @"vocabulary corrector merged terms cap at 500");
         MicaTab *vocabularyTabA=[MicaTab new], *vocabularyTabB=[MicaTab new];
         vocabularyTabA.vocabularyFileTerms=@[@"AlphaProject"]; vocabularyTabB.vocabularyFileTerms=@[@"BetaProject"];
         BOOL vocabularyWindowIsolation=[MicaCorrectTranscript(@"AlphaaProject",vocabularyTabA.vocabularyFileTerms) isEqualToString:@"AlphaProject"] &&
@@ -579,6 +573,15 @@ static int MicaRunUISelfTest(void) {
         NSMenuItem *editVocabularyMenuItem = [editMenu itemWithTitle:@"Edit Vocabulary…"];
         NSMenuItem *quickSelectMenuItem = [editMenu itemWithTitle:@"Quick Select…"];
         NSMenuItem *undoMenuItem = [editMenu itemWithTitle:@"Undo Last Dictation"];
+        BOOL removedVocabularyBoost = [editMenu itemWithTitle:@"Boost Vocabulary While Dictating (downloads extra model)"] == nil &&
+            [[delegate paletteRows] filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSDictionary *row, NSDictionary *bindings) {
+                (void)bindings;
+                return [row[@"title"] containsString:@"Boost Vocabulary"];
+            }]].count == 0 &&
+            [[NSUserDefaults standardUserDefaults] objectForKey:@"MicaDictationVocabularyBoostEnabled"] == nil;
+        [delegate openPreferences:nil];
+        removedVocabularyBoost = removedVocabularyBoost &&
+            [delegate.preferencesWindow.contentView viewWithTag:109] == nil;
         MicaUITestRecord(report, &allPassed,
                          newShellMenuItem.target == delegate &&
                          [newShellMenuItem.keyEquivalent isEqualToString:@"t"] &&
@@ -595,6 +598,7 @@ static int MicaRunUISelfTest(void) {
                          vocabularyToggleMenuItem.target == delegate && editVocabularyMenuItem.target == delegate &&
                          quickSelectMenuItem.target == delegate.terminalView && quickSelectMenuItem.isEnabled &&
                          undoMenuItem.target == delegate && ![delegate validateMenuItem:undoMenuItem] &&
+                         removedVocabularyBoost &&
                          paletteMenuItem.target == delegate &&
                          [paletteMenuItem.keyEquivalent isEqualToString:@"p"] &&
                          (paletteMenuItem.keyEquivalentModifierMask &
