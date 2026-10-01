@@ -7,7 +7,7 @@ This roadmap tracks open work only. Shipped features are summarized below so the
 - The Command Palette (<kbd>⌘⇧P</kbd>) searches the menu action tree, displays current menu shortcuts and switches among tabs with folder, branch and activity context. It also exposes per-tab notification mute controls.
 - Dictation supports Hold (default) and Toggle modes. Edit → Undo Last Dictation removes the latest inserted transcript only while no later prompt text has been typed.
 - Quick Select (<kbd>⌘⇧U</kbd>) labels visible URLs, existing file paths and git hashes. Typing a label copies it; holding Option opens a URL or reveals a file.
-- OSC 133 shell markers are emitted by Mica's zsh integration and recognized by the session parser. They currently record advisory phase/exit-status state; per-row landmarks, prompt navigation and last-command output selection/copy are still open.
+- OSC 133 A/B/C/D shell markers are emitted by Mica's zsh integration and recognized by the session parser. The parser retains the latest advisory phase and command exit status; per-row landmarks, prompt navigation and last-command output selection/copy remain open.
 - Agent notifications distinguish “needs input” from “finished”, use no sound, and can be muted per tab. Mica handles terminal notification sequences and clicking a notification returns to its window and tab.
 - Project windows and ordinary tabs restore their names and folders after quit. Relaunch starts fresh PTY sessions; commands, running processes and scrollback do not resume.
 - The focus timer is shared across windows, with labeled focus/break/paused states, Start/Pause/Resume controls, accessible actions, completion notifications and independent auto-start settings.
@@ -18,7 +18,7 @@ This roadmap tracks open work only. Shipped features are summarized below so the
 
 | # | Work | Current gap | Effort |
 | --- | --- | --- | --- |
-| 1 | OSC 133 command landmarks | Track prompt/command boundaries per row through scroll, clear, alternate screen, resize and history wrap; add prompt navigation, last-output selection/copy and a failure marker. OSC 133 parsing today does not provide these behaviors. | Medium–large |
+| 1 | OSC 133 command landmarks | Track prompt/command boundaries per row through scroll, clear, alternate screen, resize and history wrap; add prompt navigation, last-output selection/copy and a failure marker. OSC 133 parsing currently retains only the latest advisory phase and command exit status. | Medium–large |
 | 2 | Retained-history column reflow | Reflow retained rows across width changes while preserving links, cell attributes, search and selection anchors within the per-session history cap. | Large |
 | 3 | Agent/project sidebar | Make existing folder, branch, activity and notification context visible without reducing terminal space by default. | Medium |
 | 4 | More complete session recovery | Reopened windows start fresh shells. Any future process or scrollback recovery needs explicit process-safety and bounded-storage design. | Large |

@@ -64,10 +64,49 @@ int main(int argc, const char *argv[]) {
         // The readout would show this render tool's own footprint; show the measured idle figure for the sample instead.
         delegate.memoryLabel = @"58 MB";
         SaveView(delegate, [outputDirectory stringByAppendingPathComponent:@"mica-dark.png"]);
+        // Capture real shipped discovery controls over fictional/local terminal output.
+        type(@"clear; printf 'https://example.test/guide  /Users/megasoft78/Desktop/Freelance/mica-terminal/README.md  3f9c1a2\\n'");
+        [delegate.terminalView toggleQuickSelect:nil];
+        SaveView(delegate, [outputDirectory stringByAppendingPathComponent:@"quick-select-dark.png"]);
+        [delegate.terminalView toggleQuickSelect:nil];
+        [delegate toggleCommandPalette:nil];
+        delegate.commandPaletteSearch.stringValue = @"Shell";
+        [delegate filterCommandPalette:nil];
+        NSView *palette = delegate.commandPalettePanel.contentView;
+        NSBitmapImageRep *paletteBitmap = [palette bitmapImageRepForCachingDisplayInRect:palette.bounds];
+        [palette cacheDisplayInRect:palette.bounds toBitmapImageRep:paletteBitmap];
+        [[paletteBitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+            writeToFile:[outputDirectory stringByAppendingPathComponent:@"command-palette-tabs-dark.png"] atomically:YES];
+        delegate.commandPaletteSearch.stringValue = @"notifications";
+        [delegate filterCommandPalette:nil];
+        paletteBitmap = [palette bitmapImageRepForCachingDisplayInRect:palette.bounds];
+        [palette cacheDisplayInRect:palette.bounds toBitmapImageRep:paletteBitmap];
+        [[paletteBitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+            writeToFile:[outputDirectory stringByAppendingPathComponent:@"command-palette-dark.png"] atomically:YES];
+        [delegate toggleCommandPalette:nil];
         [delegate setLightTheme:YES];
         RunLoopFor(0.3);
         delegate.activeTab.cwd = @"/Users/me/code/fieldnote";
         SaveView(delegate, [outputDirectory stringByAppendingPathComponent:@"mica-light.png"]);
+        type(@"clear; printf 'https://example.test/guide  /Users/megasoft78/Desktop/Freelance/mica-terminal/README.md  3f9c1a2\\n'");
+        [delegate.terminalView toggleQuickSelect:nil];
+        SaveView(delegate, [outputDirectory stringByAppendingPathComponent:@"quick-select-light.png"]);
+        [delegate.terminalView toggleQuickSelect:nil];
+        [delegate toggleCommandPalette:nil];
+        delegate.commandPaletteSearch.stringValue = @"Shell";
+        [delegate filterCommandPalette:nil];
+        palette = delegate.commandPalettePanel.contentView;
+        paletteBitmap = [palette bitmapImageRepForCachingDisplayInRect:palette.bounds];
+        [palette cacheDisplayInRect:palette.bounds toBitmapImageRep:paletteBitmap];
+        [[paletteBitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+            writeToFile:[outputDirectory stringByAppendingPathComponent:@"command-palette-tabs-light.png"] atomically:YES];
+        delegate.commandPaletteSearch.stringValue = @"notifications";
+        [delegate filterCommandPalette:nil];
+        paletteBitmap = [palette bitmapImageRepForCachingDisplayInRect:palette.bounds];
+        [palette cacheDisplayInRect:palette.bounds toBitmapImageRep:paletteBitmap];
+        [[paletteBitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+            writeToFile:[outputDirectory stringByAppendingPathComponent:@"command-palette-light.png"] atomically:YES];
+        [delegate toggleCommandPalette:nil];
         for (MicaTab *tab in delegate.tabs) if (tab.session) mica_session_destroy(tab.session), tab.session = NULL;
     }
     return 0;

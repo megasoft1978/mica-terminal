@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#f3f5f8" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0b0f14" media="(prefers-color-scheme: dark)">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; media-src 'self'; font-src 'self'; style-src 'sha256-bD3HGNgGvd7mwf4jBoC4XPYKhzTev381f9ZtyZGX/pk='; script-src 'sha256-ZBm9rZvS25cRtNDYKvPMAZvjhd9aUC4XwZgEF2Pikek=' 'sha256-obQLhE2id96/7pWU+OVxA2Il4k1t4IAuXtnh2TzQdyE='; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; media-src 'self'; font-src 'self'; style-src 'sha256-bD3HGNgGvd7mwf4jBoC4XPYKhzTev381f9ZtyZGX/pk='; script-src 'sha256-/knfgsyCtYky62Tw1/lVzpShciUSXQuMUh3PE8r2aa8=' 'sha256-obQLhE2id96/7pWU+OVxA2Il4k1t4IAuXtnh2TzQdyE='; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
   <title>Mica — terminal, voice typing and focus timer in one light Mac app</title>
   <meta name="description" content="Mica puts a terminal, on-device voice typing and a focus timer in one native Mac app that idles around 55–60 MB, where a terminal plus a dictation app takes about 770 MB.">
@@ -21,7 +21,7 @@
   <meta property="og:image" content="https://megasoft1978.github.io/mica-terminal/assets/mica-dark.png">
   <meta property="og:image:alt" content="Mica window with project tabs, terminal output, a focus timer and a live memory readout.">
   <meta name="twitter:card" content="summary_large_image">
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Mica","applicationCategory":"DeveloperApplication","operatingSystem":"macOS 14 or later","softwareVersion":"0.1.0-alpha.10","license":"https://opensource.org/licenses/MIT","isAccessibleForFree":true,"downloadUrl":"https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.10/Mica.zip","fileSize":"10.5MB","description":"A native Mac terminal with on-device voice typing and a focus timer that idles around 55-60 MB.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"sameAs":["https://github.com/megasoft1978/mica-terminal"]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Mica","applicationCategory":"DeveloperApplication","operatingSystem":"macOS 14 or later","softwareVersion":"0.1.0-alpha.11","license":"https://opensource.org/licenses/MIT","isAccessibleForFree":true,"downloadUrl":"https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.11/Mica.zip","fileSize":"10.5 MB","description":"A native Mac terminal with command palette, local voice typing and focus timer that idles around 55-60 MB.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"sameAs":["https://github.com/megasoft1978/mica-terminal"]}</script>
   <style>
     @font-face { font-family: "JetBrains Mono"; src: url(fonts/JetBrainsMono-Regular.woff2) format("woff2"); font-weight: 400; font-display: swap; }
     @font-face { font-family: "JetBrains Mono"; src: url(fonts/JetBrainsMono-Bold.woff2) format("woff2"); font-weight: 700; font-display: swap; }
@@ -180,7 +180,7 @@
         <a class="hide-small" href="#compare">Compare</a>
         <a class="hide-small" href="#install">Install</a>
         <a href="https://github.com/megasoft1978/mica-terminal">GitHub</a>
-        <a class="dl" href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.10/Mica.zip">Download</a>
+        <a class="dl" href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.11/Mica.zip">Download</a>
       </nav>
     </header>
   </div>
@@ -190,10 +190,10 @@
       <h1>Three tools in one light Mac app.</h1>
       <p class="lede">Mica is a terminal, on-device voice typing and a focus timer built into one native app that idles around 55–60 MB. Every project gets its own window, and coding agents run right inside it.</p>
       <div class="actions">
-        <a class="button primary" href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.10/Mica.zip">Download for Mac</a>
+        <a class="button primary" href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.11/Mica.zip">Download for Mac</a>
         <a class="button secondary" href="https://github.com/megasoft1978/mica-terminal">View source on GitHub</a>
       </div>
-      <p class="fine">Version 0.1.0 alpha 10 · 10.5 MB ZIP · notarized by Apple · Apple silicon, macOS 14 or later · Free and open source · <a href="#install">Install notes</a></p>
+      <p class="fine">Version 0.1.0 alpha 11 · 10.5 MB · Apple silicon, macOS 14 or later · Free and open source · <a href="#install">Install notes</a></p>
 
       <div class="stage">
         <div class="sheet"></div><div class="sheet two"></div><div class="sheet three"></div>
@@ -212,10 +212,10 @@
 
     <div class="wrap" id="demo">
       <div class="shot"><video controls muted loop playsinline preload="metadata" poster="assets/mica-demo-poster.png" width="1280" height="564" aria-describedby="demo-caption"><source src="assets/mica-demo.mp4" type="video/mp4">Your browser cannot play this video. Read the demo transcript below or download the MP4.</video></div>
-      <p class="caption" id="demo-caption">Fresh capture of the current native Mica view (October 1, 2026): local commands, Unicode output, scrollback search, clear focus, break and paused timer states, and dark and light themes. Captured offscreen; no coding agent is invoked. The memory readout belongs to the capture process. This source build includes improvements made after the downloadable alpha.</p>
+      <p class="caption" id="demo-caption">Fresh capture of the current native Mica view (October 1, 2026): local commands, Unicode output, scrollback search, focus timer states and dark and light themes. Separate screenshots below show the Command Palette and Quick Select. Captured offscreen; no coding agent is invoked. The memory readout belongs to the capture process.</p>
       <details class="demo-transcript"><summary>Demo transcript and download</summary>
-        <p>The Mica Demo window has Shell, Preview and Agent tabs. Scripted typing runs a local <code>printf</code> command that prints a greeting with CJK text, an emoji and an accent, then <code>seq 1 60</code> prints numbered lines. The demo shows the 25-minute focus timer, a break, and a paused phase with labeled Start, Pause and Resume actions, then scrolls back, finds the greeting in history, and switches themes.</p>
-        <p><a href="assets/mica-demo.mp4" download>Download the 16-second MP4</a>. The video is silent and starts only when you press Play.</p>
+        <p>The Mica Demo window has Shell, Preview and Agent tabs. Scripted typing runs local commands that print a greeting with CJK text, an emoji and an accent, then <code>seq 1 60</code> prints numbered lines. The demo shows the 25-minute focus timer, a break, and a paused phase with labeled Start, Pause and Resume actions, then scrolls back, finds the greeting in history, and switches themes.</p>
+        <p><a href="assets/mica-demo.mp4" download>Download the 20-second MP4</a>. The final frames hold Quick Select and Command Palette captures. The video is silent and starts only when you press Play.</p>
       </details>
     </div>
 
@@ -261,11 +261,11 @@
         <div>
           <h2>Download, drag, open.</h2>
           <ol class="steps">
-            <li>Download <b>Mica.zip</b> (10.5 MB, Apple silicon, macOS 14 or later).</li>
-            <li>Extract the ZIP, move Mica to Applications and open it. It is signed with a Developer ID and notarized by Apple, so it opens like any other Mac app.</li>
+            <li>Download <b>Mica.zip</b> (10.5 MB; Apple silicon, macOS 14 or later).</li>
+            <li>Extract the ZIP, move Mica to Applications and open it. Check the release page for this build’s signing status and checksums.</li>
             <li>Hold left <kbd>⌥</kbd> to dictate. The 630 MB speech model downloads in the background on first launch.</li>
           </ol>
-          <p>The alpha 10 ZIP and DMG checksums both match their published manifest. See the <a href="https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.10">release notes</a>.</p>
+          <p>Alpha 11 package signing and checksums will be listed on its release page after packaging.</p>
           <p>Prefer to build it yourself? You need the Xcode command line tools; the terminal library ships in the repository and the first build also fetches the speech package.</p>
         </div>
         <div class="code" role="group" aria-label="Build instructions"><button class="copy" type="button" data-copy="git clone https://github.com/megasoft1978/mica-terminal.git&#10;cd mica-terminal&#10;make app &amp;&amp; open build/Mica.app">Copy</button>git clone https://github.com/megasoft1978/mica-terminal.git
@@ -281,6 +281,28 @@ make app &amp;&amp; open build/Mica.app</div>
           <p>Name a project, give it folders and startup tabs, and open it again from a launcher on your Desktop. The Dock icon shows the mark of the project in front. The status bar shows the git branch, and a worktree tab gives each agent its own checkout.</p>
         </div>
         <div class="shot"><img src="assets/crop-tabs-dark.png" width="1500" height="190" alt="A row of tabs named Shell, Preview, Codex, Claude Code and lazygit above terminal output." loading="lazy"></div>
+      </div>
+      <div class="row">
+        <div>
+          <h3>Find actions and useful text quickly.</h3>
+          <p>Open the Command Palette with <kbd>⌘⇧P</kbd> to search menu actions, switch tabs and mute notifications for a tab. Quick Select (<kbd>⌘⇧U</kbd>) labels visible URLs, existing file paths and git hashes; type a label to copy, or hold Option to open or reveal it.</p>
+        </div>
+        <div class="shot"><img src="assets/command-palette-tabs-dark.png" width="620" height="390" alt="The Command Palette searches for Shell and shows the matching project tab, its context and a per-tab mute action." loading="lazy"><img src="assets/command-palette-dark.png" width="620" height="390" alt="Searching notifications lists mute controls for each project tab." loading="lazy"></div>
+      </div>
+      <div class="row">
+        <div>
+          <h3>Dictate the way you prefer.</h3>
+          <p>Choose Hold or Toggle for left Option in Settings. Toggle starts and stops dictation with a key press. Edit → Undo Last Dictation removes the latest inserted transcript only if you have not typed more prompt text since.</p>
+          <p>Mica's zsh integration also sends OSC 133 prompt and command phase markers. The session tracks the latest phase and exit status; navigation between prompt landmarks is still on the roadmap.</p>
+        </div>
+        <div class="shot"><img src="assets/quick-select-dark.png" width="1100" height="440" alt="Quick Select labels a visible URL, an existing README file path and a git hash in the terminal." loading="lazy"></div>
+      </div>
+      <div class="row">
+        <div>
+          <h3>Know whether an agent finished or needs you.</h3>
+          <p>Background notifications label waiting work as “needs input” and completed work as “finished.” They are silent by default, and each tab can mute them from its context menu or the Command Palette.</p>
+        </div>
+        <div class="shot"><img src="assets/command-palette-light.png" width="620" height="390" alt="The Command Palette in light appearance with actions and notification controls." loading="lazy"></div>
       </div>
 
       <div class="row flip">
@@ -328,7 +350,7 @@ make app &amp;&amp; open build/Mica.app</div>
         <h2>Privacy and common questions.</h2>
         <details><summary>What leaves my Mac?</summary><p>Mica processes dictation locally through Core ML and has no accounts, analytics or telemetry. Setting up dictation downloads the 630 MB speech model from Hugging Face. Programs you run in the terminal, including coding agents, follow their own network and privacy policies.</p></details>
         <details><summary>Why does it ask for the microphone?</summary><p>Only when you first hold left <kbd>⌥</kbd> to dictate. Audio is processed in memory and is not saved. If access is denied, choose <strong>Open Microphone Settings</strong> in the status strip to open macOS Privacy &amp; Security settings.</p></details>
-        <details><summary>Is it safe to open?</summary><p>Yes. The download is signed with a Developer ID and notarized by Apple, so it opens like any other Mac app. The MIT-licensed source and a SHA-256 checksum are on the release page.</p></details>
+        <details><summary>How do I verify a download?</summary><p>The release page lists signing status and a SHA-256 checksum manifest for each published package. Verify the files with <code>shasum -a 256 -c SHA256SUMS.txt</code>. Alpha 11 package details will appear after packaging.</p></details>
         <details><summary>What does it cost in memory?</summary><p>About 55–60 MB idle with three tabs, shown live in the status bar. A dictation helper adds about 35 MB only while you talk. Method and the cases where Mica does not win are in the <a href="https://github.com/megasoft1978/mica-terminal/blob/main/docs/MEMORY-BASELINE.md">measurements</a>.</p></details>
         <details><summary>Can I run Codex, Claude Code or lazygit?</summary><p>Yes, they are ordinary programs in a zsh tab. Mica shows on the tab when an agent is working or waiting for you.</p></details>
         <details><summary>Does it work on Intel Macs?</summary><p>Not yet. This alpha is built and tested on Apple silicon with macOS 14 or later.</p></details>
@@ -339,8 +361,8 @@ make app &amp;&amp; open build/Mica.app</div>
       <section>
         <h2>Try it on your next project.</h2>
         <div class="actions">
-          <a class="button primary" href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.10/Mica.zip">Download for Mac</a>
-          <a class="button secondary" href="https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.10">Release notes</a>
+          <a class="button primary" href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.11/Mica.zip">Download for Mac</a>
+          <a class="button secondary" href="https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.11">Release notes</a>
         </div>
       </section>
     </div>

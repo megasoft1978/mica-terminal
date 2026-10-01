@@ -109,6 +109,22 @@ int main(int argc, const char *argv[]) {
                 if (!png || ![png writeToFile:path atomically:YES]) return 1;
             }
         }
+        // Companion stills make the cycle's discovery controls legible beside the animated terminal demo.
+        const char *samples = "clear; printf 'https://example.test/guide  /Users/megasoft78/Desktop/Freelance/mica-terminal/README.md  3f9c1a2\\n'\n";
+        mica_session_write(session, samples, strlen(samples));
+        for (int attempt = 0; attempt < 40; attempt++) PollDemo(owner);
+        [owner.terminalView toggleQuickSelect:nil];
+        NSBitmapImageRep *quickBitmap = [owner.terminalView bitmapImageRepForCachingDisplayInRect:owner.terminalView.bounds];
+        [owner.terminalView cacheDisplayInRect:owner.terminalView.bounds toBitmapImageRep:quickBitmap];
+        NSData *quickPNG = [quickBitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+        if (!quickPNG || ![quickPNG writeToFile:[directory stringByAppendingPathComponent:@"quick-select-demo.png"] atomically:YES]) return 1;
+        [owner.terminalView toggleQuickSelect:nil];
+        [owner toggleCommandPalette:nil];
+        NSView *palette = owner.commandPalettePanel.contentView;
+        NSBitmapImageRep *paletteBitmap = [palette bitmapImageRepForCachingDisplayInRect:palette.bounds];
+        [palette cacheDisplayInRect:palette.bounds toBitmapImageRep:paletteBitmap];
+        NSData *palettePNG = [paletteBitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+        if (!palettePNG || ![palettePNG writeToFile:[directory stringByAppendingPathComponent:@"command-palette-demo.png"] atomically:YES]) return 1;
         for (MicaTab *tab in owner.tabs) { mica_session_destroy(tab.session); tab.session = NULL; }
         printf("Captured 160 current-UI frames with local PTY output.\n");
     }
