@@ -48,9 +48,12 @@ Method and caveats: [MEMORY-BASELINE.md](MEMORY-BASELINE.md). cmux, Warp, Ghostt
 | Git branch of the active tab | Done, in the status bar (reads `.git/HEAD`, works in linked worktrees) |
 | Worktree per agent | Done: Session → New Worktree Tab… |
 | Search scrollback, links, drag to reorder tabs | Done |
+| Search menu actions and switch tabs from a keyboard palette | Done: ⌘⇧P, with action shortcuts and tab context |
+| Quick Select visible URLs, existing paths and git hashes | Done: ⌘⇧U; type to copy, hold Option to open/reveal |
 | Clipboard from remote sessions with consent | Done (OSC 52) |
 | Synchronized output, bracketed paste awareness | Done |
 | Local voice dictation, shared focus timer | Done (not offered by the others) |
+| Hold or Toggle dictation and undo the latest insertion | Done; undo is available only before later prompt text is typed |
 | Light and dark themes, cursor styles, bundled font, settings | Done |
 | Fuzz, sanitizer and UI stress testing | Done |
 | Vertical sidebar with per-tab status (branch, last notification, ports) | Not done. Strong interface opportunity; Mica already has project, branch, agent activity and notification state |
@@ -59,6 +62,7 @@ Method and caveats: [MEMORY-BASELINE.md](MEMORY-BASELINE.md). cmux, Warp, Ghostt
 | Diff review and merge or PR flow | Not done. Large; the alternative is to run `lazygit` or `gh` in a tab, which already works |
 | Bring Mica forward on a global hotkey | Done, opt-in ⌃⌥Space; a dedicated drop-down terminal is still open |
 | Agent notifications with text, click to return to the tab | Done (OSC 9/99/777 become macOS notifications when Mica is in the background) |
+| Distinguish waiting from completion; mute notifications per tab | Done; sound-free notifications and tab-level mute |
 | Scriptable control (a `mica` command for agents to set a tab's status) | Partly: OSC 9/99/777 and `scripts/claude-notify.sh` |
 | Import of Ghostty or iTerm themes | Not done |
 

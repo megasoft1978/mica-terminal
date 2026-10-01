@@ -59,8 +59,9 @@ iTerm2 plus Wispr Flow is about 770 MB before you add a timer. Dictation adds a 
 
 ## What you get
 
-- **A window per project.** Named tabs, folders, configured startup commands and open project windows reopen after quitting, including when you launch another project. Project launchers keep their own configured layouts. The Dock icon shows the mark of the project in front. The status bar shows the git branch, and **Session → New Worktree Tab…** gives an agent its own checkout.
+- **A window per project.** Named tabs, folders and project windows reopen after quitting, including when you launch another project; restored tabs start fresh shells. Project launchers keep their configured layouts. The Dock icon shows the mark of the project in front. The status bar shows the git branch, and **Session → New Worktree Tab…** gives an agent its own checkout.
 - **Agents stay ordinary programs.** Run Codex, Claude Code, `lazygit` or anything else in a normal `zsh` tab. Mica reads the visible screen for signs of work or a question and shows it on the tab, and posts a notification when a program asks for attention.
+- **Find actions and tabs quickly.** The Command Palette (<kbd>⌘⇧P</kbd>) searches menu actions and project tabs, showing each action's shortcut and each tab's folder, branch and activity. Quick Select (<kbd>⌘⇧U</kbd>) labels visible URLs, existing file paths and git hashes; type a label to copy, or hold <kbd>⌥</kbd> to open or reveal it. Per-tab agent notifications can be muted from the tab menu or palette.
 - **Good dictation that stays on your Mac.** Hold left <kbd>⌥</kbd>, speak, edit the text, press Return. It uses NVIDIA’s Parakeet speech model through Core ML; Mica downloads the 630 MB model in the background on first launch, with progress in the status bar, so dictation is ready when you need it. Nothing you say is sent anywhere.
 - Dictation can use Hold or Toggle for left <kbd>⌥</kbd> in Settings. **Edit → Undo Last Dictation** removes the latest inserted transcript while you have not typed since.
 - **A focus timer that follows you.** One timer shared by every Mica window. The status strip clearly labels **FOCUS**, **BREAK**, or **PAUSED · FOCUS/BREAK**, keeps the countdown in view, and gives you a labeled **Start**, **Pause**, or **Resume** control. Focus and break use separate colors and a progress ring. When a phase ends, macOS tells you whether to pause work or return to focus. End a phase from the **Focus** menu or VoiceOver actions; completed sessions remain in the menu and accessibility label.
@@ -106,6 +107,9 @@ The microphone starts recording the moment you hold <kbd>⌥</kbd>, so nothing y
 | Search menu actions or switch tabs | <kbd>⌘⇧P</kbd> |
 | New tab, close tab, new window | <kbd>⌘T</kbd> · <kbd>⌘W</kbd> · <kbd>⌘N</kbd> |
 | Dictate | hold left <kbd>⌥</kbd> |
+| Stop Toggle dictation | press left <kbd>⌥</kbd> again |
+| Undo latest dictation | **Edit → Undo Last Dictation** (when no later prompt text was typed) |
+| Quick Select visible URLs, paths and hashes | <kbd>⌘⇧U</kbd> |
 | Find, next, previous | <kbd>⌘F</kbd> · <kbd>⌘G</kbd> · <kbd>⇧⌘G</kbd> |
 | Text size, reset | <kbd>⌘+</kbd> <kbd>⌘−</kbd> · <kbd>⌘0</kbd> |
 | Light or dark theme | <kbd>⌥⌘L</kbd> |
