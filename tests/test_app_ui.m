@@ -577,6 +577,8 @@ static int MicaRunUISelfTest(void) {
         NSMenu *editMenu = [NSApp.mainMenu itemWithTitle:@"Edit"].submenu;
         NSMenuItem *vocabularyToggleMenuItem = [editMenu itemWithTitle:@"Improve Dictation with Project Vocabulary"];
         NSMenuItem *editVocabularyMenuItem = [editMenu itemWithTitle:@"Edit Vocabulary…"];
+        NSMenuItem *quickSelectMenuItem = [editMenu itemWithTitle:@"Quick Select…"];
+        NSMenuItem *undoMenuItem = [editMenu itemWithTitle:@"Undo Last Dictation"];
         MicaUITestRecord(report, &allPassed,
                          newShellMenuItem.target == delegate &&
                          [newShellMenuItem.keyEquivalent isEqualToString:@"t"] &&
@@ -591,6 +593,8 @@ static int MicaRunUISelfTest(void) {
                             (NSEventModifierFlagCommand | NSEventModifierFlagShift) &&
                          diagnosticLogsMenuItem.target == delegate &&
                          vocabularyToggleMenuItem.target == delegate && editVocabularyMenuItem.target == delegate &&
+                         quickSelectMenuItem.target == delegate.terminalView && quickSelectMenuItem.isEnabled &&
+                         undoMenuItem.target == delegate && ![delegate validateMenuItem:undoMenuItem] &&
                          paletteMenuItem.target == delegate &&
                          [paletteMenuItem.keyEquivalent isEqualToString:@"p"] &&
                          (paletteMenuItem.keyEquivalentModifierMask &
@@ -606,7 +610,7 @@ static int MicaRunUISelfTest(void) {
                          (quitMenuItem.keyEquivalentModifierMask & NSEventModifierFlagCommand) != 0 &&
                          [sessionMenu itemWithTitle:@"New Claude Code Tab"] == nil &&
                          [sessionMenu itemWithTitle:@"New Codex Tab"] == nil,
-                         @"Command-Q quits Mica and the shortcut list is available in Help and the status bar");
+                         @"smoke: shipped menu actions exist and are enabled when applicable; unavailable dictation undo is disabled");
 
         MicaAppDelegate *landmarkUIDelegate = [[MicaAppDelegate alloc] init];
         landmarkUIDelegate.tabs = [NSMutableArray array];

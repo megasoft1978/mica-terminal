@@ -57,7 +57,7 @@ $(BUILD)/benchmark-history: tools/benchmark_history.c $(CORE) include/mica.h $(V
 benchmark-history: $(BUILD)/benchmark-history
 	$(BUILD)/benchmark-history
 
-.PHONY: all app sign dist checksums notarize screenshots ui-audit sanitize fuzz stress test test-voice validate preflight clean run memory desktop-apps install-desktop-apps new-instance
+.PHONY: all app sign dist checksums notarize screenshots ui-audit sanitize fuzz stress test smoke-app test-voice validate preflight clean run memory desktop-apps install-desktop-apps new-instance
 
 all: app
 
@@ -148,6 +148,11 @@ test: $(BUILD)/test-vterm-history $(BUILD)/test-session $(BUILD)/test-pomodoro $
 	python3 tests/test_agent_loop.py
 	python3 tests/test_worktree.py
 	python3 tests/test_release.py
+
+# Offscreen AppKit smoke: exercises menu wiring and enabled state through test-ui;
+# it never launches the packaged application bundle.
+smoke-app: $(BUILD)/test-ui
+	MICA_UI_SMOKE_REPORT=$(BUILD)/smoke-app-report.txt $(BUILD)/test-ui
 
 test-voice:
 	@mkdir -p $(BUILD) $(VOICE_MODULE_CACHE)
