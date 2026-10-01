@@ -102,6 +102,9 @@ int main(int argc, const char *argv[]) {
         main.uiMode = MicaUIModeScroll;
         SaveViewImage(main.terminalView, out, @"03-scrollback-mode");
         main.uiMode = MicaUIModeNormal;
+        [main toggleCommandPalette:nil];
+        SaveViewImage(main.commandPalettePanel.contentView, out, @"command-palette-dark");
+        [main toggleCommandPalette:nil];
 
         MicaVoiceController *voice = [[MicaVoiceController alloc] initWithHelperURL:[NSURL fileURLWithPath:@"/nonexistent"]];
         main.voiceController = voice;
@@ -184,6 +187,9 @@ int main(int argc, const char *argv[]) {
         }
         MicaAppDelegate *light = MakeWindow(1100, 440, tabs, @"Fieldnote");
         [light setLightTheme:YES];
+        [light toggleCommandPalette:nil];
+        SaveViewImage(light.commandPalettePanel.contentView, out, @"command-palette-light");
+        [light toggleCommandPalette:nil];
         Scene(light);
         SaveViewImage(light.terminalView, out, @"09-light-default");
         RenderTimerStates(light, out, @"light");

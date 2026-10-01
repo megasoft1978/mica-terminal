@@ -103,6 +103,7 @@ The microphone starts recording the moment you hold <kbd>⌥</kbd>, so nothing y
 | | |
 | --- | --- |
 | Switch tabs | <kbd>⌘1</kbd>–<kbd>⌘9</kbd> |
+| Search menu actions or switch tabs | <kbd>⌘⇧P</kbd> |
 | New tab, close tab, new window | <kbd>⌘T</kbd> · <kbd>⌘W</kbd> · <kbd>⌘N</kbd> |
 | Dictate | hold left <kbd>⌥</kbd> |
 | Find, next, previous | <kbd>⌘F</kbd> · <kbd>⌘G</kbd> · <kbd>⇧⌘G</kbd> |

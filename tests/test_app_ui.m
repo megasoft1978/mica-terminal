@@ -468,20 +468,23 @@ static int MicaRunUISelfTest(void) {
         NSMenu *helpMenu = [NSApp.mainMenu itemWithTitle:@"Help"].submenu;
         NSMenuItem *diagnosticLogsMenuItem = [helpMenu itemWithTitle:@"Open Diagnostic Logs"];
         NSMenuItem *shortcutsMenuItem = [helpMenu itemWithTitle:@"Keyboard Shortcuts…"];
+        NSMenuItem *paletteMenuItem = [helpMenu itemWithTitle:@"Command Palette…"];
         MicaUITestRecord(report, &allPassed,
                          newShellMenuItem.target == delegate &&
                          [newShellMenuItem.keyEquivalent isEqualToString:@"t"] &&
                          (newShellMenuItem.keyEquivalentModifierMask & NSEventModifierFlagCommand) != 0 &&
                          [sessionMenu itemWithTitle:@"Dictate…"] == nil &&
-                         [tabPickerMenuItem.keyEquivalent isEqualToString:@"p"] &&
-                         (tabPickerMenuItem.keyEquivalentModifierMask &
-                          (NSEventModifierFlagCommand | NSEventModifierFlagShift)) ==
-                            (NSEventModifierFlagCommand | NSEventModifierFlagShift) &&
+                         tabPickerMenuItem.keyEquivalent.length == 0 &&
                          [scrollbackMenuItem.keyEquivalent isEqualToString:@"s"] &&
                          (scrollbackMenuItem.keyEquivalentModifierMask &
                           (NSEventModifierFlagCommand | NSEventModifierFlagShift)) ==
                             (NSEventModifierFlagCommand | NSEventModifierFlagShift) &&
                          diagnosticLogsMenuItem.target == delegate &&
+                         paletteMenuItem.target == delegate &&
+                         [paletteMenuItem.keyEquivalent isEqualToString:@"p"] &&
+                         (paletteMenuItem.keyEquivalentModifierMask &
+                          (NSEventModifierFlagCommand | NSEventModifierFlagShift)) ==
+                            (NSEventModifierFlagCommand | NSEventModifierFlagShift) &&
                          shortcutsMenuItem.target == delegate &&
                          [[NSApp.mainMenu itemWithTitle:@"Focus"].submenu itemWithTitle:@"Start / Resume Focus Timer"].target == delegate &&
                          [[NSApp.mainMenu itemWithTitle:@"Focus"].submenu itemWithTitle:@"End Current Phase"].target == delegate &&
@@ -1645,21 +1648,77 @@ static int MicaRunUISelfTest(void) {
         if (delegate.tabs.count == 3 && fixtureReady) {
             [delegate selectTabAtIndex:0];
             MicaUITestSendKey(delegate, @"p", NSEventModifierFlagCommand | NSEventModifierFlagShift, 35);
+            BOOL paletteOpens = delegate.commandPalettePanel != nil && delegate.uiMode == MicaUIModeNormal;
+            BOOL paletteAccessibility = [delegate.commandPaletteSearch.accessibilityLabel isEqualToString:@"Search actions and tabs"] &&
+                [delegate.commandPaletteTable.accessibilityLabel isEqualToString:@"Command palette results"];
+            NSArray *initialTabRows = [delegate.commandPaletteRows filteredArrayUsingPredicate:
+                [NSPredicate predicateWithFormat:@"kind == %@", @"tab"]];
+            BOOL activeTabFirst = initialTabRows.count == 3 && [initialTabRows.firstObject[@"tabIndex"] integerValue] == 0;
+            [delegate selectTabAtIndex:1];
+            NSArray *recentTabRows = [[delegate paletteRows] filteredArrayUsingPredicate:
+                [NSPredicate predicateWithFormat:@"kind == %@", @"tab"]];
+            BOOL recentTabFirst = recentTabRows.count == 3 && [recentTabRows.firstObject[@"tabIndex"] integerValue] == 1;
+            [delegate selectTabAtIndex:0];
+            [delegate filterCommandPalette:nil];
+            NSInteger indexBeforePaletteAction = delegate.activeIndex;
+            delegate.commandPaletteSearch.stringValue = @"Next Tab";
+            [delegate filterCommandPalette:nil];
+            BOOL filterFindsAction = delegate.commandPaletteRows.count == 1 &&
+                [delegate.commandPaletteRows.firstObject[@"title"] isEqualToString:@"Next Tab"];
+            [delegate runCommandPaletteSelection:nil];
+            BOOL paletteRunsAction = delegate.activeIndex == (indexBeforePaletteAction + 1) % (NSInteger)delegate.tabs.count;
+            [delegate selectTabAtIndex:indexBeforePaletteAction];
+            delegate.commandPaletteSearch = nil;
+            MicaUITestSendKey(delegate, @"p", NSEventModifierFlagCommand | NSEventModifierFlagShift, 35);
+            delegate.commandPaletteSearch.stringValue = @"Second tmp";
+            [delegate filterCommandPalette:nil];
+            BOOL filterFindsTab = delegate.commandPaletteRows.count == 1 &&
+                [delegate.commandPaletteRows.firstObject[@"kind"] isEqualToString:@"tab"];
+            MicaPaletteRowView *accessibleTabRow = (MicaPaletteRowView *)[delegate tableView:delegate.commandPaletteTable rowViewForRow:0];
+            BOOL tabRowAccessible = [accessibleTabRow.accessibilityLabel containsString:@"Go to tab Second"];
+            [delegate runCommandPaletteSelection:nil];
+            BOOL paletteSwitchesTab = delegate.activeIndex == 1;
+            MicaPaletteSearchField *paletteSearch = (MicaPaletteSearchField *)delegate.commandPaletteSearch;
+            NSEvent *escapeEvent = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0
+                timestamp:0 windowNumber:delegate.commandPalettePanel.windowNumber context:nil characters:@"\033"
+                charactersIgnoringModifiers:@"\033" isARepeat:NO keyCode:53];
+            [paletteSearch keyDown:escapeEvent];
+            BOOL escapeCloses = delegate.commandPalettePanel == nil;
+            MicaUITestRecord(report, &allPassed, paletteOpens && paletteAccessibility && activeTabFirst && recentTabFirst && filterFindsAction &&
+                paletteRunsAction && filterFindsTab && tabRowAccessible && paletteSwitchesTab && escapeCloses,
+                [NSString stringWithFormat:@"Command-Shift-P opens an accessible per-window action/tab palette; filtering, action dispatch, tab switching and Escape work (open=%d a11y=%d mru=%d/%d action-filter=%d action=%d tab-filter=%d row-label=%d switch=%d escape=%d)",
+                 paletteOpens, paletteAccessibility, activeTabFirst, recentTabFirst, filterFindsAction, paletteRunsAction, filterFindsTab, tabRowAccessible, paletteSwitchesTab, escapeCloses]);
+
+            NSMenuItem *undoPaletteItem = [[NSMenuItem alloc] initWithTitle:@"Undo Last Dictation" action:@selector(undoLastDictation:) keyEquivalent:@""];
+            delegate.dictationUndoValid = NO;
+            BOOL disabledActionBlocked = ![delegate validateMenuItem:undoPaletteItem];
+            delegate.dictationUndoValid = YES;
+            BOOL enabledActionAllowed = [delegate validateMenuItem:undoPaletteItem];
+            delegate.dictationUndoValid = NO;
+            MicaAppDelegate *isolatedPalette = [[MicaAppDelegate alloc] init];
+            [isolatedPalette toggleCommandPalette:nil];
+            BOOL twoWindowIsolation = isolatedPalette.commandPalettePanel != nil && delegate.commandPalettePanel == nil;
+            [isolatedPalette toggleCommandPalette:nil];
+            MicaUITestRecord(report, &allPassed, disabledActionBlocked && enabledActionAllowed && twoWindowIsolation,
+                [NSString stringWithFormat:@"palette respects disabled actions and window state is isolated (blocked=%d enabled=%d isolated=%d)", disabledActionBlocked, enabledActionAllowed, twoWindowIsolation]);
+
+            [delegate selectTabAtIndex:0];
+            [delegate toggleTabPicker];
             MicaUITestSendKey(delegate, @"l", 0, 37);
             BOOL nextTabWorked = delegate.activeIndex == 1 && delegate.uiMode == MicaUIModeTab;
             MicaUITestSendKey(delegate, @"j", 0, 38);
             BOOL secondNavigationWorked = delegate.activeIndex == 2;
-            MicaUITestSendKey(delegate, @"p", NSEventModifierFlagCommand | NSEventModifierFlagShift, 35);
+            [delegate toggleTabPicker];
             MicaUITestRecord(report, &allPassed, nextTabWorked && secondNavigationWorked && delegate.uiMode == MicaUIModeNormal,
-                             @"Command-Shift-P tab menu, hjkl navigation and return to normal mode work");
+                             @"Choose Tab menu, hjkl navigation and return to normal mode work");
 
-            MicaUITestSendKey(delegate, @"p", NSEventModifierFlagCommand | NSEventModifierFlagShift, 35);
+            [delegate toggleTabPicker];
             MicaUITestSendKey(delegate, @"1", 0, 18);
             BOOL digitJumpWorked = delegate.activeIndex == 0 && delegate.uiMode == MicaUIModeNormal;
-            MicaUITestSendKey(delegate, @"p", NSEventModifierFlagCommand | NSEventModifierFlagShift, 35);
+            [delegate toggleTabPicker];
             MicaUITestSendKey(delegate, @"n", 0, 45);
             BOOL newTabWorked = delegate.tabs.count == 4 && delegate.activeIndex == 3 && delegate.uiMode == MicaUIModeNormal;
-            MicaUITestSendKey(delegate, @"p", NSEventModifierFlagCommand | NSEventModifierFlagShift, 35);
+            [delegate toggleTabPicker];
             MicaUITestSendKey(delegate, @"x", 0, 7);
             BOOL closeTabWorked = delegate.tabs.count == 3 && delegate.uiMode == MicaUIModeNormal;
             MicaUITestRecord(report, &allPassed, digitJumpWorked && newTabWorked && closeTabWorked,
@@ -3020,8 +3079,8 @@ static int MicaRunUISelfTest(void) {
             usleep(10000);
         }
         MicaUITestSendKey(shortcutDelegate, @"p", NSEventModifierFlagCommand | NSEventModifierFlagShift, 35);
-        BOOL pickerShortcutWorks = shortcutDelegate.uiMode == MicaUIModeTab;
-        MicaUITestSendKey(shortcutDelegate, @"\033", 0, 53);
+        BOOL pickerShortcutWorks = shortcutDelegate.commandPalettePanel != nil;
+        [shortcutDelegate toggleCommandPalette:nil];
         MicaUITestSendKey(shortcutDelegate, @"s", NSEventModifierFlagCommand | NSEventModifierFlagShift, 1);
         BOOL historyShortcutWorks = shortcutDelegate.uiMode == MicaUIModeScroll;
         MicaUITestSendKey(shortcutDelegate, @"s", NSEventModifierFlagCommand | NSEventModifierFlagShift, 1);

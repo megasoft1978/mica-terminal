@@ -270,6 +270,7 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 @property(nonatomic, copy) NSString *gitBranch;
 @property(nonatomic, assign) NSTimeInterval lastAgentNotificationAt;
 @property(nonatomic, assign) NSTimeInterval gitBranchCheckedAt;
+@property(nonatomic, assign) NSTimeInterval lastSelectedAt;
 @property(nonatomic, assign) NSInteger clipboardDecision;  // 0 ask, 1 always allow, 2 deny
 @property(nonatomic, copy) NSString *pendingClipboardText;
 @property(nonatomic, assign) BOOL syncHeld;
@@ -542,6 +543,10 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, copy) NSString *lastDictationText;
 @property(nonatomic, weak) MicaTab *lastDictationTab;
 @property(nonatomic, assign) BOOL dictationUndoValid;
+@property(nonatomic, strong) NSPanel *commandPalettePanel;
+@property(nonatomic, strong) NSTextField *commandPaletteSearch;
+@property(nonatomic, strong) NSTableView *commandPaletteTable;
+@property(nonatomic, copy) NSArray<NSDictionary *> *commandPaletteRows;
 #if defined(MICA_APP_NO_MAIN)
 @property(nonatomic, strong) NSURL *pomodoroStorageDirectoryOverride;
 #endif
@@ -553,6 +558,10 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)selectRelativeTab:(NSInteger)delta;
 - (void)selectTabAtIndex:(NSInteger)index;
 - (void)toggleTabPicker;
+- (void)toggleCommandPalette:(id)sender;
+- (void)filterCommandPalette:(id)sender;
+- (void)runCommandPaletteSelection:(id)sender;
+- (void)moveCommandPaletteSelection:(NSInteger)delta;
 - (void)toggleScrollback;
 - (void)resizeActiveSession;
 - (void)installMenus;
@@ -616,6 +625,16 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)updatePomodoroTimer;
 - (NSString *)currentPomodoroNotificationIdentifier;
 @property(nonatomic, assign) MicaUIMode uiMode;
+@end
+
+@interface MicaPaletteSearchField : NSTextField
+@property(nonatomic, weak) MicaAppDelegate *paletteOwner;
+@end
+@interface MicaPaletteTableView : NSTableView
+@property(nonatomic, weak) MicaAppDelegate *paletteOwner;
+@end
+@interface MicaPaletteRowView : NSTableRowView
+@property(nonatomic, copy) NSString *paletteAccessibilityLabel;
 @end
 
 @interface MicaProjectSettingsController : NSWindowController <NSTableViewDataSource, NSTableViewDelegate>
@@ -2548,7 +2567,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         return;
     }
     if (command && (flags & NSEventModifierFlagShift) && [keyString isEqualToString:@"p"]) {
-        [self.owner toggleTabPicker];
+        [self.owner toggleCommandPalette:nil];
         return;
     }
     if (command && (flags & NSEventModifierFlagShift) && [keyString isEqualToString:@"s"]) {
@@ -3307,6 +3326,28 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
 }
 @end
 
+@implementation MicaPaletteSearchField
+- (void)keyDown:(NSEvent *)event {
+    NSString *key = event.charactersIgnoringModifiers;
+    if (event.keyCode == 53) { [self.paletteOwner toggleCommandPalette:nil]; return; }
+    if (event.keyCode == 126) { [self.paletteOwner moveCommandPaletteSelection:-1]; return; }
+    if (event.keyCode == 125) { [self.paletteOwner moveCommandPaletteSelection:1]; return; }
+    if (event.keyCode == 36 || event.keyCode == 76) { [self.paletteOwner runCommandPaletteSelection:nil]; return; }
+    (void)key;
+    [super keyDown:event];
+}
+@end
+@implementation MicaPaletteRowView
+- (NSString *)accessibilityLabel { return self.paletteAccessibilityLabel; }
+@end
+@implementation MicaPaletteTableView
+- (void)keyDown:(NSEvent *)event {
+    if (event.keyCode == 53) { [self.paletteOwner toggleCommandPalette:nil]; return; }
+    if (event.keyCode == 36 || event.keyCode == 76) { [self.paletteOwner runCommandPaletteSelection:nil]; return; }
+    [super keyDown:event];
+}
+@end
+
 @implementation MicaAppDelegate
 - (NSString *)windowTitleForTab:(MicaTab *)tab {
     NSString *tabName = tab.name.length ? tab.name : @"Terminal";
@@ -3949,6 +3990,171 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     for (NSMenuItem *item in gViewMenuItems) item.target = self.terminalView;
 }
 
+- (void)collectPaletteItemsFromMenu:(NSMenu *)menu into:(NSMutableArray<NSDictionary *> *)rows {
+    for (NSMenuItem *item in menu.itemArray) {
+        if (item.submenu) { [self collectPaletteItemsFromMenu:item.submenu into:rows]; continue; }
+        if (!item.action || item.isSeparatorItem || item.action == @selector(toggleCommandPalette:)) continue;
+        NSString *shortcut = @"";
+        NSEventModifierFlags modifiers = item.keyEquivalentModifierMask;
+        if (modifiers & NSEventModifierFlagControl) shortcut = [shortcut stringByAppendingString:@"⌃"];
+        if (modifiers & NSEventModifierFlagOption) shortcut = [shortcut stringByAppendingString:@"⌥"];
+        if (modifiers & NSEventModifierFlagShift) shortcut = [shortcut stringByAppendingString:@"⇧"];
+        if (modifiers & NSEventModifierFlagCommand) shortcut = [shortcut stringByAppendingString:@"⌘"];
+        if (item.keyEquivalent.length) shortcut = [shortcut stringByAppendingString:item.keyEquivalent.uppercaseString];
+        [rows addObject:@{@"title": item.title, @"detail": shortcut, @"item": item, @"kind": @"action"}];
+    }
+}
+
+- (NSArray<NSDictionary *> *)paletteRows {
+    NSMutableArray *rows = [NSMutableArray array];
+    [self collectPaletteItemsFromMenu:NSApp.mainMenu into:rows];
+    NSArray *tabs = [self.tabs sortedArrayUsingComparator:^NSComparisonResult(MicaTab *a, MicaTab *b) {
+        if (a == self.activeTab) return NSOrderedAscending;
+        if (b == self.activeTab) return NSOrderedDescending;
+        if (a.lastSelectedAt > b.lastSelectedAt) return NSOrderedAscending;
+        if (a.lastSelectedAt < b.lastSelectedAt) return NSOrderedDescending;
+        return NSOrderedSame;
+    }];
+    for (MicaTab *tab in tabs) {
+        NSUInteger index = [self.tabs indexOfObjectIdenticalTo:tab];
+        if (tab.gitBranchCheckedAt == 0 && tab.cwd.length) {
+            tab.gitBranch = MicaGitBranchForDirectory(tab.cwd);
+            tab.gitBranchCheckedAt = NSProcessInfo.processInfo.systemUptime;
+        }
+        MicaTabActivityState activity = [self.terminalView activityStateForTab:tab];
+        NSString *state = activity == MicaTabActivityStateWaiting ? @"Needs input" :
+            activity == MicaTabActivityStateRunning ? @"Running" : @"Idle";
+        NSString *detail = [NSString stringWithFormat:@"%@  ·  %@  ·  %@",
+            tab.cwd.lastPathComponent ?: @"", tab.gitBranch.length ? tab.gitBranch : @"no branch", state];
+        [rows addObject:@{@"title": tab.name.length ? tab.name : @"Terminal", @"detail": detail,
+                          @"tabIndex": @(index), @"kind": @"tab", @"accessibility":
+                          [NSString stringWithFormat:@"Go to tab %@, folder %@, branch %@, agent state %@",
+                           tab.name ?: @"Terminal", tab.cwd.lastPathComponent ?: @"", tab.gitBranch ?: @"none", state]}];
+    }
+    return rows;
+}
+
+- (void)toggleCommandPalette:(id)sender {
+    (void)sender;
+    if (self.commandPalettePanel) {
+        [self.commandPalettePanel orderOut:nil];
+        self.commandPalettePanel = nil;
+        self.commandPaletteSearch = nil;
+        self.commandPaletteTable = nil;
+        [self.window makeFirstResponder:self.terminalView];
+        return;
+    }
+    self.commandPaletteRows = [self paletteRows];
+    NSRect frame = NSMakeRect(0, 0, 620, 390);
+    NSPanel *panel = [[NSPanel alloc] initWithContentRect:frame styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskUtilityWindow
+        backing:NSBackingStoreBuffered defer:NO];
+    panel.title = @"Command Palette";
+    panel.releasedWhenClosed = NO;
+    panel.opaque = YES;
+    panel.backgroundColor = NSColor.windowBackgroundColor;
+    panel.appearance = self.window.appearance ?: [NSAppearance appearanceNamed:gMicaLightTheme ? NSAppearanceNameAqua : NSAppearanceNameDarkAqua];
+    panel.level = NSFloatingWindowLevel;
+    panel.hidesOnDeactivate = YES;
+    MicaPaletteSearchField *search = [[MicaPaletteSearchField alloc] initWithFrame:NSMakeRect(16, 350, 588, 24)];
+    search.paletteOwner = self;
+    search.placeholderString = @"Search actions and tabs…";
+    search.accessibilityLabel = @"Search actions and tabs";
+    search.target = self;
+    search.action = @selector(filterCommandPalette:);
+    MicaPaletteTableView *table = [[MicaPaletteTableView alloc] initWithFrame:NSMakeRect(0, 0, 588, 330)];
+    table.paletteOwner = self;
+    NSTableColumn *name = [[NSTableColumn alloc] initWithIdentifier:@"name"];
+    name.title = @"Action or tab"; name.width = 400;
+    NSTableColumn *detail = [[NSTableColumn alloc] initWithIdentifier:@"detail"];
+    detail.title = @"Shortcut / context"; detail.width = 180;
+    [table addTableColumn:name]; [table addTableColumn:detail];
+    table.headerView = nil; table.dataSource = (id)self; table.delegate = (id)self;
+    table.backgroundColor = NSColor.windowBackgroundColor;
+    table.usesAlternatingRowBackgroundColors = YES;
+    table.accessibilityLabel = @"Command palette results";
+    table.target = self; table.doubleAction = @selector(runCommandPaletteSelection:);
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(16, 16, 588, 312)];
+    scroll.hasVerticalScroller = YES; scroll.drawsBackground = YES; scroll.backgroundColor = NSColor.windowBackgroundColor; scroll.documentView = table;
+    NSView *content = [[NSView alloc] initWithFrame:frame];
+    content.wantsLayer = YES;
+    content.layer.backgroundColor = NSColor.windowBackgroundColor.CGColor;
+    [content addSubview:search]; [content addSubview:scroll]; panel.contentView = content;
+    self.commandPalettePanel = panel; self.commandPaletteSearch = search; self.commandPaletteTable = table;
+    NSRect screen = (self.window.screen ?: NSScreen.mainScreen).visibleFrame;
+    [panel setFrameOrigin:NSMakePoint(NSMidX(screen) - frame.size.width / 2, NSMaxY(screen) - frame.size.height - 100)];
+    [panel makeKeyAndOrderFront:nil]; [panel makeFirstResponder:search];
+    [table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+}
+
+- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView { (void)tableView; return self.commandPaletteRows.count; }
+- (NSTableRowView *)tableView:(NSTableView *)tableView rowViewForRow:(NSInteger)row {
+    (void)tableView;
+    MicaPaletteRowView *view = [MicaPaletteRowView new];
+    NSDictionary *entry = self.commandPaletteRows[(NSUInteger)row];
+    view.paletteAccessibilityLabel = entry[@"accessibility"] ?: [NSString stringWithFormat:@"%@ %@", entry[@"title"], entry[@"detail"]];
+    return view;
+}
+- (id)tableView:(NSTableView *)tableView objectValueForTableColumn:(NSTableColumn *)column row:(NSInteger)row {
+    (void)tableView; NSDictionary *entry = self.commandPaletteRows[(NSUInteger)row];
+    return [column.identifier isEqualToString:@"name"] ? entry[@"title"] : entry[@"detail"];
+}
+- (void)controlTextDidChange:(NSNotification *)notification { if (notification.object == self.commandPaletteSearch) [self filterCommandPalette:nil]; }
+- (void)filterCommandPalette:(id)sender {
+    (void)sender;
+    NSString *query = self.commandPaletteSearch.stringValue.lowercaseString;
+    NSArray *all = [self paletteRows];
+    if (!query.length) self.commandPaletteRows = all;
+    else self.commandPaletteRows = [all filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSDictionary *entry, NSDictionary *bindings) {
+        (void)bindings; NSString *text = [[NSString stringWithFormat:@"%@ %@", entry[@"title"], entry[@"detail"]] lowercaseString];
+        NSArray<NSString *> *tokens = [query componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        BOOL allTokens = YES;
+        for (NSString *token in tokens) if (token.length && [text rangeOfString:token].location == NSNotFound) { allTokens = NO; break; }
+        if (allTokens) return YES;
+        NSString *compact = [query stringByReplacingOccurrencesOfString:@" " withString:@""];
+        NSUInteger position = 0;
+        for (NSUInteger i = 0; i < compact.length; i++) {
+            NSString *character = [compact substringWithRange:NSMakeRange(i, 1)];
+            if (position >= text.length) return NO;
+            NSRange found = [text rangeOfString:character options:0 range:NSMakeRange(position, text.length-position)];
+            if (found.location == NSNotFound) return NO;
+            position = NSMaxRange(found);
+        }
+        return compact.length > 0;
+    }]];
+    [self.commandPaletteTable reloadData];
+    if (self.commandPaletteRows.count) [self.commandPaletteTable selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+}
+- (void)moveCommandPaletteSelection:(NSInteger)delta {
+    NSInteger count = (NSInteger)self.commandPaletteRows.count; if (!count) return;
+    NSInteger row = self.commandPaletteTable.selectedRow;
+    row = (row + delta + count) % count;
+    [self.commandPaletteTable selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
+    [self.commandPaletteTable scrollRowToVisible:row];
+}
+- (void)runCommandPaletteSelection:(id)sender {
+    (void)sender; NSInteger row = self.commandPaletteTable.selectedRow;
+    if (row < 0 || row >= (NSInteger)self.commandPaletteRows.count) return;
+    NSDictionary *entry = self.commandPaletteRows[(NSUInteger)row];
+    [self.commandPalettePanel orderOut:nil];
+    if ([entry[@"kind"] isEqualToString:@"tab"]) [self selectTabAtIndex:[entry[@"tabIndex"] integerValue]];
+    else {
+        NSMenuItem *item = entry[@"item"];
+        if (![self validateMenuItem:item]) { self.commandPalettePanel = nil; return; }
+        id target = nil;
+        if ([item.target isKindOfClass:MicaTerminalView.class]) target = self.terminalView;
+        else if ([item.target isKindOfClass:MicaAppDelegate.class]) target = self;
+        else if (item.target && [item.target respondsToSelector:item.action]) target = item.target;
+        if (!target && [self.terminalView respondsToSelector:item.action]) target = self.terminalView;
+        if (!target && [self.window respondsToSelector:item.action]) target = self.window;
+        if (!target && [self respondsToSelector:item.action]) target = self;
+        if (!target && [NSApp respondsToSelector:item.action]) target = NSApp;
+        if (![target respondsToSelector:item.action]) { self.commandPalettePanel = nil; return; }
+        [NSApp sendAction:item.action to:target from:item];
+    }
+    self.commandPalettePanel = nil; self.commandPaletteSearch = nil; self.commandPaletteTable = nil;
+    [self.window makeFirstResponder:self.terminalView];
+}
+
 - (void)buildMenus {
     NSMenu *main = [[NSMenu alloc] initWithTitle:@"Mica"];
     NSMenuItem *appRoot = [[NSMenuItem alloc] initWithTitle:@"Mica" action:nil keyEquivalent:@""];
@@ -3988,8 +4194,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSMenu *sessionMenu = [[NSMenu alloc] initWithTitle:@"Session"];
     AddMenuItem(sessionMenu, @"New Shell Tab", @selector(newShell:), @"t", NSEventModifierFlagCommand).target = self;
     AddMenuItem(sessionMenu, @"New Worktree Tab…", @selector(newWorktreeTab:), @"", 0).target = self;
-    AddMenuItem(sessionMenu, @"Choose Tab…", @selector(toggleTabPicker), @"p",
-                NSEventModifierFlagCommand | NSEventModifierFlagShift).target = self;
+    AddMenuItem(sessionMenu, @"Choose Tab…", @selector(toggleTabPicker), @"", 0).target = self;
     AddMenuItem(sessionMenu, @"Browse Scrollback", @selector(toggleScrollback), @"s",
                 NSEventModifierFlagCommand | NSEventModifierFlagShift).target = self;
     [sessionMenu addItem:NSMenuItem.separatorItem];
@@ -4039,6 +4244,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSApp.windowsMenu = windowMenu;
     NSMenuItem *helpRoot = [[NSMenuItem alloc] initWithTitle:@"Help" action:nil keyEquivalent:@""];
     NSMenu *helpMenu = [[NSMenu alloc] initWithTitle:@"Help"];
+    AddMenuItem(helpMenu, @"Command Palette…", @selector(toggleCommandPalette:), @"p",
+                NSEventModifierFlagCommand | NSEventModifierFlagShift).target = self;
     AddMenuItem(helpMenu, @"Keyboard Shortcuts…", @selector(showKeyboardShortcuts:), @"/",
                 NSEventModifierFlagCommand).target = self;
     AddMenuItem(helpMenu, @"Releases and Updates", @selector(openReleasesPage:), @"", 0).target = self;
@@ -4061,7 +4268,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         @"⌘W  Close tab",
         @"⌘1–8  Switch to tab",
         @"⌘9  Switch to last tab",
-        @"⌘⇧P  Choose tab",
+        @"⌘⇧P  Command palette and tab switcher",
         @"⌘⇧S  Browse scrollback",
         @"⌘⇧[ / ⌘⇧]  Previous / next tab",
         @"Drag a tab  Reorder tabs",
@@ -4700,6 +4907,7 @@ static BOOL MicaValidBranchName(NSString *name) {
     [self.terminalView clearSelection];
     self.activeIndex = index;
     MicaTab *tab = self.activeTab;
+    tab.lastSelectedAt = NSProcessInfo.processInfo.systemUptime;
     tab.needsAttention = NO;
     if (tab.session && NSApp.isActive) mica_session_focus(tab.session, true);
     [self updateWindowTitle];
