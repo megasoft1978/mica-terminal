@@ -97,6 +97,8 @@ bool mica_session_is_running(const MicaSession *session);
 int mica_session_exit_status(const MicaSession *session);
 uint64_t mica_session_command_completion_count(const MicaSession *session);
 int mica_session_command_exit_status(const MicaSession *session);
+int mica_session_osc133_state(const MicaSession *session);
+uint64_t mica_session_osc133_count(const MicaSession *session);
 bool mica_session_reports_mouse(const MicaSession *session);
 bool mica_session_reports_focus(const MicaSession *session);
 bool mica_session_cursor_visible(const MicaSession *session);

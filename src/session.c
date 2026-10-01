@@ -89,6 +89,8 @@ typedef struct {
     bool scalar_cells;
     bool indexed_attributes;
     bool continuation;
+    uint8_t landmark;
+    int16_t landmark_status;
 } MicaHistoryRow;
 
 struct MicaSession {
@@ -111,6 +113,8 @@ struct MicaSession {
 double last_attention_at;
 int last_attention_kind;
     uint64_t command_completion_count;
+    uint64_t osc133_count;
+    int osc133_state;
     MicaSessionOutputMetrics output_metrics;
     bool focus_report;
     VTerm *vt;
@@ -165,6 +169,8 @@ char selection_buffer[4096];
     bool osc_fragment_active;
     bool osc_fragment_overflow;
     uint32_t *screen_link_ids;
+    uint8_t *screen_landmarks;
+    int16_t *screen_landmark_status;
     // During a libvterm resize, rows are pushed to scrollback synchronously in
     // source-grid order. Snapshot the sidecar first so damage callbacks cannot
     // rewrite the IDs before the corresponding rows are captured.
@@ -192,7 +198,10 @@ static bool ensure_screen_link_map(MicaSession *session) {
     size_t cells = (size_t)session->rows * (size_t)session->cols;
     if (session->screen_link_ids) return true;
     session->screen_link_ids = calloc(cells, sizeof(*session->screen_link_ids));
-    return session->screen_link_ids != NULL;
+    if (!session->screen_link_ids) return false;
+    session->screen_landmarks = calloc((size_t)session->rows, 1);
+    session->screen_landmark_status = calloc((size_t)session->rows, sizeof(*session->screen_landmark_status));
+    return session->screen_landmarks && session->screen_landmark_status;
 }
 
 static void history_row_release(MicaSession *session, MicaHistoryRow *row) {
@@ -682,23 +691,28 @@ static char *create_prefill_startup_dir(void) {
         "fi\n"
         "fi\n"
         "function _mica_command_started() {\n"
+        "    printf '\\033]133;B\\033\\\\'\n"
         "    local mica_command=\"${1##[[:space:]]#}\"\n"
         "    mica_command=\"${mica_command#unset CLAUDECODE && }\"\n"
         "    mica_command=\"${mica_command##[[:space:]]#}\"\n"
         "    mica_command=\"${mica_command%%[[:space:]]*}\"\n"
         "    [[ -n $mica_command ]] || return\n"
         "    MICA_COMMAND_ACTIVE=1\n"
+        "    printf '\\033]133;C\\033\\\\'\n"
         "    printf '\\033]777;mica;%s;command-started;%s\\033\\\\' \"$MICA_MARK_TOKEN\" \"$mica_command\"\n"
         "}\n"
         "function _mica_command_finished() {\n"
         "    local mica_status=$?\n"
         "    [[ $MICA_COMMAND_ACTIVE == 1 ]] || return\n"
         "    unset MICA_COMMAND_ACTIVE\n"
+        "    printf '\\033]133;D;%d\\033\\\\' $mica_status\n"
         "    printf '\\033]777;mica;%s;command-finished;%d\\033\\\\' \"$MICA_MARK_TOKEN\" $mica_status\n"
         "}\n"
         "autoload -Uz add-zsh-hook\n"
         "add-zsh-hook preexec _mica_command_started\n"
         "add-zsh-hook precmd _mica_command_finished\n"
+        "function _mica_prompt_start() { printf '\\033]133;A\\033\\\\' }\n"
+        "add-zsh-hook precmd _mica_prompt_start\n"
         "if [[ -n $MICA_TEST_ZLE_DIR ]]; then\n"
         "    function mica_test_prompt_ready() { : > \"$MICA_TEST_ZLE_DIR/$$.ready\"; }\n"
         "    function mica_test_capture_buffer() { print -r -- \"$BUFFER\" > \"$MICA_TEST_ZLE_DIR/$$.buffer\"; }\n"
@@ -892,6 +906,27 @@ static int notification_osc(int command, VTermStringFragment fragment, void *use
         if (command == 8) {
             vterm_screen_flush_damage(session->screen);
             session->active_hyperlink_id = 0;
+        }
+        return 1;
+    }
+    // OSC 133 is advisory shell integration metadata. Ignore unknown parameters
+    // and retain the latest recognized phase without interfering with libvterm.
+    if (command == 133 && fragment.len > 0) {
+        const char *p = fragment.str;
+        size_t n = (size_t)fragment.len;
+        if (p[0] == 'A' || p[0] == 'B' || p[0] == 'C' || p[0] == 'D') {
+            session->osc133_state = p[0];
+            session->osc133_count++;
+            if (p[0] == 'D') {
+                const char *semi = memchr(p, ';', n);
+                if (semi) {
+                    int status = 0;
+                    for (const char *q = semi + 1; q < p + n && *q >= '0' && *q <= '9'; q++)
+                        status = status * 10 + (*q - '0');
+                    session->command_exit_status = status;
+                }
+            }
+            session->revision++;
         }
         return 1;
     }
@@ -2479,6 +2514,8 @@ bool mica_session_is_running(const MicaSession *session) { return session && ses
 int mica_session_exit_status(const MicaSession *session) { return session && !session->running ? session->exit_status : -1; }
 uint64_t mica_session_command_completion_count(const MicaSession *session) { return session ? session->command_completion_count : 0; }
 int mica_session_command_exit_status(const MicaSession *session) { return session ? session->command_exit_status : -1; }
+int mica_session_osc133_state(const MicaSession *session) { return session ? session->osc133_state : 0; }
+uint64_t mica_session_osc133_count(const MicaSession *session) { return session ? session->osc133_count : 0; }
 bool mica_session_reports_mouse(const MicaSession *session) { return session && session->mouse_mode != VTERM_PROP_MOUSE_NONE; }
 bool mica_session_reports_focus(const MicaSession *session) { return session && session->focus_report; }
 bool mica_session_cursor_visible(const MicaSession *session) { return session && session->cursor_visible; }

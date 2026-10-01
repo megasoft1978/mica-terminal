@@ -1425,6 +1425,10 @@ color_checked:
         mica_session_poll(zsh_completion_session, 10);
     assert(mica_session_command_completion_count(zsh_completion_session) > completion_baseline);
     assert(mica_session_current_command(zsh_completion_session)[0] == '\0');
+    assert(mica_session_osc133_count(zsh_completion_session) >= 4);
+    assert(mica_session_osc133_state(zsh_completion_session) == 'A' ||
+           mica_session_osc133_state(zsh_completion_session) == 'C' ||
+           mica_session_osc133_state(zsh_completion_session) == 'D');
     mica_session_destroy(zsh_completion_session);
 
     MicaSession *completion_session = mica_session_create(profile_dir, "sleep 0.5; false", 8, 120);
