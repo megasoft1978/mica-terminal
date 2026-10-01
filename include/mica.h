@@ -102,6 +102,13 @@ uint64_t mica_session_command_completion_count(const MicaSession *session);
 int mica_session_command_exit_status(const MicaSession *session);
 int mica_session_osc133_state(const MicaSession *session);
 uint64_t mica_session_osc133_count(const MicaSession *session);
+// OSC 133 row annotations are bit flags; rows may carry more than one phase.
+#define MICA_LANDMARK_PROMPT 1u
+#define MICA_LANDMARK_PROMPT_END 2u
+#define MICA_LANDMARK_COMMAND 4u
+#define MICA_LANDMARK_FINISHED 8u
+uint8_t mica_session_row_landmark(const MicaSession *session, int row, int *status);
+bool mica_session_jump_prompt(MicaSession *session, int direction);
 bool mica_session_reports_mouse(const MicaSession *session);
 bool mica_session_reports_focus(const MicaSession *session);
 bool mica_session_cursor_visible(const MicaSession *session);

@@ -465,6 +465,10 @@ static int MicaRunUISelfTest(void) {
         NSMenuItem *newShellMenuItem = [sessionMenu itemWithTitle:@"New Shell Tab"];
         NSMenuItem *tabPickerMenuItem = [sessionMenu itemWithTitle:@"Choose Tab…"];
         NSMenuItem *scrollbackMenuItem = [sessionMenu itemWithTitle:@"Browse Scrollback"];
+        NSMenuItem *selectOutputMenuItem = [[NSApp.mainMenu itemWithTitle:@"Edit"].submenu
+            itemWithTitle:@"Select Last Command Output"];
+        NSMenuItem *copyOutputMenuItem = [[NSApp.mainMenu itemWithTitle:@"Edit"].submenu
+            itemWithTitle:@"Copy Last Command Output"];
         NSMenu *helpMenu = [NSApp.mainMenu itemWithTitle:@"Help"].submenu;
         NSMenuItem *diagnosticLogsMenuItem = [helpMenu itemWithTitle:@"Open Diagnostic Logs"];
         NSMenuItem *shortcutsMenuItem = [helpMenu itemWithTitle:@"Keyboard Shortcuts…"];
@@ -476,6 +480,8 @@ static int MicaRunUISelfTest(void) {
                          [sessionMenu itemWithTitle:@"Dictate…"] == nil &&
                          tabPickerMenuItem.keyEquivalent.length == 0 &&
                          [scrollbackMenuItem.keyEquivalent isEqualToString:@"s"] &&
+                         selectOutputMenuItem.target == delegate.terminalView &&
+                         copyOutputMenuItem.target == delegate.terminalView &&
                          (scrollbackMenuItem.keyEquivalentModifierMask &
                           (NSEventModifierFlagCommand | NSEventModifierFlagShift)) ==
                             (NSEventModifierFlagCommand | NSEventModifierFlagShift) &&
@@ -496,6 +502,37 @@ static int MicaRunUISelfTest(void) {
                          [sessionMenu itemWithTitle:@"New Claude Code Tab"] == nil &&
                          [sessionMenu itemWithTitle:@"New Codex Tab"] == nil,
                          @"Command-Q quits Mica and the shortcut list is available in Help and the status bar");
+
+        MicaAppDelegate *landmarkUIDelegate = [[MicaAppDelegate alloc] init];
+        landmarkUIDelegate.tabs = [NSMutableArray array];
+        landmarkUIDelegate.activeIndex = 0;
+        landmarkUIDelegate.uiMode = MicaUIModeNormal;
+        MicaUITestAttachWindow(landmarkUIDelegate);
+        MicaTab *landmarkUITab = [MicaTab new];
+        landmarkUITab.name = @"Landmarks";
+        landmarkUITab.cwd = @"/tmp";
+        landmarkUITab.session = mica_session_create("/tmp",
+            "printf '\\033]133;A\\033\\\\'; printf '\\033]133;C\\033\\\\'; "
+            "printf 'MICA-OUTPUT-FIXTURE\\n'; printf '\\033]133;D;0\\033\\\\'; "
+            "printf '\\033]133;A\\033\\\\'; sleep 1", 8, 80);
+        [landmarkUIDelegate.tabs addObject:landmarkUITab];
+        [landmarkUIDelegate.terminalView updateGridSize];
+        for (int attempt = 0; attempt < 200 && mica_session_osc133_state(landmarkUITab.session) != 'A'; attempt++) {
+            mica_session_poll(landmarkUITab.session, 10);
+            usleep(10000);
+        }
+        [landmarkUIDelegate.terminalView selectLastCommandOutput:nil];
+        BOOL outputSelected = landmarkUIDelegate.terminalView.hasTextSelection;
+        __block NSString *copiedOutput = @"";
+        landmarkUIDelegate.terminalView.testCopyHandler = ^(NSString *text) { copiedOutput = text; };
+        [landmarkUIDelegate.terminalView copyLastCommandOutput:nil];
+        uint64_t revisionBeforeJump = mica_session_revision(landmarkUITab.session);
+        MicaUITestSendKey(landmarkUIDelegate, @"↑", NSEventModifierFlagCommand, 126);
+        BOOL previousPromptJumped = mica_session_revision(landmarkUITab.session) > revisionBeforeJump;
+        MicaUITestRecord(report, &allPassed, outputSelected && [copiedOutput containsString:@"MICA-OUTPUT-FIXTURE"] && previousPromptJumped,
+            [NSString stringWithFormat:@"last command output selects and copies, and Command-Up moves to a prior shell prompt (selected=%d copied=%d jumped=%d)",
+                outputSelected, [copiedOutput containsString:@"MICA-OUTPUT-FIXTURE"], previousPromptJumped]);
+        MicaUITestExitTabs(landmarkUIDelegate.tabs);
 
         MicaAppDelegate *hyperlinkDelegate = [[MicaAppDelegate alloc] init];
         hyperlinkDelegate.tabs = [NSMutableArray array];

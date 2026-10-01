@@ -196,12 +196,29 @@ static MicaSessionCleanupLogger cleanup_logger;
 static bool ensure_screen_link_map(MicaSession *session) {
     if (!session || session->rows <= 0 || session->cols <= 0) return false;
     size_t cells = (size_t)session->rows * (size_t)session->cols;
-    if (session->screen_link_ids) return true;
-    session->screen_link_ids = calloc(cells, sizeof(*session->screen_link_ids));
-    if (!session->screen_link_ids) return false;
-    session->screen_landmarks = calloc((size_t)session->rows, 1);
-    session->screen_landmark_status = calloc((size_t)session->rows, sizeof(*session->screen_landmark_status));
+    if (!session->screen_link_ids) session->screen_link_ids = calloc(cells, sizeof(*session->screen_link_ids));
+    return session->screen_link_ids != NULL;
+}
+
+static bool ensure_screen_landmarks(MicaSession *session) {
+    if (!session || session->rows <= 0) return false;
+    if (!session->screen_landmarks) session->screen_landmarks = calloc((size_t)session->rows, 1);
+    if (!session->screen_landmark_status)
+        session->screen_landmark_status = calloc((size_t)session->rows, sizeof(*session->screen_landmark_status));
     return session->screen_landmarks && session->screen_landmark_status;
+}
+
+static void record_osc133_mark(MicaSession *session, uint8_t mark, int status) {
+    if (!session || !session->screen) return;
+    VTermPos pos = {0};
+    vterm_state_get_cursorpos(session->state, &pos);
+    if (pos.row < 0 || pos.row >= session->rows) return;
+    if (ensure_screen_landmarks(session)) {
+        uint8_t flag = mark == 'A' ? MICA_LANDMARK_PROMPT : mark == 'B' ? MICA_LANDMARK_PROMPT_END :
+            mark == 'C' ? MICA_LANDMARK_COMMAND : MICA_LANDMARK_FINISHED;
+        session->screen_landmarks[pos.row] |= flag;
+        if (mark == 'D') session->screen_landmark_status[pos.row] = (int16_t)status;
+    }
 }
 
 static void history_row_release(MicaSession *session, MicaHistoryRow *row) {
@@ -914,17 +931,24 @@ static int notification_osc(int command, VTermStringFragment fragment, void *use
     if (command == 133 && fragment.len > 0) {
         const char *p = fragment.str;
         size_t n = (size_t)fragment.len;
-        if (p[0] == 'A' || p[0] == 'B' || p[0] == 'C' || p[0] == 'D') {
+        if ((p[0] == 'A' || p[0] == 'B' || p[0] == 'C' || p[0] == 'D') &&
+            (n == 1 || p[1] == ';')) {
             session->osc133_state = p[0];
             session->osc133_count++;
+            if (p[0] == 'A') record_osc133_mark(session, 'A', 0);
+            else if (p[0] == 'B') record_osc133_mark(session, 'B', 0);
+            else if (p[0] == 'C') record_osc133_mark(session, 'C', 0);
             if (p[0] == 'D') {
                 const char *semi = memchr(p, ';', n);
                 if (semi) {
                     int status = 0;
-                    for (const char *q = semi + 1; q < p + n && *q >= '0' && *q <= '9'; q++)
-                        status = status * 10 + (*q - '0');
+                    for (const char *q = semi + 1; q < p + n && *q >= '0' && *q <= '9'; q++) {
+                        int digit = *q - '0';
+                        status = status > (INT_MAX - digit) / 10 ? INT_MAX : status * 10 + digit;
+                    }
                     session->command_exit_status = status;
                 }
+                record_osc133_mark(session, 'D', session->command_exit_status);
             }
             session->revision++;
         }
@@ -1314,6 +1338,17 @@ static int history_push_continued(int cols, const VTermScreenCell *cells, bool c
     MicaHistoryRow *row = &session->history[slot];
     row->continuation = continuation;
     row->screen_cols = (size_t)cols;
+    if (session->screen_landmarks && (size_t)cols == (size_t)session->cols) {
+        row->landmark = session->screen_landmarks[0];
+        row->landmark_status = session->screen_landmark_status[0];
+        if (session->rows > 1) {
+            memmove(session->screen_landmarks, session->screen_landmarks + 1, (size_t)session->rows - 1);
+            memmove(session->screen_landmark_status, session->screen_landmark_status + 1,
+                ((size_t)session->rows - 1) * sizeof(*session->screen_landmark_status));
+        }
+        session->screen_landmarks[session->rows - 1] = 0;
+        session->screen_landmark_status[session->rows - 1] = 0;
+    }
     const uint32_t *links = NULL;
     if (session->resize_source_link_ids && (size_t)cols == session->resize_source_link_cols &&
         session->resize_source_link_next_row < session->resize_source_link_rows) {
@@ -1979,6 +2014,8 @@ void mica_session_destroy(MicaSession *session) {
     free(session->history);
     free(session->sync_hold);
     free(session->screen_link_ids);
+    free(session->screen_landmarks);
+    free(session->screen_landmark_status);
     for (size_t i = 0; i < session->hyperlink_count; i++) free(session->hyperlink_uris[i]);
     free(session->hyperlink_uris);
     clear_folds(session);
@@ -2139,6 +2176,7 @@ bool mica_session_resize(MicaSession *session, int rows, int cols) {
 
 bool mica_session_resize_pixels(MicaSession *session, int rows, int cols, int pixel_width, int pixel_height) {
     if (!session || rows < 1 || cols < 1 || pixel_width < 0 || pixel_height < 0) return false;
+    int old_rows = session->rows;
     bool grid_changed = rows != session->rows || cols != session->cols;
     bool pixels_changed = pixel_width != session->pixel_width || pixel_height != session->pixel_height;
     if (!grid_changed && !pixels_changed) return true;
@@ -2247,6 +2285,17 @@ bool mica_session_resize_pixels(MicaSession *session, int rows, int cols, int pi
             session->resize_target_link_rows = 0;
         } else if (session->hyperlink_tracking) {
             ensure_screen_link_map(session);
+        }
+        if (session->screen_landmarks) {
+            uint8_t *resized_marks = calloc((size_t)rows, sizeof(*resized_marks));
+            int16_t *resized_status = calloc((size_t)rows, sizeof(*resized_status));
+            if (resized_marks && resized_status) {
+                size_t copy_rows = (size_t)rows < (size_t)old_rows ? (size_t)rows : (size_t)old_rows;
+                memcpy(resized_marks, session->screen_landmarks, copy_rows * sizeof(*resized_marks));
+                memcpy(resized_status, session->screen_landmark_status, copy_rows * sizeof(*resized_status));
+                free(session->screen_landmarks); free(session->screen_landmark_status);
+                session->screen_landmarks = resized_marks; session->screen_landmark_status = resized_status;
+            } else { free(resized_marks); free(resized_status); }
         }
     }
     struct winsize window_size = {
@@ -2522,6 +2571,48 @@ uint64_t mica_session_command_completion_count(const MicaSession *session) { ret
 int mica_session_command_exit_status(const MicaSession *session) { return session ? session->command_exit_status : -1; }
 int mica_session_osc133_state(const MicaSession *session) { return session ? session->osc133_state : 0; }
 uint64_t mica_session_osc133_count(const MicaSession *session) { return session ? session->osc133_count : 0; }
+uint8_t mica_session_row_landmark(const MicaSession *session, int row, int *status) {
+    if (!session || row < 0 || row >= session->rows) return 0;
+    size_t count = display_history_count(session);
+    size_t displayed = count - (session->view_offset > count ? count : session->view_offset) + (size_t)row;
+    uint8_t mark = 0; int result = 0;
+    if (displayed < count && session->history_capacity) {
+        size_t index = history_index_for_display_row(session, displayed, NULL);
+        size_t slot = (session->history_start + index) % session->history_capacity;
+        mark = session->history[slot].landmark; result = session->history[slot].landmark_status;
+    } else {
+        size_t live = displayed - count;
+        if (live < (size_t)session->rows && session->screen_landmarks) {
+            mark = session->screen_landmarks[live]; result = session->screen_landmark_status[live];
+        }
+    }
+    if (status) *status = result;
+    return mark;
+}
+bool mica_session_jump_prompt(MicaSession *session, int direction) {
+    if (!session || !direction) return false;
+    size_t count = display_history_count(session);
+    size_t displayed = count - (session->view_offset > count ? count : session->view_offset) + (size_t)session->rows - 1;
+    for (size_t step = 0; step < count + (size_t)session->rows; step++) {
+        if (direction < 0) { if (!displayed) break; displayed--; }
+        else { if (displayed + 1 >= count + (size_t)session->rows) break; displayed++; }
+        uint8_t mark = 0;
+        if (displayed < count && session->history_capacity) {
+            size_t index = history_index_for_display_row(session, displayed, NULL);
+            size_t slot = (session->history_start + index) % session->history_capacity;
+            mark = session->history[slot].landmark;
+        } else {
+            size_t live = displayed - count;
+            if (live < (size_t)session->rows && session->screen_landmarks) mark = session->screen_landmarks[live];
+        }
+        if (mark & MICA_LANDMARK_PROMPT) {
+            size_t target_offset = count + (size_t)session->rows - 1 - displayed;
+            if (target_offset > count) target_offset = count;
+            session->view_offset = target_offset; session->revision++; return true;
+        }
+    }
+    return false;
+}
 bool mica_session_reports_mouse(const MicaSession *session) { return session && session->mouse_mode != VTERM_PROP_MOUSE_NONE; }
 bool mica_session_reports_focus(const MicaSession *session) { return session && session->focus_report; }
 bool mica_session_cursor_visible(const MicaSession *session) { return session && session->cursor_visible; }

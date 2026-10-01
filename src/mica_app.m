@@ -450,6 +450,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, assign) BOOL quickSelectActive;
 @property(nonatomic, copy) NSArray<NSDictionary *> *quickSelectMatches;
 @property(nonatomic, copy) NSString *quickSelectPrefix;
+@property(nonatomic, copy) void (^testCopyHandler)(NSString *text);
 #if defined(MICA_APP_NO_MAIN)
 @property(nonatomic, copy) NSString *testClipboardText;
 @property(nonatomic, strong) NSData *testClipboardImage;
@@ -2368,6 +2369,13 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         rowRect.origin.x = 0;
         rowRect.size.width = self.bounds.size.width;
         if (!NSIntersectsRect(rowRect, dirtyRect)) continue;
+        int landmarkStatus = 0;
+        (void)mica_session_row_landmark(tab.session, (int)row, &landmarkStatus);
+        if (landmarkStatus != 0) {
+            NSDictionary *failedAttrs = @{ NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightBold],
+                NSForegroundColorAttributeName: NSColor.systemRedColor };
+            [@"!" drawAtPoint:NSMakePoint(4, NSMinY(rowRect) + 2) withAttributes:failedAttrs];
+        }
         size_t hiddenRows = 0;
         if (mica_session_fold_info_at_view_row(tab.session, (int)row, &hiddenRows)) {
             NSRect foldRect = NSInsetRect(rowRect, 2, 1);
@@ -2597,6 +2605,13 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     BOOL command = (flags & NSEventModifierFlagCommand) != 0;
     BOOL option = (flags & NSEventModifierFlagOption) != 0;
     BOOL control = (flags & NSEventModifierFlagControl) != 0;
+    if (command && (event.keyCode == 126 || event.keyCode == 125) && tab.session &&
+        !mica_session_alt_screen(tab.session) && mica_session_osc133_state(tab.session) == 'A') {
+        if (mica_session_jump_prompt(tab.session, event.keyCode == 126 ? -1 : 1)) {
+            [self clearSelection]; [self setNeedsDisplay:YES];
+        }
+        return;
+    }
     NSString *keyString = event.charactersIgnoringModifiers.lowercaseString;
     if (event.keyCode != 58 && _leftOptionIsDown && !_leftOptionStartedDictation) {
         _leftOptionUsedWithAnotherKey = YES;
@@ -3069,9 +3084,41 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         [output appendString:line];
         if (row != br) [output appendString:@"\n"];
     }
-    NSPasteboard *pasteboard = NSPasteboard.generalPasteboard;
-    [pasteboard clearContents];
-    [pasteboard setString:output forType:NSPasteboardTypeString];
+    if (self.testCopyHandler) self.testCopyHandler(output);
+    else {
+        NSPasteboard *pasteboard = NSPasteboard.generalPasteboard;
+        [pasteboard clearContents];
+        [pasteboard setString:output forType:NSPasteboardTypeString];
+    }
+}
+
+- (void)selectLastCommandOutput:(id)sender {
+    (void)sender;
+    MicaSession *session = self.owner.activeTab.session;
+    if (!session) return;
+    NSInteger end = -1, start = -1;
+    for (NSInteger row = 0; row < _rows; row++) {
+        int status = 0;
+        uint8_t mark = mica_session_row_landmark(session, (int)row, &status);
+        if (mark & MICA_LANDMARK_FINISHED) end = row;
+    }
+    if (end < 0) return;
+    for (NSInteger row = end; row >= 0; row--) {
+        if (mica_session_row_landmark(session, (int)row, NULL) & MICA_LANDMARK_COMMAND) { start = row; break; }
+    }
+    if (start < 0 || start > end) return;
+    NSRect first = [self cellRectAtRow:start col:0], last = [self cellRectAtRow:end col:MAX(0, _cols - 1)];
+    _selectionStart = NSMakePoint(NSMinX(first), NSMidY(first));
+    _selectionEnd = NSMakePoint(NSMaxX(last), NSMidY(last));
+    _selectionSession = session;
+    _selectionHistoryLines = mica_session_scrolled_lines(session);
+    _selecting = YES; _selectionPending = NO;
+    [self setNeedsDisplay:YES];
+}
+
+- (void)copyLastCommandOutput:(id)sender {
+    [self selectLastCommandOutput:sender];
+    [self copySelection:sender];
 }
 
 - (NSArray<NSDictionary *> *)quickSelectCandidates {
@@ -4381,6 +4428,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSMenuItem *editRoot = [[NSMenuItem alloc] initWithTitle:@"Edit" action:nil keyEquivalent:@""];
     NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
     AddMenuItem(editMenu, @"Copy", @selector(copy:), @"c", NSEventModifierFlagCommand);
+    AddMenuItem(editMenu, @"Select Last Command Output", @selector(selectLastCommandOutput:), @"", 0).target = self.terminalView;
+    AddMenuItem(editMenu, @"Copy Last Command Output", @selector(copyLastCommandOutput:), @"", 0).target = self.terminalView;
     AddMenuItem(editMenu, @"Quick Select…", @selector(toggleQuickSelect:), @"u", NSEventModifierFlagCommand | NSEventModifierFlagShift).target = self.terminalView;
     AddMenuItem(editMenu, @"Paste", @selector(paste:), @"v", NSEventModifierFlagCommand);
     AddMenuItem(editMenu, @"Undo Last Dictation", @selector(undoLastDictation:), @"", 0).target = self;

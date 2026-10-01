@@ -91,6 +91,10 @@ int main(int argc, char **argv) {
         "perl -e 'srand(" "7" "); my @t=(\"\\e[\",\"\\e]\",\"\\eP\",\"\\e_\",\"\\e^\",\"\\eX\",\"\\e(\",\"\\e#\"); "
         "for(1..40000){ print $t[rand @t]; print join(\";\", map { int(rand(70000)) } 1..int(rand(6))); "
         "print chr(32+int(rand(95))); print chr(7) if rand()<.1; print \"\\e\\\\\" if rand()<.1; print chr(int(rand(256))) if rand()<.2; }'; sleep 1", 400);
+    // Random OSC 133 phases, unknown parameters and oversized decimal statuses.
+    run_case("random OSC 133 payloads",
+        "perl -e '$|=1; @p=(\"A\",\"B\",\"C\",\"D;0\",\"D;999999999999999999999\",\"Q;garbage\"); "
+        "for(1..12000){ $x=$p[int(rand(@p))]; print \"\\e]133;$x\\e\\\\\"; }'; sleep 1", 500);
     // Heavy scrolling with wide, combining and invalid UTF-8 mixed in.
     run_case("scroll and unicode",
         "perl -e 'for(1..6000){ print \"line $_ \\x{1F469}\\x{200D}\\x{1F4BB} e\\x{301} \\x{FFFD} \\xc3\\x28 \\x{4E2D}\\x{6587}\\n\"; }'; sleep 1", 600);

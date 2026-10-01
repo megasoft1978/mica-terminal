@@ -1440,6 +1440,73 @@ color_checked:
     assert(mica_session_command_exit_status(completion_session) == 1);
     assert(mica_session_attention_count(completion_session) == 0);
     mica_session_destroy(completion_session);
+
+    MicaSession *landmark_session = mica_session_create(profile_dir,
+        "printf '\\033]133;A\\033\\\\'; printf '\\033]133;C\\033\\\\'; printf 'landmark-output\\n'; printf '\\033]133;D;7\\033\\\\'; sleep 0.2",
+        8, 80);
+    assert(landmark_session != NULL);
+    int failed_mark_row = -1, failed_mark_status = 0;
+    bool command_mark_found = false;
+    for (int i = 0; i < 100 && failed_mark_row < 0; i++) {
+        mica_session_poll(landmark_session, 10);
+        for (int row = 0; row < mica_session_rows(landmark_session); row++) {
+            int status = 0;
+            if (mica_session_row_landmark(landmark_session, row, &status) & MICA_LANDMARK_FINISHED) {
+                failed_mark_row = row; failed_mark_status = status;
+            }
+            if (mica_session_row_landmark(landmark_session, row, NULL) & MICA_LANDMARK_COMMAND)
+                command_mark_found = true;
+        }
+    }
+    assert(failed_mark_row >= 0 && failed_mark_status == 7);
+    assert(command_mark_found);
+    mica_session_destroy(landmark_session);
+
+    MicaSession *prompt_marks_session = mica_session_create(profile_dir,
+        "printf '\\033]133;A\\033\\\\'; printf 'first-prompt\\n'; printf '\\033]133;A\\033\\\\'; sleep 0.3",
+        8, 80);
+    assert(prompt_marks_session != NULL);
+    for (int i = 0; i < 100 && mica_session_osc133_count(prompt_marks_session) < 2; i++)
+        mica_session_poll(prompt_marks_session, 10);
+    assert(mica_session_osc133_count(prompt_marks_session) >= 2);
+    assert(mica_session_jump_prompt(prompt_marks_session, -1));
+    mica_session_destroy(prompt_marks_session);
+
+    size_t saved_landmark_limit = MICA_HISTORY_LIMIT_BYTES / (80u * sizeof(VTermScreenCell));
+    mica_set_history_limit_lines(100);
+    MicaSession *retained_marks_session = mica_session_create(profile_dir,
+        "printf '\\033]133;A\\033\\\\'; for i in {1..50}; do printf 'marked-scroll-%02d\\n' $i; done; "
+        "printf '\\033]133;C\\033\\\\'; printf 'retained-output\\n'; printf '\\033]133;D;3\\033\\\\'; sleep 0.3",
+        8, 80);
+    assert(retained_marks_session != NULL);
+    for (int i = 0; i < 120 && mica_session_scrolled_lines(retained_marks_session) < 45; i++)
+        mica_session_poll(retained_marks_session, 10);
+    mica_session_scroll(retained_marks_session, 1000);
+    bool retained_prompt_mark = false;
+    for (int row = 0; row < mica_session_rows(retained_marks_session); row++)
+        retained_prompt_mark = retained_prompt_mark ||
+            (mica_session_row_landmark(retained_marks_session, row, NULL) & MICA_LANDMARK_PROMPT);
+    assert(retained_prompt_mark);
+    assert(mica_session_resize(retained_marks_session, 12, 100));
+    mica_session_clear_scrollback(retained_marks_session);
+    assert(mica_session_history_lines(retained_marks_session) == 0);
+    mica_session_destroy(retained_marks_session);
+    mica_set_history_limit_lines(saved_landmark_limit);
+
+    mica_set_history_limit_lines(100);
+    MicaSession *wrapped_marks_session = mica_session_create(profile_dir,
+        "printf '\\033]133;A\\033\\\\'; for i in {1..260}; do printf 'wrap-%03d\\n' $i; done; sleep 0.2", 8, 80);
+    assert(wrapped_marks_session != NULL);
+    for (int i = 0; i < 200 && mica_session_scrolled_lines(wrapped_marks_session) < 255; i++)
+        mica_session_poll(wrapped_marks_session, 10);
+    mica_session_scroll(wrapped_marks_session, 1000);
+    bool dropped_prompt_mark = false;
+    for (int row = 0; row < mica_session_rows(wrapped_marks_session); row++)
+        dropped_prompt_mark = dropped_prompt_mark ||
+            (mica_session_row_landmark(wrapped_marks_session, row, NULL) & MICA_LANDMARK_PROMPT);
+    assert(!dropped_prompt_mark);
+    mica_session_destroy(wrapped_marks_session);
+    mica_set_history_limit_lines(saved_landmark_limit);
     restore_env("ZDOTDIR", saved_zdotdir);
     restore_env("PATH", saved_path);
     restore_env("MICA_TEST_NO_STARTUP", saved_test_mode);
