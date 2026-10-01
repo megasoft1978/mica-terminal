@@ -1647,6 +1647,36 @@ static int MicaRunUISelfTest(void) {
 
         if (delegate.tabs.count == 3 && fixtureReady) {
             [delegate selectTabAtIndex:0];
+            MicaAppDelegate *quickDelegate = [MicaAppDelegate new];
+            quickDelegate.tabs = [NSMutableArray array]; quickDelegate.activeIndex = 0;
+            MicaTab *quickTab = [MicaTab new]; quickTab.name=@"Quick Select"; quickTab.cwd=@"/tmp";
+            quickTab.session = mica_session_create("/tmp", NULL, 12, 38);
+            [quickDelegate.tabs addObject:quickTab];
+            char quickPath[]="/tmp/mica quick select fixture"; int quickFD=open(quickPath,O_CREAT|O_WRONLY|O_TRUNC,0600); if(quickFD>=0) close(quickFD);
+            NSMutableString *quickOutput=[NSMutableString stringWithString:@"padding-xxxxxxxxxxxxxxxx https://quick.select.test/wrapped-url\n\"/tmp/mica quick select fixture\" /tmp/mica-no-such-quick-path "];
+            for (unsigned i=0;i<30;i++) [quickOutput appendFormat:@"%08x ",0xabc00000u+i];
+            mica_session_test_feed_output(quickTab.session, quickOutput.UTF8String, quickOutput.length);
+            quickDelegate.terminalView=[MicaTerminalView new]; quickDelegate.terminalView.owner=quickDelegate;
+            NSArray *quickMatches=[quickDelegate.terminalView quickSelectCandidates];
+            NSDictionary *wrappedURL=[quickMatches filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"kind == %@",@"url"]].firstObject;
+            BOOL quickHasWrappedURL=wrappedURL && [wrappedURL[@"value"] isEqualToString:@"https://quick.select.test/wrapped-url"];
+            BOOL quickQuotedPath=[quickMatches filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"kind == %@ AND value == %@",@"path",[NSString stringWithUTF8String:quickPath]]].count==1;
+            BOOL quickRejectsUnquoted=[quickMatches filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"value CONTAINS %@",@"mica-no-such-quick-path"]].count==0;
+            BOOL quickHasHash= [quickMatches filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"kind == %@",@"hash"]].count==30;
+            BOOL quickUniqueLabels=[NSSet setWithArray:[quickMatches valueForKey:@"label"]].count==quickMatches.count &&
+                [[quickMatches.lastObject objectForKey:@"label"] isEqualToString:@"AF"];
+            [quickDelegate.terminalView toggleQuickSelect:nil];
+            NSDictionary *firstQuick=[quickDelegate.terminalView.quickSelectMatches filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"kind == %@",@"url"]].firstObject;
+            [quickDelegate.terminalView finishQuickSelectWithLabel:firstQuick[@"label"] option:NO];
+            BOOL quickCopies=quickDelegate.terminalView.testClipboardText.length>0;
+            __block NSURL *quickRevealed=nil; quickDelegate.terminalView.testRevealURLHandler=^(NSURL *url){quickRevealed=url;};
+            [quickDelegate.terminalView toggleQuickSelect:nil];
+            [quickDelegate.terminalView finishQuickSelectWithLabel:wrappedURL[@"label"] option:YES];
+            BOOL quickOptionOpens=[quickRevealed.absoluteString isEqualToString:@"https://quick.select.test/wrapped-url"];
+            MicaUITestRecord(report,&allPassed,quickHasWrappedURL && quickQuotedPath && quickRejectsUnquoted && quickHasHash && quickUniqueLabels && quickCopies && quickOptionOpens,
+                [NSString stringWithFormat:@"Quick Select detects wrapped URLs, quoted existing paths and hashes, rejects unquoted missing paths, assigns unique labels past Z, copies by default and opens with Option (url=%d path=%d reject=%d hashes=%lu labels=%d copy=%d option=%d)",quickHasWrappedURL,quickQuotedPath,quickRejectsUnquoted,(unsigned long)[quickMatches filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"kind == %@",@"hash"]].count,quickUniqueLabels,quickCopies,quickOptionOpens]);
+            [quickTab destroySession]; unlink(quickPath);
+
             MicaUITestSendKey(delegate, @"p", NSEventModifierFlagCommand | NSEventModifierFlagShift, 35);
             BOOL paletteOpens = delegate.commandPalettePanel != nil && delegate.uiMode == MicaUIModeNormal;
             BOOL paletteAccessibility = [delegate.commandPaletteSearch.accessibilityLabel isEqualToString:@"Search actions and tabs"] &&

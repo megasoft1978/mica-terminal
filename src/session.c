@@ -1694,6 +1694,12 @@ static void feed_terminal_output(MicaSession *session, const char *bytes, size_t
     free(joined);
 }
 
+#ifdef MICA_SESSION_TESTING
+void mica_session_test_feed_output(MicaSession *session, const char *bytes, size_t length) {
+    if (session && bytes && length) feed_terminal_output(session, bytes, length);
+}
+#endif
+
 static void flush_sync_carry(MicaSession *session) {
     size_t length = session->sync_carry_length;
     session->sync_carry_length = 0;

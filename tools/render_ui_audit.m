@@ -94,6 +94,9 @@ int main(int argc, const char *argv[]) {
         MicaAppDelegate *main = MakeWindow(1100, 440, tabs, @"Fieldnote");
         Scene(main);
         SaveViewImage(main.terminalView, out, @"01-dark-default");
+        [main.terminalView toggleQuickSelect:nil];
+        SaveViewImage(main.terminalView, out, @"quick-select-dark");
+        [main.terminalView toggleQuickSelect:nil];
         RenderTimerStates(main, out, @"dark");
 
         main.uiMode = MicaUIModeTab;
@@ -192,6 +195,9 @@ int main(int argc, const char *argv[]) {
         [light toggleCommandPalette:nil];
         Scene(light);
         SaveViewImage(light.terminalView, out, @"09-light-default");
+        [light.terminalView toggleQuickSelect:nil];
+        SaveViewImage(light.terminalView, out, @"quick-select-light");
+        [light.terminalView toggleQuickSelect:nil];
         RenderTimerStates(light, out, @"light");
         light.uiMode = MicaUIModeTab;
         SaveViewImage(light.terminalView, out, @"14-light-tab-picker");

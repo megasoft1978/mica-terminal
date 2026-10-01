@@ -446,11 +446,15 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, assign) NSRect dictationLabelTextRect;
 @property(nonatomic, assign) NSRect dictationWordsTextRect;
 @property(nonatomic, assign) NSRect dictationHintTextRect;
+@property(nonatomic, assign) BOOL quickSelectActive;
+@property(nonatomic, copy) NSArray<NSDictionary *> *quickSelectMatches;
+@property(nonatomic, copy) NSString *quickSelectPrefix;
 #if defined(MICA_APP_NO_MAIN)
 @property(nonatomic, copy) NSString *testClipboardText;
 @property(nonatomic, strong) NSData *testClipboardImage;
 @property(nonatomic, copy) NSArray<NSURL *> *testDraggedFileURLs;
 @property(nonatomic, copy) void (^testOpenURLHandler)(NSURL *url);
+@property(nonatomic, copy) void (^testRevealURLHandler)(NSURL *url);
 #endif
 - (NSRect)tabRectAtIndex:(NSUInteger)index;
 - (CGFloat)projectBadgeWidth;
@@ -480,6 +484,9 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)foldSelectedLines:(id)sender;
 - (void)paste:(id)sender;
 - (void)copy:(id)sender;
+- (void)toggleQuickSelect:(id)sender;
+- (void)finishQuickSelectWithLabel:(NSString *)label option:(BOOL)option;
+- (NSArray<NSDictionary *> *)quickSelectCandidates;
 - (NSRect)cellRectAtRow:(NSInteger)row col:(NSInteger)col;
 - (NSColor *)colorForVTermColor:(VTermColor)color isForeground:(BOOL)isForeground;
 - (NSRect)dictationStatusRect;
@@ -2534,11 +2541,49 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     }
     NSRect status = NSMakeRect(0, 0, self.bounds.size.width, kStatusHeight);
     if (NSIntersectsRect(status, dirtyRect)) [self drawStatusBarForTab:tab];
+    if (self.quickSelectActive) {
+        NSDictionary *attrs = @{ NSFontAttributeName: [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightBold],
+            NSForegroundColorAttributeName: NSColor.whiteColor };
+        for (NSDictionary *match in self.quickSelectMatches) {
+            NSRect rect = [self cellRectAtRow:[match[@"row"] integerValue] col:[match[@"col"] integerValue]];
+            NSString *label = match[@"label"];
+            NSSize size = [label sizeWithAttributes:attrs];
+            rect.origin.y = NSMaxY(rect) - size.height - 1; rect.size = NSMakeSize(size.width + 6, size.height + 3);
+            NSColor *hintColor=[match[@"kind"] isEqualToString:@"path"] ? [NSColor.systemGreenColor colorWithAlphaComponent:0.92] :
+                ([match[@"kind"] isEqualToString:@"hash"] ? [NSColor.systemPurpleColor colorWithAlphaComponent:0.92] :
+                 [NSColor.controlAccentColor colorWithAlphaComponent:0.95]);
+            [hintColor setFill];
+            [[NSBezierPath bezierPathWithRoundedRect:rect xRadius:3 yRadius:3] fill];
+            [label drawAtPoint:NSMakePoint(NSMinX(rect) + 3, NSMinY(rect) + 1) withAttributes:attrs];
+        }
+    }
     (void)dirtyRect;
     [self recordDrawDuration:NSProcessInfo.processInfo.systemUptime - drawStartedAt];
 }
 
 - (void)keyDown:(NSEvent *)event {
+    if (self.quickSelectActive) {
+        NSEventModifierFlags quickFlags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+        NSString *label = event.charactersIgnoringModifiers.uppercaseString;
+        if (event.keyCode == 53) { self.quickSelectActive = NO; self.quickSelectMatches = nil; self.quickSelectPrefix=nil; [self setNeedsDisplay:YES]; return; }
+        if ((event.keyCode == 36 || event.keyCode == 76) && self.quickSelectPrefix.length) {
+            [self finishQuickSelectWithLabel:self.quickSelectPrefix option:(quickFlags & NSEventModifierFlagOption) != 0]; return;
+        }
+        if (!(quickFlags & NSEventModifierFlagCommand) && label.length == 1 &&
+            [@"ABCDEFGHIJKLMNOPQRSTUVWXYZ" containsString:label]) {
+            NSString *candidate=[(self.quickSelectPrefix ?: @"") stringByAppendingString:label];
+            BOOL prefix=NO;
+            for (NSDictionary *entry in self.quickSelectMatches) if ([entry[@"label"] hasPrefix:candidate]) { prefix=YES; break; }
+            if (prefix) {
+                self.quickSelectPrefix=candidate;
+                BOOL exact=NO; for (NSDictionary *entry in self.quickSelectMatches) if ([entry[@"label"] isEqualToString:candidate]) { exact=YES; break; }
+                if (exact && ![self.quickSelectMatches filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"label BEGINSWITH %@ AND label != %@",candidate,candidate]].count)
+                    [self finishQuickSelectWithLabel:candidate option:(quickFlags & NSEventModifierFlagOption) != 0];
+                return;
+            }
+        }
+        return;
+    }
     if (self.owner.dictationUndoValid) self.owner.dictationUndoValid = NO;
     MicaTab *tab = self.owner.activeTab;
     NSEventModifierFlags flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
@@ -2570,6 +2615,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         [self.owner toggleCommandPalette:nil];
         return;
     }
+    if (command && (flags & NSEventModifierFlagShift) && [keyString isEqualToString:@"u"]) { [self toggleQuickSelect:nil]; return; }
     if (command && (flags & NSEventModifierFlagShift) && [keyString isEqualToString:@"s"]) {
         [self.owner toggleScrollback];
         return;
@@ -3015,6 +3061,78 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     [pasteboard setString:output forType:NSPasteboardTypeString];
 }
 
+- (NSArray<NSDictionary *> *)quickSelectCandidates {
+    MicaSession *session = self.owner.activeTab.session;
+    if (!session) return @[];
+    NSMutableString *text = [NSMutableString string]; NSMutableArray<NSValue *> *positions = [NSMutableArray array];
+    int rows = mica_session_rows(session), cols = mica_session_cols(session);
+    for (int row = 0; row < rows; row++) {
+        if (row && !mica_session_row_continues(session, row)) [text appendString:@"\n"];
+        for (int col = 0; col < cols; col++) {
+            MicaCell cell; if (!mica_session_get_cell(session, row, col, &cell) || CellIsContinuation(cell)) continue;
+            uint32_t cp = cell.chars[0] ?: ' ';
+            NSString *glyph = [[NSString alloc] initWithBytes:&cp length:4 encoding:NSUTF32LittleEndianStringEncoding] ?: @" ";
+            NSUInteger n = glyph.length; [text appendString:glyph];
+            for (NSUInteger i = 0; i < n; i++) [positions addObject:[NSValue valueWithPoint:NSMakePoint(col, row)]];
+        }
+    }
+    NSMutableArray *found = [NSMutableArray array];
+    NSArray *patterns = @[@"https?://[^\\s<>\\\"'`|]+", @"(?<![A-Za-z0-9])[0-9a-fA-F]{7,40}(?![A-Za-z0-9])",
+        @"\\\"[^\\\"\\n]+\\\"|(?:\\./|\\.\\./|/|~/)[^\\s<>\\\"'`|]+|(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+"];
+    NSArray *kinds = @[@"url", @"hash", @"path"];
+    for (NSUInteger p = 0; p < patterns.count; p++) {
+        NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:patterns[p] options:0 error:nil];
+        for (NSTextCheckingResult *m in [regex matchesInString:text options:0 range:NSMakeRange(0, text.length)]) {
+            NSString *value = [text substringWithRange:m.range];
+            while (value.length && [@".,;:!?)]}" containsString:[value substringFromIndex:value.length-1]]) value = [value substringToIndex:value.length-1];
+            if (!value.length) continue;
+            if (p == 0 && !MicaSafeHyperlinkURL(value)) continue;
+            if (p == 2) {
+                if ([value hasPrefix:@"\""] && value.length > 1) value = [value substringWithRange:NSMakeRange(1,value.length-2)];
+                NSString *path = [value stringByExpandingTildeInPath];
+                if (![path isAbsolutePath]) path = [self.owner.activeTab.cwd stringByAppendingPathComponent:path];
+                if (![[NSFileManager defaultManager] fileExistsAtPath:path]) continue;
+                value = path;
+            }
+            NSUInteger ix = m.range.location; if (ix >= positions.count) continue;
+            NSPoint point = positions[ix].pointValue;
+            [found addObject:@{@"value":value,@"kind":kinds[p],@"row":@((NSInteger)point.y),@"col":@((NSInteger)point.x),@"offset":@(m.range.location)}];
+        }
+    }
+    [found sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [a[@"offset"] compare:b[@"offset"]]; }];
+    NSMutableArray *result = [NSMutableArray array];
+    for (NSUInteger i=0; i<found.count; i++) {
+        NSUInteger v=i+1; NSMutableString *label=[NSMutableString string];
+        while (v) { NSUInteger digit=(v-1)%26; [label insertString:[NSString stringWithFormat:@"%C",(unichar)('A'+digit)] atIndex:0]; v=(v-1)/26; }
+        NSMutableDictionary *item=[found[i] mutableCopy]; item[@"label"]=label; [result addObject:item];
+    }
+    return result;
+}
+- (void)toggleQuickSelect:(id)sender {
+    (void)sender;
+    if (self.quickSelectActive) { self.quickSelectActive=NO; self.quickSelectMatches=nil; [self setNeedsDisplay:YES]; return; }
+    NSArray *matches=[self quickSelectCandidates]; if (!matches.count) return;
+    self.quickSelectMatches=matches; self.quickSelectPrefix=nil; self.quickSelectActive=YES; [self setNeedsDisplay:YES];
+}
+- (void)finishQuickSelectWithLabel:(NSString *)label option:(BOOL)option {
+    NSDictionary *item=[self.quickSelectMatches filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"label == %@",label]].firstObject;
+    self.quickSelectActive=NO; self.quickSelectMatches=nil; self.quickSelectPrefix=nil; [self setNeedsDisplay:YES]; if (!item) return;
+    NSString *value=item[@"value"], *kind=item[@"kind"];
+    if (option) {
+        NSURL *url=[kind isEqualToString:@"url"] ? [NSURL URLWithString:value] : [NSURL fileURLWithPath:value];
+#if defined(MICA_APP_NO_MAIN)
+        if (self.testRevealURLHandler) { self.testRevealURLHandler(url); return; }
+#endif
+        if ([kind isEqualToString:@"path"]) [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[url]];
+        else [NSWorkspace.sharedWorkspace openURL:url];
+    } else {
+#if defined(MICA_APP_NO_MAIN)
+        self.testClipboardText=value;
+#else
+        NSPasteboard *pasteboard=NSPasteboard.generalPasteboard; [pasteboard clearContents]; [pasteboard setString:value forType:NSPasteboardTypeString];
+#endif
+    }
+}
 - (void)copy:(id)sender { [self copySelection:sender]; }
 
 - (void)paste:(id)sender {
@@ -4206,6 +4324,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSMenuItem *editRoot = [[NSMenuItem alloc] initWithTitle:@"Edit" action:nil keyEquivalent:@""];
     NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
     AddMenuItem(editMenu, @"Copy", @selector(copy:), @"c", NSEventModifierFlagCommand);
+    AddMenuItem(editMenu, @"Quick Select…", @selector(toggleQuickSelect:), @"u", NSEventModifierFlagCommand | NSEventModifierFlagShift).target = self.terminalView;
     AddMenuItem(editMenu, @"Paste", @selector(paste:), @"v", NSEventModifierFlagCommand);
     AddMenuItem(editMenu, @"Undo Last Dictation", @selector(undoLastDictation:), @"", 0).target = self;
     AddMenuItem(editMenu, @"Find in Scrollback…", @selector(findInScrollback:), @"f", NSEventModifierFlagCommand).target = self.terminalView;

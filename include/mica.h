@@ -44,6 +44,9 @@ int mica_session_poll(MicaSession *session, int timeout_ms);
 bool mica_session_take_output_metrics(MicaSession *session, MicaSessionOutputMetrics *metrics);
 void mica_session_set_cleanup_logger(MicaSessionCleanupLogger logger);
 void mica_session_write(MicaSession *session, const void *bytes, size_t length);
+#ifdef MICA_SESSION_TESTING
+void mica_session_test_feed_output(MicaSession *session, const char *bytes, size_t length);
+#endif
 void mica_session_key(MicaSession *session, VTermKey key, VTermModifier modifiers);
 void mica_session_text(MicaSession *session, uint32_t codepoint, VTermModifier modifiers);
 void mica_session_paste(MicaSession *session, const char *utf8, size_t length);
