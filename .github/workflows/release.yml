@@ -15,11 +15,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
+          exists=false
+          attempt=0
+          while [ "$exists" = false ] && [ "$attempt" -lt 12 ]; do
+            attempt=$((attempt + 1))
+            if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              exists=true
+            else
+              sleep 5
+            fi
+          done
+          echo "exists=$exists" >> "$GITHUB_OUTPUT"
   release:
     needs: existing_release
     if: needs.existing_release.outputs.exists != 'true'
