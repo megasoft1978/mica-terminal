@@ -26,3 +26,9 @@ Any language model, review-before-insert draft, snippets, cloud services.
 
 ## Report
 `build/codex-report-7.md` (max 60 lines), first line: whether every item is done and every check green; per item status, files, evidence, unverified; for 2a state the verified API facts.
+
+## Item 2 addendum: verified FluidAudio 0.17.4 API (checked by the reviewer outside the sandbox, `voice/.build/checkouts/FluidAudio` is now resolved)
+- `SlidingWindowAsrManager.configureVocabularyBoosting(vocabulary: CustomVocabularyContext, ctcModels: CtcModels, config: VocabularyRescorer.Config? = nil) async throws` (Sources/FluidAudio/ASR/Parakeet/SlidingWindow/SlidingWindowAsrManager.swift:100). Call it after `loadModels` and before `startStreaming` (main.swift:171-173).
+- `CustomVocabularyContext(terms: [CustomVocabularyTerm], ...)`; `CustomVocabularyTerm(text:weight:aliases:...)`; terms without ctcTokenIds are tokenized internally. Default `minTermLength: 3`.
+- CTC models: `CtcModels.download(...)` / `downloadAndLoad(...)` / `loadDirect(from:variant:)` in .../CustomVocabulary/WordSpotting/CtcModels.swift (default variant `.ctc110m`). Read these files for exact signatures and the model name/size before coding.
+- The sandbox cannot build the voice package: you cannot run `swift build` in `voice/`. Write the Swift carefully against the signatures above and keep it small; the reviewer builds and runs `make validate` outside the sandbox and sends back compiler errors. Everything Objective-C side (Settings checkbox default off, term plumbing to the helper through its existing stdin/args protocol, tests with a fake helper) you can and must test with `make test`.
