@@ -322,6 +322,40 @@ static int MicaRunUISelfTest(void) {
             [MicaCorrectTranscript(@"unrelated ordinary sentence with useful words", @[@"MicaTerminal", @"MicaTerminul"]) isEqualToString:@"unrelated ordinary sentence with useful words"];
         MicaUITestRecord(report, &allPassed, vocabularyCases,
                          @"vocabulary corrector handles normalized terms and rejects common words, short terms, near misses, and ambiguous candidates");
+
+        NSDictionary *snippetCases = @{@"open mica": @"MicaTerminal", @"good morning": @"Hello"};
+        BOOL snippetMatching =
+            [MicaApplyDictationSnippet(@"  OPEN MICA  ", snippetCases) isEqualToString:@"MicaTerminal"] &&
+            [MicaApplyDictationSnippet(@"open", snippetCases) isEqualToString:@"open"] &&
+            [MicaApplyDictationSnippet(@"open mica today", snippetCases) isEqualToString:@"open mica today"] &&
+            [MicaApplyDictationSnippet(@"Open Mica", @{@"open mica": @"other"}) isEqualToString:@"other"];
+        MicaUITestRecord(report, &allPassed, snippetMatching,
+            @"snippets expand only a whole trimmed, case-folded corrected transcript");
+        char snippetsTemplate[] = "/tmp/mica-snippets-XXXXXX";
+        int snippetsFD = mkstemp(snippetsTemplate);
+        unichar snippetControl = 1;
+        NSString *snippetFixture = [NSString stringWithFormat:@" Open Mica => echo should-not-run\nopen mica=>duplicate\nBad\ncontrol => nope%Cbad\n", snippetControl];
+        NSData *snippetFixtureData = [snippetFixture dataUsingEncoding:NSUTF8StringEncoding];
+        BOOL snippetFileReady = snippetsFD >= 0 && write(snippetsFD, snippetFixtureData.bytes, snippetFixtureData.length) == (ssize_t)snippetFixtureData.length;
+        if (snippetsFD >= 0) close(snippetsFD);
+        NSDictionary *loadedSnippets = snippetFileReady ? MicaDictationSnippetsFromFile([NSURL fileURLWithPath:[NSString stringWithUTF8String:snippetsTemplate]]) : @{};
+        BOOL snippetValidation = loadedSnippets.count == 1 && [loadedSnippets[@"open mica"] isEqualToString:@"echo should-not-run"];
+        MicaUITestRecord(report, &allPassed, snippetValidation,
+            @"snippet file skips malformed, duplicate normalized, and control-character entries");
+        NSMutableString *snippetLimitsText = [NSMutableString string];
+        for (NSUInteger i = 0; i < 101; i++) [snippetLimitsText appendFormat:@"trigger%lu => expansion\n", (unsigned long)i];
+        [snippetLimitsText appendFormat:@"%@ => too-long-trigger\ntrigger-too-long => %@\n",
+            [@"t" stringByPaddingToLength:129 withString:@"t" startingAtIndex:0],
+            [@"e" stringByPaddingToLength:2049 withString:@"e" startingAtIndex:0]];
+        [snippetLimitsText writeToFile:[NSString stringWithUTF8String:snippetsTemplate] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        NSDictionary *boundedSnippets = MicaDictationSnippetsFromFile([NSURL fileURLWithPath:[NSString stringWithUTF8String:snippetsTemplate]]);
+        BOOL snippetLimits = boundedSnippets.count == 100 && !boundedSnippets[@"trigger-too-long"];
+        MicaUITestRecord(report, &allPassed, snippetLimits,
+            @"snippet entries cap at 100 and reject overlong triggers and expansions");
+        [[@"x" stringByPaddingToLength:65537 withString:@"x" startingAtIndex:0] writeToFile:[NSString stringWithUTF8String:snippetsTemplate] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        BOOL snippetFileCap = MicaDictationSnippetsFromFile([NSURL fileURLWithPath:[NSString stringWithUTF8String:snippetsTemplate]]).count == 0;
+        MicaUITestRecord(report, &allPassed, snippetFileCap, @"snippet files larger than 64 KiB are ignored");
+        if (snippetsFD >= 0) unlink(snippetsTemplate);
         NSMutableArray *mergeTerms = [NSMutableArray array];
         for (NSUInteger i=0; i<510; i++) [mergeTerms addObject:[NSString stringWithFormat:@"ProjectTerm%lu", (unsigned long)i]];
         MicaUITestRecord(report, &allPassed, MicaVocabularyMerge(@[mergeTerms]).count == 500,
@@ -571,6 +605,7 @@ static int MicaRunUISelfTest(void) {
         NSMenu *editMenu = [NSApp.mainMenu itemWithTitle:@"Edit"].submenu;
         NSMenuItem *vocabularyToggleMenuItem = [editMenu itemWithTitle:@"Improve Dictation with Project Vocabulary"];
         NSMenuItem *editVocabularyMenuItem = [editMenu itemWithTitle:@"Edit Vocabulary…"];
+        NSMenuItem *editSnippetsMenuItem = [editMenu itemWithTitle:@"Edit Snippets…"];
         NSMenuItem *quickSelectMenuItem = [editMenu itemWithTitle:@"Quick Select…"];
         NSMenuItem *undoMenuItem = [editMenu itemWithTitle:@"Undo Last Dictation"];
         BOOL removedVocabularyBoost = [editMenu itemWithTitle:@"Boost Vocabulary While Dictating (downloads extra model)"] == nil &&
@@ -596,6 +631,7 @@ static int MicaRunUISelfTest(void) {
                             (NSEventModifierFlagCommand | NSEventModifierFlagShift) &&
                          diagnosticLogsMenuItem.target == delegate &&
                          vocabularyToggleMenuItem.target == delegate && editVocabularyMenuItem.target == delegate &&
+                         editSnippetsMenuItem.target == delegate &&
                          quickSelectMenuItem.target == delegate.terminalView && quickSelectMenuItem.isEnabled &&
                          undoMenuItem.target == delegate && ![delegate validateMenuItem:undoMenuItem] &&
                          removedVocabularyBoost &&
@@ -996,6 +1032,27 @@ static int MicaRunUISelfTest(void) {
             [insertedBuffer isEqualToString:@"MicaTerminal"] && [undoneBuffer isEqualToString:@"Mica Terminal"],
             [NSString stringWithFormat:@"injected corrected transcript enables undo and restores the raw transcript (enabled=%d before=%@ after=%@)",
                 undoEnabled, insertedBuffer, undoneBuffer]);
+        char ptySnippetTemplate[] = "/tmp/mica-pty-snippet-XXXXXX";
+        int ptySnippetFD = mkstemp(ptySnippetTemplate);
+        NSString *snippetExecutionMarker = MicaUITestVoiceFile(voiceTestDirectory, voiceTargetTab.session, @"snippet-executed");
+        NSString *ptySnippetText = [NSString stringWithFormat:@"MicaTerminal => touch %@\n", snippetExecutionMarker];
+        NSData *ptySnippetData = [ptySnippetText dataUsingEncoding:NSUTF8StringEncoding];
+        BOOL ptySnippetReady = ptySnippetFD >= 0 && write(ptySnippetFD, ptySnippetData.bytes, ptySnippetData.length) == (ssize_t)ptySnippetData.length;
+        if (ptySnippetFD >= 0) close(ptySnippetFD);
+        mica_session_write(voiceTargetTab.session, "\x15", 1); // Clear the prior raw-transcript undo from the zsh line editor.
+        for (int attempt = 0; attempt < 20; attempt++) { mica_session_poll(voiceTargetTab.session, 0); MicaUITestRunLoopFor(0.01); }
+        voiceDelegate.dictationSnippetsURLOverride = ptySnippetReady ? [NSURL fileURLWithPath:[NSString stringWithUTF8String:ptySnippetTemplate]] : nil;
+        voiceDelegate.voiceTargetTab = voiceTargetTab;
+        BOOL ptySnippetInserted = ptySnippetReady && [voiceDelegate voiceController:pushToTalkProbe didFinishTranscript:@"Mica Terminal"];
+        NSString *ptySnippetBuffer = ptySnippetReady ? MicaUITestCaptureZLEBuffer(voiceTestDirectory, voiceTargetTab.session) : nil;
+        BOOL snippetNotExecuted = ptySnippetInserted && [ptySnippetBuffer isEqualToString:[NSString stringWithFormat:@"touch %@", snippetExecutionMarker]] &&
+            ![[NSFileManager defaultManager] fileExistsAtPath:snippetExecutionMarker];
+        [voiceDelegate undoLastDictation:nil];
+        NSString *ptySnippetUndoBuffer = ptySnippetReady ? MicaUITestCaptureZLEBuffer(voiceTestDirectory, voiceTargetTab.session) : nil;
+        voiceDelegate.dictationSnippetsURLOverride = nil;
+        if (ptySnippetFD >= 0) unlink(ptySnippetTemplate);
+        MicaUITestRecord(report, &allPassed, snippetNotExecuted && [ptySnippetUndoBuffer isEqualToString:@"Mica Terminal"],
+            [NSString stringWithFormat:@"corrected whole-transcript snippet is pasted as unexecuted PTY prompt text and one-step undo restores raw transcript (inserted=%d undo=%@)", snippetNotExecuted, ptySnippetUndoBuffer ?: @"<missing>"]);
         if (savedVocabularyPreference) [[voiceDelegate micaDefaults] setObject:savedVocabularyPreference forKey:@"MicaDictationVocabularyEnabled"];
         else [[voiceDelegate micaDefaults] removeObjectForKey:@"MicaDictationVocabularyEnabled"];
 

@@ -58,6 +58,42 @@ NSArray<NSString *> *MicaVocabularyTermsFromFile(NSURL *url) {
     return terms;
 }
 
+static NSString *MicaSnippetKey(NSString *text) {
+    NSString *trimmed = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    return [trimmed stringByFoldingWithOptions:NSCaseInsensitiveSearch locale:[NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"]];
+}
+
+static BOOL MicaSnippetHasControl(NSString *text) {
+    return [text rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound;
+}
+
+NSDictionary<NSString *, NSString *> *MicaDictationSnippetsFromFile(NSURL *url) {
+    NSDictionary *attrs = [NSFileManager.defaultManager attributesOfItemAtPath:url.path error:nil];
+    if ([attrs[NSFileSize] unsignedLongLongValue] > 65536) return @{};
+    NSString *contents = [NSString stringWithContentsOfURL:url encoding:NSUTF8StringEncoding error:nil];
+    if (!contents) return @{};
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    for (NSString *line in [contents componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+        NSString *entry = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (!entry.length || [entry hasPrefix:@"#"]) continue;
+        NSRange arrow = [entry rangeOfString:@"=>"];
+        if (arrow.location == NSNotFound || [entry rangeOfString:@"=>" options:0 range:NSMakeRange(NSMaxRange(arrow), entry.length - NSMaxRange(arrow))].location != NSNotFound) continue;
+        NSString *trigger = [[entry substringToIndex:arrow.location] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSString *expansion = [[entry substringFromIndex:NSMaxRange(arrow)] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSString *key = MicaSnippetKey(trigger);
+        if (!trigger.length || trigger.length > 128 || !expansion.length || expansion.length > 2048 ||
+            MicaSnippetHasControl(trigger) || MicaSnippetHasControl(expansion) || !key.length || result.count >= 100 || result[key]) continue;
+        result[key] = expansion;
+    }
+    return result;
+}
+
+NSString *MicaApplyDictationSnippet(NSString *transcript, NSDictionary<NSString *, NSString *> *snippets) {
+    if (!transcript) return @"";
+    NSString *expansion = snippets[MicaSnippetKey(transcript)];
+    return expansion ?: transcript;
+}
+
 NSArray<NSString *> *MicaVocabularyTermsFromGitFiles(NSString *directory) {
     if (!directory.length || directory.length > 4096) return @[];
     NSPipe *pipe = [NSPipe pipe]; NSTask *task = [NSTask new];

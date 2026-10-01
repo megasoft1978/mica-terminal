@@ -559,6 +559,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, copy) NSString *lastDictationRawText;
 @property(nonatomic, weak) MicaTab *lastDictationTab;
 @property(nonatomic, assign) BOOL dictationUndoValid;
+@property(nonatomic, strong) NSURL *dictationSnippetsURLOverride;
 @property(nonatomic, strong) NSPanel *commandPalettePanel;
 @property(nonatomic, strong) NSTextField *commandPaletteSearch;
 @property(nonatomic, strong) NSTableView *commandPaletteTable;
@@ -4447,6 +4448,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     vocabularyToggle.state = (![[self micaDefaults] objectForKey:@"MicaDictationVocabularyEnabled"] ||
         [[self micaDefaults] boolForKey:@"MicaDictationVocabularyEnabled"]) ? NSControlStateValueOn : NSControlStateValueOff;
     AddMenuItem(editMenu, @"Edit Vocabulary…", @selector(editVocabulary:), @"", 0).target = self;
+    AddMenuItem(editMenu, @"Edit Snippets…", @selector(editSnippets:), @"", 0).target = self;
     AddMenuItem(editMenu, @"Find in Scrollback…", @selector(findInScrollback:), @"f", NSEventModifierFlagCommand).target = self.terminalView;
     AddMenuItem(editMenu, @"Find Next", @selector(findNextMatch:), @"g", NSEventModifierFlagCommand).target = self.terminalView;
     AddMenuItem(editMenu, @"Find Previous", @selector(findPreviousMatch:), @"g",
@@ -5144,10 +5146,13 @@ static BOOL MicaValidBranchName(NSString *name) {
         self.projectName ? @[self.projectName] : @[], target.gitBranch ? @[target.gitBranch] : @[],
         target.gitVocabularyTerms ?: @[], recentTerms]);
     NSString *corrected = improve ? MicaCorrectTranscript(transcript, terms) : transcript;
-    NSData *bytes = [corrected dataUsingEncoding:NSUTF8StringEncoding];
+    NSURL *snippetsURL = self.dictationSnippetsURLOverride ?: [NSURL fileURLWithPath:
+        [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Mica/snippets.txt"]];
+    NSString *insertedText = MicaApplyDictationSnippet(corrected, MicaDictationSnippetsFromFile(snippetsURL));
+    NSData *bytes = [insertedText dataUsingEncoding:NSUTF8StringEncoding];
     if (!bytes.length) return NO;
     mica_session_paste(target.session, bytes.bytes, bytes.length);
-    self.lastDictationText = corrected;
+    self.lastDictationText = insertedText;
     self.lastDictationRawText = transcript;
     self.lastDictationTab = target;
     self.dictationUndoValid = [transcript rangeOfCharacterFromSet:
@@ -5392,6 +5397,16 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
         withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil];
     if (![NSFileManager.defaultManager fileExistsAtPath:path])
         [@"# One term per line; spoken form => Canonical spelling\n" writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    [[NSWorkspace sharedWorkspace] selectFile:path inFileViewerRootedAtPath:path.stringByDeletingLastPathComponent];
+}
+
+- (void)editSnippets:(id)sender {
+    (void)sender;
+    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Mica/snippets.txt"];
+    [NSFileManager.defaultManager createDirectoryAtPath:path.stringByDeletingLastPathComponent
+        withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil];
+    if (![NSFileManager.defaultManager fileExistsAtPath:path])
+        [@"# One spoken phrase per line: phrase => expansion\n" writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
     [[NSWorkspace sharedWorkspace] selectFile:path inFileViewerRootedAtPath:path.stringByDeletingLastPathComponent];
 }
 
