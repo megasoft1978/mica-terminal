@@ -3951,12 +3951,12 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
         owner.pomodoroCycleFocusMinutes * 60.0, owner.pomodoroCycleBreakMinutes * 60.0,
         owner.autoStartBreaks, owner.autoStartFocus);
     if (changed) {
+        // The process timer is owned by the first registered window; its active tab
+        // supplies context, or tab ID zero represents a process-level timer event.
         MicaTab *timerTab = owner.activeTab;
-        if (timerTab) {
-            [MicaAttention() postTabID:timerTab.identifier kind:MicaAttentionTimerEnd
-                title:@"Focus timer phase ended" body:@"Your timer phase has ended." muted:NO];
-            NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
-        }
+        [MicaAttention() postTabID:timerTab.identifier kind:MicaAttentionTimerEnd
+            title:@"Focus timer phase ended" body:@"Your timer phase has ended." muted:NO];
+        NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
         if (previousPhase == MICA_POMODORO_FOCUS) {
             NSString *day = [NSDateFormatter localizedStringFromDate:NSDate.date dateStyle:NSDateFormatterShortStyle timeStyle:NSDateFormatterNoStyle];
             NSUserDefaults *defaults = [owner micaDefaults];
@@ -4185,8 +4185,11 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
 
 - (void)deliverAttentionEvent:(NSDictionary *)event {
     uint64_t tabID = [event[@"tabID"] unsignedLongLongValue];
-    if (!tabID || !event) return;
+    if (!event) return;
 #if defined(MICA_APP_NO_MAIN)
+    if (!tabID) {
+        if (self.testAgentNotificationHandler) self.testAgentNotificationHandler(event[@"title"] ?: @"Mica", event[@"body"] ?: @"", nil);
+    }
     for (MicaAppDelegate *controller in MicaControllers()) for (MicaTab *tab in controller.tabs)
         if (tab.identifier == tabID && controller.testAgentNotificationHandler)
             controller.testAgentNotificationHandler(event[@"title"] ?: @"Mica", event[@"body"] ?: @"", tab);
@@ -4195,8 +4198,8 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
     MicaTab *tab = nil;
     for (MicaAppDelegate *controller in MicaControllers()) for (MicaTab *candidate in controller.tabs)
         if (candidate.identifier == tabID) { tabController = controller; tab = candidate; break; }
-    if (!tab || !MicaShouldDeliverAttention(NSApp.isActive,
-        tabController.window == NSApp.keyWindow && tabController.activeTab == tab)) return;
+    if (tabID && (!tab || !MicaShouldDeliverAttention(NSApp.isActive,
+        tabController.window == NSApp.keyWindow && tabController.activeTab == tab))) return;
     static BOOL authorizationRequested;
     UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
     if (!authorizationRequested) {
@@ -4665,7 +4668,11 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         else if ([next isEqualToString:@"waitingInput"]) kind = MicaAttentionWaitingInput;
         else if ([next isEqualToString:@"done"]) kind = MicaAttentionDone;
         else if ([next isEqualToString:@"error"]) kind = MicaAttentionError;
-        else { hasAttention = NO; [MicaAttention() clearTabID:tab.identifier]; }
+        else {
+            hasAttention = NO;
+            [MicaAttention() clearTabID:tab.identifier];
+            NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
+        }
         if (hasAttention) {
             [MicaAttention() setMuted:tab.muteNotifications tabID:tab.identifier];
             [MicaAttention() postTabID:tab.identifier kind:kind title:[self agentNotificationTitleForTab:tab waiting:(kind == MicaAttentionWaitingPermission || kind == MicaAttentionWaitingInput)] body:tab.agentLastMessage ?: @"" muted:NO];
@@ -5529,7 +5536,10 @@ static BOOL MicaValidBranchName(NSString *name) {
     (void)sender;
     NSArray<NSNumber *> *waiting = [MicaAttention() waitingTabIDs];
     if (!waiting.count) return;
-    uint64_t currentID = self.activeTab.identifier;
+    MicaAppDelegate *keyController = self;
+    for (MicaAppDelegate *controller in MicaControllers())
+        if (controller.window == NSApp.keyWindow) { keyController = controller; break; }
+    uint64_t currentID = keyController.activeTab.identifier;
     NSUInteger start = 0;
     for (NSUInteger i = 0; i < waiting.count; i++) if (waiting[i].unsignedLongLongValue == currentID) { start = i + 1; break; }
     for (NSUInteger offset = 0; offset < waiting.count; offset++) {
@@ -6360,6 +6370,8 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
 
 // A window closed while others stay open: release its shells and timers now.
 - (void)teardownWindow {
+    for (MicaTab *tab in self.tabs) [MicaAttention() clearTabID:tab.identifier];
+    NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
     NSArray<NSValue *> *sessions = [self detachSessionsForTermination];
     self.window.delegate = nil;
     [self.terminalView setOwner:nil];

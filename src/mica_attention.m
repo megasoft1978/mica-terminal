@@ -17,7 +17,9 @@
 }
 - (NSString *)key:(uint64_t)tabID kind:(MicaAttentionKind)kind { return [NSString stringWithFormat:@"%llu:%ld", tabID, (long)kind]; }
 - (BOOL)postTabID:(uint64_t)tabID kind:(MicaAttentionKind)kind title:(NSString *)title body:(NSString *)body muted:(BOOL)muted {
-    if (!tabID || muted || [self isMutedTabID:tabID]) return NO;
+    // Tab ID zero is reserved for process-level events such as a timer ending
+    // while its owning window has no tabs. It is never a waiting destination.
+    if ((!tabID && kind != MicaAttentionTimerEnd) || muted || (tabID && [self isMutedTabID:tabID])) return NO;
     NSString *key = [self key:tabID kind:kind]; NSTimeInterval now = self.clock ? self.clock() : 0;
     NSNumber *last = self.lastPost[key];
     if (last && now >= last.doubleValue && now - last.doubleValue < 2.0) {
@@ -51,7 +53,9 @@
             [ids addObject:tabID]; [seen addObject:tabID];
         }
     }
-    return ids;
+    return [ids sortedArrayUsingComparator:^NSComparisonResult(NSNumber *left, NSNumber *right) {
+        return [left compare:right];
+    }];
 }
 - (NSString *)dockBadge { return self.pending.count ? [NSString stringWithFormat:@"%lu", (unsigned long)self.pending.count] : nil; }
 @end

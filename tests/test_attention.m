@@ -23,6 +23,13 @@ int main(void) {
         now += 2;
         NSCAssert([inbox postTabID:3 kind:MicaAttentionTimerEnd title:@"Timer" body:@"Ended" muted:NO], @"timer end post");
         NSCAssert(lastKind == MicaAttentionTimerEnd, @"timer end routed through inbox delivery");
+        now += 2;
+        NSCAssert([inbox postTabID:0 kind:MicaAttentionTimerEnd title:@"Timer" body:@"No active tab" muted:NO],
+            @"timer end without an owning window tab is retained");
+        NSCAssert([inbox.events filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSDictionary *event, NSDictionary *bindings) {
+            (void)bindings; return [event[@"tabID"] unsignedLongLongValue] == 0;
+        }]].count == 1, @"process-level timer event has tab ID zero");
+        [inbox clearTabID:0];
         [inbox clearTabID:3];
         [inbox postTabID:2 kind:MicaAttentionDone title:@"b" body:@"done" muted:NO];
         NSCAssert([inbox.dockBadge isEqual:@"1"], @"dock badge");

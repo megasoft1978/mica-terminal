@@ -2912,6 +2912,24 @@ static int MicaRunUISelfTest(void) {
             MicaAppDelegate *windowB = [[MicaAppDelegate alloc] init];
             [windowA startWindowWithArguments:@[@"mica", @"--layout", goodLayout, @"--project-name", @"Alpha"]];
             [windowB startWindowWithArguments:@[@"mica", @"--layout", secondLayout, @"--project-name", @"Beta"]];
+            MicaPomodoro savedOwnerTimer = windowA.pomodoro;
+            NSMutableArray<MicaTab *> *savedOwnerTabs = windowA.tabs;
+            MicaPomodoro elapsedOwnerTimer = {0};
+            mica_pomodoro_start(&elapsedOwnerTimer, MicaContinuousTimeSeconds() - 5, 1);
+            windowA.tabs = [NSMutableArray array];
+            windowA.pomodoro = elapsedOwnerTimer;
+            [MicaAttention() clearTabID:0];
+            [windowA pomodoroTimerFired:nil];
+            BOOL emptyTimerOwnerHandled = [MicaAttention().events filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSDictionary *event, NSDictionary *bindings) {
+                (void)bindings; return [event[@"tabID"] unsignedLongLongValue] == 0 &&
+                    [event[@"kind"] integerValue] == MicaAttentionTimerEnd;
+            }]].count == 1;
+            [MicaAttention() clearTabID:0];
+            windowA.tabs = savedOwnerTabs;
+            windowA.pomodoro = savedOwnerTimer;
+            [windowA savePomodoroState]; [windowA refreshPomodoroState];
+            MicaUITestRecord(report, &allPassed, emptyTimerOwnerHandled,
+                @"timer completion posts a process-level event safely when its owner window has no tabs");
             BOOL twoWindows = MicaControllers().count == 2 && windowA.tabs.count == 1 && windowB.tabs.count == 1 &&
                 [windowA.projectName isEqualToString:@"Alpha"] && [windowB.projectName isEqualToString:@"Beta"];
             [windowA takeMenuOwnership];
@@ -2923,6 +2941,26 @@ static int MicaRunUISelfTest(void) {
             BOOL noDuplicate = MicaControllers().count == 2;
             [windowB addTabWithName:@"Click Target" cwd:NSTemporaryDirectory() command:nil prefilled:NO];
             MicaTab *secondWindowTab = windowB.activeTab;
+            for (NSDictionary *event in MicaAttention().events)
+                [MicaAttention() clearTabID:[event[@"tabID"] unsignedLongLongValue]];
+            [MicaAttention() clearTabID:windowA.activeTab.identifier];
+            [MicaAttention() clearTabID:windowB.tabs.firstObject.identifier];
+            [MicaAttention() postTabID:windowA.activeTab.identifier kind:MicaAttentionWaitingInput title:@"A" body:@"wait" muted:NO];
+            [MicaAttention() postTabID:windowB.tabs.firstObject.identifier kind:MicaAttentionWaitingInput title:@"B" body:@"wait" muted:NO];
+            [windowB jumpToNextWaitingTab:nil];
+            BOOL jumpStartsAtLowestID =
+                windowA.activeTab.identifier == MIN(windowA.activeTab.identifier, windowB.tabs.firstObject.identifier);
+            [MicaAttention() postTabID:windowA.activeTab.identifier kind:MicaAttentionWaitingInput title:@"A" body:@"wait" muted:NO];
+            [windowA jumpToNextWaitingTab:nil];
+            BOOL jumpCyclesAcrossWindows = windowB.activeTab == windowB.tabs.firstObject;
+            [MicaAttention() postTabID:windowB.tabs.firstObject.identifier kind:MicaAttentionWaitingInput title:@"B" body:@"wait" muted:NO];
+            [windowB jumpToNextWaitingTab:nil];
+            BOOL jumpWrapsToLowestID = windowA.activeTab.identifier == MIN(windowA.activeTab.identifier, windowB.tabs.firstObject.identifier);
+            MicaUITestRecord(report, &allPassed, jumpStartsAtLowestID && jumpCyclesAcrossWindows && jumpWrapsToLowestID,
+                [NSString stringWithFormat:@"Cmd-Shift-J follows sorted tab IDs across windows and wraps (start=%d cycle=%d wrap=%d keyA=%d selected=%llu expectedA=%llu expectedB=%llu)",
+                    jumpStartsAtLowestID, jumpCyclesAcrossWindows, jumpWrapsToLowestID, NSApp.keyWindow == windowA.window,
+                    windowA.activeTab.identifier, (unsigned long long)MIN(windowA.activeTab.identifier, windowB.tabs.firstObject.identifier),
+                    (unsigned long long)windowB.tabs.firstObject.identifier]);
             void (^savedDelivery)(NSDictionary *) = MicaAttention().delivery;
             MicaAttention().delivery = nil;
             [MicaAttention() clearTabID:secondWindowTab.identifier];
@@ -2939,6 +2977,20 @@ static int MicaRunUISelfTest(void) {
                     (void)bindings; return [event[@"tabID"] unsignedLongLongValue] == secondWindowTab.identifier;
                 }]].count;
             MicaAttention().delivery = savedDelivery;
+            for (NSDictionary *event in MicaAttention().events)
+                [MicaAttention() clearTabID:[event[@"tabID"] unsignedLongLongValue]];
+            [MicaAttention() postTabID:windowA.activeTab.identifier kind:MicaAttentionWaitingInput title:@"Keep" body:@"badge" muted:NO];
+            MicaTab *closeProbe = windowB.activeTab;
+            [MicaAttention() postTabID:closeProbe.identifier kind:MicaAttentionDone title:@"Close" body:@"clear" muted:NO];
+            NSString *badgeBeforeClose = MicaAttention().dockBadge;
+            [windowB closeActiveTab];
+            BOOL closingTabClearsInbox = ![MicaAttention().events filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSDictionary *event, NSDictionary *bindings) {
+                (void)bindings; return [event[@"tabID"] unsignedLongLongValue] == closeProbe.identifier;
+            }]].count && MicaAttention().dockBadge != nil &&
+                MicaAttention().dockBadge.integerValue == badgeBeforeClose.integerValue - 1;
+            MicaUITestRecord(report, &allPassed, closingTabClearsInbox,
+                [NSString stringWithFormat:@"closing a tab clears its inbox events and updates the Dock badge (before=%@ after=%@ events=%lu)",
+                    badgeBeforeClose, MicaAttention().dockBadge, (unsigned long)MicaAttention().events.count]);
             MicaUITestRecord(report, &allPassed, clickRoutesAcrossWindows,
                 @"notification click finds a tab in a second window, selects it and clears its inbox events");
             NSUInteger tabsBeforeClose = windowA.tabs.count;
