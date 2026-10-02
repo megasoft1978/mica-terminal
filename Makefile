@@ -71,10 +71,10 @@ app: $(APP_FONTS) $(APP_LAUNCHER_SCRIPT) $(APP_ICON_TOOL) $(APP_HOOK_HELPER) $(A
 		codesign --verify --deep --strict $(APP); \
 	fi
 
-$(APP_BIN): Makefile $(VTERM_STATIC) src/mica_agent_state.m src/mica_agent_state.h src/mica_attention.m src/mica_attention.h src/mica_hook_install.m src/mica_hook_install.h src/mica_app.m src/mica_status_item.m src/mica_status_item.h src/mica_voice_controller.m src/mica_voice_controller.h src/mica_diagnostics.m src/mica_diagnostics.h src/mica_vocabulary.m src/mica_vocabulary.h $(CORE) $(POMODORO) include/mica.h include/mica_pomodoro.h Info.plist
+$(APP_BIN): Makefile $(VTERM_STATIC) src/mica_agent_detect.c include/mica_agent_detect.h src/mica_agent_state.m src/mica_agent_state.h src/mica_attention.m src/mica_attention.h src/mica_hook_install.m src/mica_hook_install.h src/mica_app.m src/mica_status_item.m src/mica_status_item.h src/mica_voice_controller.m src/mica_voice_controller.h src/mica_diagnostics.m src/mica_diagnostics.h src/mica_vocabulary.m src/mica_vocabulary.h $(CORE) $(POMODORO) include/mica.h include/mica_pomodoro.h Info.plist
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(OBJC_WARNINGS) -fobjc-arc $(CPPFLAGS) \
-		-framework Cocoa -framework Carbon -framework AVFoundation -framework UserNotifications $(CORE_FRAMEWORK) $(CORE) $(POMODORO) src/mica_diagnostics.m src/mica_vocabulary.m src/mica_voice_controller.m src/mica_attention.m src/mica_status_item.m src/mica_hook_server.m src/mica_hook_install.m src/mica_agent_state.m src/mica_app.m $(HOOK) $(VTERM_STATIC) -o $@
+		-framework Cocoa -framework Carbon -framework AVFoundation -framework UserNotifications $(CORE_FRAMEWORK) $(CORE) src/mica_agent_detect.c $(POMODORO) src/mica_diagnostics.m src/mica_vocabulary.m src/mica_voice_controller.m src/mica_attention.m src/mica_status_item.m src/mica_hook_server.m src/mica_hook_install.m src/mica_agent_state.m src/mica_app.m $(HOOK) $(VTERM_STATIC) -o $@
 	@mkdir -p $(APP)/Contents
 	@cp Info.plist $(APP)/Contents/Info.plist
 	@touch $(APP)
@@ -143,9 +143,9 @@ $(BUILD)/test-hook-server: tests/test_hook_server.m src/mica_hook_server.m src/m
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(OBJC_WARNINGS) -fobjc-arc $(CPPFLAGS) -Isrc -framework Foundation src/mica_hook_server.m $(HOOK) tests/test_hook_server.m -o $@
 
-$(BUILD)/test-session: tests/test_session.c $(CORE) $(HOOK) include/mica.h include/mica_hook.h $(VTERM_STATIC)
+$(BUILD)/test-session: tests/test_session.c $(CORE) $(HOOK) src/mica_agent_detect.c include/mica_agent_detect.h include/mica.h include/mica_hook.h $(VTERM_STATIC)
 	@mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(C_WARNINGS) $(CPPFLAGS) -DMICA_SESSION_TESTING $(CORE_FRAMEWORK) $(CORE) $(HOOK) tests/test_session.c $(VTERM_STATIC) -o $@
+	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(C_WARNINGS) $(CPPFLAGS) -DMICA_SESSION_TESTING $(CORE_FRAMEWORK) $(CORE) $(HOOK) src/mica_agent_detect.c tests/test_session.c $(VTERM_STATIC) -o $@
 
 $(BUILD)/test-vterm-history: tests/test_vterm_history.c $(VTERM_STATIC)
 	@mkdir -p $(BUILD)
@@ -159,10 +159,10 @@ $(BUILD)/test-attention: tests/test_attention.m src/mica_attention.m src/mica_at
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(OBJC_WARNINGS) -fobjc-arc -Isrc -framework Foundation src/mica_attention.m tests/test_attention.m -o $@
 
-$(BUILD)/test-ui: src/mica_agent_state.m src/mica_agent_state.h src/mica_attention.m src/mica_attention.h $(VTERM_STATIC) src/mica_hook_install.m src/mica_hook_install.h tests/test_app_ui.m src/mica_status_item.m src/mica_status_item.h src/mica_app.m src/mica_vocabulary.m src/mica_vocabulary.h src/mica_voice_controller.m src/mica_voice_controller.h src/mica_diagnostics.m src/mica_diagnostics.h src/mica_hook_server.m src/mica_hook_server.h src/mica_hook_install.m src/mica_hook_install.h $(HOOK) include/mica_hook.h $(CORE) $(POMODORO) include/mica.h include/mica_pomodoro.h
+$(BUILD)/test-ui: src/mica_agent_detect.c include/mica_agent_detect.h src/mica_agent_state.m src/mica_agent_state.h src/mica_attention.m src/mica_attention.h $(VTERM_STATIC) src/mica_hook_install.m src/mica_hook_install.h tests/test_app_ui.m src/mica_status_item.m src/mica_status_item.h src/mica_app.m src/mica_vocabulary.m src/mica_vocabulary.h src/mica_voice_controller.m src/mica_voice_controller.h src/mica_diagnostics.m src/mica_diagnostics.h src/mica_hook_server.m src/mica_hook_server.h src/mica_hook_install.m src/mica_hook_install.h $(HOOK) include/mica_hook.h $(CORE) $(POMODORO) include/mica.h include/mica_pomodoro.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(OBJC_WARNINGS) -DMICA_SESSION_TESTING -fobjc-arc $(CPPFLAGS) \
-		-framework Cocoa -framework Carbon -framework AVFoundation -framework UserNotifications $(CORE_FRAMEWORK) $(CORE) $(POMODORO) src/mica_diagnostics.m src/mica_vocabulary.m src/mica_voice_controller.m src/mica_attention.m src/mica_status_item.m src/mica_hook_server.m src/mica_hook_install.m src/mica_agent_state.m tests/test_app_ui.m $(HOOK) $(VTERM_STATIC) -o $@
+		-framework Cocoa -framework Carbon -framework AVFoundation -framework UserNotifications $(CORE_FRAMEWORK) $(CORE) src/mica_agent_detect.c $(POMODORO) src/mica_diagnostics.m src/mica_vocabulary.m src/mica_voice_controller.m src/mica_attention.m src/mica_status_item.m src/mica_hook_server.m src/mica_hook_install.m src/mica_agent_state.m tests/test_app_ui.m $(HOOK) $(VTERM_STATIC) -o $@
 
 test: $(BUILD)/test-vterm-history $(BUILD)/test-session $(BUILD)/test-agent-detect $(BUILD)/test-hook $(BUILD)/test-hook-server $(BUILD)/test-pomodoro $(BUILD)/test-attention $(BUILD)/test-hook-install $(BUILD)/test-ui $(APP_ICON) $(PROJECT_ICON_TOOL)
 	rm -f $(BUILD)/ui-smoke.png $(BUILD)/ui-smoke-report.txt
@@ -266,9 +266,13 @@ $(BUILD)/test-vterm-history-san: tests/test_vterm_history.c $(VTERM_SAN_STATIC)
 	@mkdir -p $(BUILD)
 	$(CC) $(SAN_FLAGS) $(MACOSX_VERSION_FLAG) $(C_WARNINGS) $(CPPFLAGS) $< $(VTERM_SAN_STATIC) -o $@
 
-$(BUILD)/test-session-san: tests/test_session.c $(CORE) include/mica.h $(VTERM_SAN_STATIC)
+$(BUILD)/test-session-san: tests/test_session.c $(CORE) src/mica_agent_detect.c include/mica_agent_detect.h include/mica.h $(VTERM_SAN_STATIC)
 	@mkdir -p $(BUILD)
-	$(CC) $(SAN_FLAGS) $(MACOSX_VERSION_FLAG) $(C_WARNINGS) $(CPPFLAGS) -DMICA_SESSION_TESTING $(CORE_FRAMEWORK) $(CORE) $(HOOK) tests/test_session.c $(VTERM_SAN_STATIC) -o $@
+	$(CC) $(SAN_FLAGS) $(MACOSX_VERSION_FLAG) $(C_WARNINGS) $(CPPFLAGS) -DMICA_SESSION_TESTING $(CORE_FRAMEWORK) $(CORE) $(HOOK) src/mica_agent_detect.c tests/test_session.c $(VTERM_SAN_STATIC) -o $@
+
+$(BUILD)/test-agent-detect-san: tests/test_agent_detect.c src/mica_agent_detect.c include/mica_agent_detect.h
+	@mkdir -p $(BUILD)
+	$(CC) $(SAN_FLAGS) $(C_WARNINGS) $(CPPFLAGS) src/mica_agent_detect.c tests/test_agent_detect.c -o $@
 
 $(BUILD)/fuzz-session-san: tests/fuzz_session.c $(CORE) include/mica.h $(VTERM_SAN_STATIC)
 	@mkdir -p $(BUILD)
@@ -278,10 +282,10 @@ $(BUILD)/fuzz-hook-san: tests/fuzz_hook.c $(HOOK) include/mica_hook.h
 	@mkdir -p $(BUILD)
 	$(CC) $(SAN_FLAGS) $(C_WARNINGS) $(CPPFLAGS) $(HOOK) tests/fuzz_hook.c -o $@
 
-$(BUILD)/stress-ui-san: src/mica_agent_state.m src/mica_agent_state.h tests/stress_app_ui.m src/mica_status_item.m src/mica_status_item.h src/mica_app.m src/mica_vocabulary.m src/mica_vocabulary.h src/mica_voice_controller.m src/mica_diagnostics.m src/mica_hook_server.m src/mica_hook_server.h src/mica_hook_install.m src/mica_hook_install.h $(HOOK) $(CORE) $(POMODORO) src/mica_hook_install.m include/mica.h $(VTERM_SAN_STATIC)
+$(BUILD)/stress-ui-san: src/mica_agent_detect.c include/mica_agent_detect.h src/mica_agent_state.m src/mica_agent_state.h tests/stress_app_ui.m src/mica_status_item.m src/mica_status_item.h src/mica_app.m src/mica_vocabulary.m src/mica_vocabulary.h src/mica_voice_controller.m src/mica_diagnostics.m src/mica_hook_server.m src/mica_hook_server.h src/mica_hook_install.m src/mica_hook_install.h $(HOOK) $(CORE) $(POMODORO) src/mica_hook_install.m include/mica.h $(VTERM_SAN_STATIC)
 	@mkdir -p $(BUILD)
 	$(CC) $(SAN_FLAGS) $(MACOSX_VERSION_FLAG) -Wno-deprecated-declarations -fobjc-arc $(CPPFLAGS) \
-		-framework Cocoa -framework Carbon -framework AVFoundation -framework UserNotifications $(CORE_FRAMEWORK) $(CORE) $(POMODORO) src/mica_diagnostics.m src/mica_vocabulary.m src/mica_voice_controller.m src/mica_attention.m src/mica_status_item.m src/mica_hook_server.m src/mica_hook_install.m src/mica_agent_state.m tests/stress_app_ui.m $(HOOK) $(VTERM_SAN_STATIC) -o $@
+		-framework Cocoa -framework Carbon -framework AVFoundation -framework UserNotifications $(CORE_FRAMEWORK) $(CORE) src/mica_agent_detect.c $(POMODORO) src/mica_diagnostics.m src/mica_vocabulary.m src/mica_voice_controller.m src/mica_attention.m src/mica_status_item.m src/mica_hook_server.m src/mica_hook_install.m src/mica_agent_state.m tests/stress_app_ui.m $(HOOK) $(VTERM_SAN_STATIC) -o $@
 
 # STRESS_SEEDS random seeds of 1500 random user actions each, under the sanitizers.
 STRESS_SEEDS ?= 3
@@ -294,9 +298,10 @@ fuzz: $(BUILD)/fuzz-session-san $(BUILD)/fuzz-hook-san
 	@i=1; while [ $$i -le $(FUZZ_SEEDS) ]; do $(BUILD)/fuzz-session-san $$((i * 7919)) || exit 1; i=$$((i+1)); done
 	@i=1; while [ $$i -le $(FUZZ_SEEDS) ]; do $(BUILD)/fuzz-hook-san $$((i * 7919)) || exit 1; i=$$((i+1)); done
 
-sanitize: $(BUILD)/test-vterm-history-san $(BUILD)/test-session-san fuzz
+sanitize: $(BUILD)/test-vterm-history-san $(BUILD)/test-session-san $(BUILD)/test-agent-detect-san fuzz
 	$(BUILD)/test-vterm-history-san
 	$(BUILD)/test-session-san
+	$(BUILD)/test-agent-detect-san
 
 # Renders the website/README product images from the real terminal view (fictional project, sample output only).
 $(BUILD)/render-marketing: src/mica_agent_state.m src/mica_agent_state.h $(VTERM_STATIC) tools/render_marketing.m src/mica_app.m src/mica_vocabulary.m src/mica_vocabulary.h src/mica_voice_controller.m src/mica_diagnostics.m src/mica_hook_server.m src/mica_hook_server.h src/mica_hook_install.m src/mica_hook_install.h $(HOOK) $(CORE) $(POMODORO) include/mica.h

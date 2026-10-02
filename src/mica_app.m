@@ -7,6 +7,7 @@
 #import "mica_status_item.h"
 #import "mica_hook_server.h"
 #import "mica_hook_install.h"
+#import "mica_agent_detect.h"
 #import "mica_agent_state.h"
 #import "mica_attention.h"
 #import <UserNotifications/UserNotifications.h>
@@ -280,6 +281,7 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 @property(nonatomic, copy) NSString *agentActivityDetail;
 @property(nonatomic, copy) NSString *hookToken;
 @property(nonatomic, copy) NSString *agentKind;
+@property(nonatomic, copy) NSString *processAgentKind;
 @property(nonatomic, copy) NSString *agentState;
 @property(nonatomic, copy) NSString *agentStateSource;
 @property(nonatomic, copy) NSString *agentSessionID;
@@ -357,6 +359,8 @@ static NSString *MicaAgentNameForTab(MicaTab *tab) {
     if ([tab.agentKind isEqualToString:@"claude"]) return @"Claude Code";
     if ([tab.agentKind isEqualToString:@"codex"]) return @"Codex";
     if ([tab.agentKind isEqualToString:@"other"]) return @"Agent";
+    if ([tab.processAgentKind isEqualToString:@"claude"]) return @"Claude Code";
+    if ([tab.processAgentKind isEqualToString:@"codex"]) return @"Codex";
     if (tab.currentCommand.length) return MicaAgentNameForText(tab.currentCommand);
     NSString *terminalTitleAgent = MicaAgentNameForText(tab.terminalTitle);
     if (terminalTitleAgent) return terminalTitleAgent;
@@ -4647,6 +4651,17 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     [self.window makeFirstResponder:self.terminalView];
 }
 
+- (void)refreshProcessAgentForTab:(MicaTab *)tab {
+    if (!tab.session) { tab.processAgentKind = nil; return; }
+    char commands[8192];
+    mica_session_descendant_commands(tab.session, commands, sizeof(commands));
+    switch (mica_agent_kind_from_commands(commands)) {
+        case 1: tab.processAgentKind = @"claude"; break;
+        case 2: tab.processAgentKind = @"codex"; break;
+        default: tab.processAgentKind = nil; break;
+    }
+}
+
 - (void)handleHookEvent:(MicaHookEvent)event forTab:(MicaTab *)tab {
     NSString *eventName = [NSString stringWithUTF8String:event.event] ?: @"";
     NSString *agent = [NSString stringWithUTF8String:event.agent] ?: @"";
@@ -4660,6 +4675,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         @"notification_type":notificationType, @"message":message, @"last_assistant_message":lastMessage, @"tool_name":tool };
     tab.receivedAgentHook = YES;
     if (agent.length) tab.agentKind = agent;
+    [self refreshProcessAgentForTab:tab];
     if (sessionID.length) tab.agentSessionID = sessionID;
     NSString *next = MicaAgentStateForHookEvent(eventName, notificationType, MicaAgentStateForTab(tab));
     if ([eventName isEqualToString:@"SessionEnd"]) { tab.agentKind = @"none"; tab.agentSessionID = nil; }
@@ -5567,6 +5583,7 @@ static BOOL MicaValidBranchName(NSString *name) {
     [self.terminalView clearSelection];
     self.activeIndex = index;
     MicaTab *tab = self.activeTab;
+    [self refreshProcessAgentForTab:tab];
     [self requestWorkingDirectoryForTab:tab];
     tab.lastSelectedAt = NSProcessInfo.processInfo.systemUptime;
     tab.needsAttention = NO;
@@ -6098,6 +6115,16 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
             tab.commandStartedAt = currentCommand.length ? now : 0;
             tab.commandClockSecond = -1;
             tab.completedCommand = NO;
+            // Command start/finish is a rare transition, not a per-tick cost. The shell's preexec runs before
+            // the program execs, so look again shortly after to see the real process tree.
+            [self refreshProcessAgentForTab:tab];
+            if (currentCommand.length) {
+                __weak MicaAppDelegate *weakSelf = self;
+                __weak MicaTab *weakTab = tab;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    if (weakSelf && weakTab) [weakSelf refreshProcessAgentForTab:weakTab];
+                });
+            }
             tab.agentActivity = currentCommand.length && MicaAgentNameForTab(tab) ? @"Starting" : nil;
             tab.agentActivityDetail = nil;
             redraw = YES;
@@ -6173,7 +6200,9 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
         uint64_t revision = mica_session_revision(tab.session);
         if (revision != tab.revision) {
             tab.revision = revision;
-            if (!tab.receivedAgentHook && currentCommand.length && !activityScanPerformed && now - tab.lastActivityScanAt >= 0.50) {
+            BOOL typedAgentCommand = MicaAgentNameForText(currentCommand) != nil || MicaAgentNameForText(tab.command) != nil;
+            if (!tab.receivedAgentHook && (tab.processAgentKind.length || typedAgentCommand) &&
+                !activityScanPerformed && now - tab.lastActivityScanAt >= 0.50) {
                 tab.lastActivityScanAt = now;
                 activityScanPerformed = YES;
                 NSString *detail = nil;
@@ -6411,6 +6440,7 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
 - (void)windowDidBecomeKey:(NSNotification *)notification {
     (void)notification;
     [self takeMenuOwnership];
+    [self refreshProcessAgentForTab:self.activeTab];
     [self updateWindowTitle];   // the Dock icon follows the key window's project
     [self.terminalView setNeedsDisplay:YES];
     [self pollSessions:nil];    // resume visible status readouts and time-based UI work

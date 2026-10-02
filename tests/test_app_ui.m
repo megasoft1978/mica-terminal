@@ -1684,6 +1684,46 @@ static int MicaRunUISelfTest(void) {
             waitingPromptFound && [waitingActivity isEqualToString:@"Idle"],
             @"generic shell prose does not become agent input state without an agent prompt glyph and UI marker");
         if (waitingProbe) mica_session_destroy(waitingProbe);
+        MicaSession *codexIdleProbe = mica_session_create("/tmp",
+            "printf 'Ask Codex to do anything\\n'; sleep 2", 6, 80);
+        BOOL codexIdleTextFound = NO;
+        for (int attempt = 0; codexIdleProbe && attempt < 100; attempt++) {
+            mica_session_poll(codexIdleProbe, 10);
+            if (MicaUITestFindText(codexIdleProbe, @"Ask Codex to do anything", NULL, NULL)) {
+                codexIdleTextFound = YES; break;
+            }
+        }
+        NSString *codexIdleActivity = codexIdleProbe ? MicaAgentActivityForSession(codexIdleProbe, NULL) : nil;
+        MicaUITestRecord(report, &allPassed, codexIdleTextFound &&
+            ![codexIdleActivity isEqualToString:@"Needs input"] && ![codexIdleActivity isEqualToString:@"Needs approval"],
+            [NSString stringWithFormat:@"Codex idle prompt remains idle (activity=%@)", codexIdleActivity]);
+        if (codexIdleProbe) mica_session_destroy(codexIdleProbe);
+        MicaTab *plainShellTab = [MicaTab new]; plainShellTab.currentCommand = @"sh";
+        plainShellTab.agentActivity = @"Running tests";
+        MicaUITestRecord(report, &allPassed, MicaAgentNameForTab(plainShellTab) == nil,
+            @"plain shell prose such as running tests does not identify an agent");
+        MicaSession *codexPermissionProbe = mica_session_create("/tmp",
+            "printf '\\033[5;1H\\342\\235\\257 ALLOW THIS COMMAND?\\n'; sleep 2", 6, 80);
+        BOOL codexPermissionTextFound = NO;
+        for (int attempt = 0; codexPermissionProbe && attempt < 100; attempt++) {
+            mica_session_poll(codexPermissionProbe, 10);
+            if (MicaUITestFindText(codexPermissionProbe, @"ALLOW THIS COMMAND?", NULL, NULL)) {
+                codexPermissionTextFound = YES; break;
+            }
+        }
+        NSString *codexPermissionActivity = codexPermissionProbe
+            ? MicaAgentActivityForSession(codexPermissionProbe, NULL) : nil;
+        MicaTab *codexPermissionTab = [MicaTab new];
+        codexPermissionTab.session = codexPermissionProbe;
+        codexPermissionTab.currentCommand = @"codex";
+        codexPermissionTab.processAgentKind = @"codex";
+        codexPermissionTab.agentActivity = codexPermissionActivity;
+        BOOL codexPermissionWaiting = [delegate.terminalView activityStateForTab:codexPermissionTab] == MicaTabActivityStateWaiting;
+        MicaUITestRecord(report, &allPassed, codexPermissionTextFound &&
+            [codexPermissionActivity isEqualToString:@"Needs approval"] && codexPermissionWaiting,
+            [NSString stringWithFormat:@"process-identified Codex permission fixture requests approval (activity=%@)", codexPermissionActivity]);
+        if (codexPermissionProbe) mica_session_destroy(codexPermissionProbe);
+        codexPermissionTab.session = NULL;
         MicaSession *glyphPromptProbe = mica_session_create("/tmp", "printf '\\033[5;1H\\u276f'; sleep 2", 6, 80);
         BOOL glyphPromptFound = NO;
         for (int attempt = 0; glyphPromptProbe && attempt < 100; attempt++) {

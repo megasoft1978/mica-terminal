@@ -1,5 +1,6 @@
 #define _DARWIN_C_SOURCE
 #include "mica.h"
+#include "mica_agent_detect.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -177,8 +178,46 @@ static void test_clean_zsh_startup(void) {
     puts("clean zsh profiles run their startup files without Mica forcing compinit");
 }
 
+static void test_descendant_agent_detection(void) {
+    char dir_template[] = "/tmp/mica-agent-stubs-XXXXXX";
+    char *dir = mkdtemp(dir_template); assert(dir);
+    char path[PATH_MAX];
+    const char *names[] = {"claude", "codex", "npx"};
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        assert(snprintf(path, sizeof(path), "%s/%s", dir, names[i]) > 0);
+        write_test_file(path, i == 2 ? "#!/bin/sh\nexec codex\n" : "#!/bin/sh\nsleep 5\n", 0700);
+        assert(chmod(path, 0700) == 0);
+    }
+    char *saved_path = copy_env("PATH");
+    char stub_path[PATH_MAX * 2];
+    assert(snprintf(stub_path, sizeof(stub_path), "%s:%s", dir, saved_path ? saved_path : "/usr/bin:/bin") > 0);
+    assert(setenv("PATH", stub_path, 1) == 0);
+    const char *commands[] = {"claude", "codex", "npx codex", "sh -c 'cd /tmp && claude'", "sleep 5"};
+    const int expected[] = {1, 2, 2, 1, 0};
+    for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
+        MicaSession *session = mica_session_create("/tmp", commands[i], 8, 80);
+        assert(session);
+        char descendants[4096] = {0};
+        int kind = 0;
+        for (int attempt = 0; attempt < 100; attempt++) {
+            mica_session_poll(session, 10);
+            mica_session_descendant_commands(session, descendants, sizeof(descendants));
+            kind = mica_agent_kind_from_commands(descendants);
+            if (kind == expected[i]) break;
+        }
+        assert(kind == expected[i]);
+        mica_session_destroy(session);
+    }
+    restore_env("PATH", saved_path);
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        assert(snprintf(path, sizeof(path), "%s/%s", dir, names[i]) > 0); unlink(path);
+    }
+    assert(rmdir(dir) == 0);
+}
+
 int main(void) {
     setenv("MICA_TEST_NO_STARTUP", "1", 1);
+    test_descendant_agent_detection();
     MicaSession *cwd_session = mica_session_create("/tmp", "cd /; sleep 2", 6, 80);
     assert(cwd_session != NULL);
     char working_directory[PATH_MAX];
