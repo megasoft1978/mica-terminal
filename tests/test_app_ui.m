@@ -8,6 +8,13 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+@interface MicaRedrawSpySidebar : MicaAgentSidebarView
+@property(nonatomic) NSUInteger redrawRequests;
+@end
+@implementation MicaRedrawSpySidebar
+- (void)setNeedsDisplay:(BOOL)flag { if (flag) self.redrawRequests++; [super setNeedsDisplay:flag]; }
+@end
+
 #ifdef MICA_SESSION_TESTING
 void mica_session_test_fail_next_history_resize_allocation(void);
 #endif
@@ -1541,6 +1548,11 @@ static int MicaRunUISelfTest(void) {
             [sidebarMenuItem.title isEqualToString:@"Hide Sidebar"] && sidebarMenuItem.state == NSControlStateValueOn;
         fixtureTab.currentCommand = @"codex"; fixtureTab.agentActivity = @"Needs input"; fixtureTab.needsAttention = YES;
         [delegate.windowContentView.sidebarView refreshRows];
+        MicaRedrawSpySidebar *sidebarRedrawProbe = [MicaRedrawSpySidebar new];
+        sidebarRedrawProbe.owner = delegate;
+        [sidebarRedrawProbe refreshRows];
+        [sidebarRedrawProbe refreshRows];
+        BOOL unchangedSidebarSkipsRedraw = sidebarRedrawProbe.redrawRequests == 1;
         NSArray *sidebarElements = [delegate.windowContentView.sidebarView accessibilityChildren];
         BOOL sidebarStateAccessible = sidebarElements.count == delegate.tabs.count &&
             [sidebarElements[0] accessibilityLabel].length && [[sidebarElements[0] accessibilityLabel] containsString:@"Needs input"] &&
@@ -1585,7 +1597,9 @@ static int MicaRunUISelfTest(void) {
             sidebarWindowIsolation && sidebarResizePreservesPTY && sidebarHiddenReleasesView,
             [NSString stringWithFormat:@"optional sidebar is per-window, exposes fake agent attention state, selects tabs, resizes the PTY without losing fixture output, and releases hidden views (visible=%d accessible=%d select=%d isolated=%d resize=%ld→%ld hidden=%d)",
                 sidebarDefaultOff && sidebarVisible, sidebarStateAccessible, sidebarActivationSelects, sidebarWindowIsolation,
-             (long)sidebarOriginalCols, (long)resizedSidebarCols, sidebarHiddenReleasesView]);
+                (long)sidebarOriginalCols, (long)resizedSidebarCols, sidebarHiddenReleasesView]);
+        MicaUITestRecord(report, &allPassed, unchangedSidebarSkipsRedraw,
+            @"sidebar refresh skips redraw requests when row state is unchanged");
         NSString *agentDetail = nil;
         NSString *agentActivity = MicaAgentActivityForSession(fixtureTab.session, &agentDetail);
         MicaUITestRecord(report, &allPassed, [agentActivity isEqualToString:@"Working"] &&
@@ -1704,6 +1718,7 @@ static int MicaRunUISelfTest(void) {
         NSString *savedCommand = agentLabelTab.currentCommand;
         NSString *savedName = agentLabelTab.name;
         NSTimeInterval savedOutputReadAt = agentLabelTab.lastOutputReadAt;
+        agentLabelTab.needsAttention = NO;   // attention is cleared by output events now, not timer ticks
         agentLabelTab.currentCommand = @"codex";
         agentLabelTab.name = @"Codex";
         agentLabelTab.agentActivity = @"Working";
@@ -2014,7 +2029,11 @@ static int MicaRunUISelfTest(void) {
             for (unsigned i=0;i<30;i++) [quickOutput appendFormat:@"%08x ",0xabc00000u+i];
             mica_session_test_feed_output(quickTab.session, quickOutput.UTF8String, quickOutput.length);
             quickDelegate.terminalView=[MicaTerminalView new]; quickDelegate.terminalView.owner=quickDelegate;
-            NSArray *quickMatches=[quickDelegate.terminalView quickSelectCandidates];
+            [quickDelegate.terminalView toggleQuickSelect:nil];
+            NSDate *quickDeadline=[NSDate dateWithTimeIntervalSinceNow:0.75];
+            while (!quickDelegate.terminalView.quickSelectActive && [quickDeadline timeIntervalSinceNow] > 0)
+                [[NSRunLoop mainRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+            NSArray *quickMatches=quickDelegate.terminalView.quickSelectMatches ?: @[];
             NSDictionary *wrappedURL=[quickMatches filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"kind == %@",@"url"]].firstObject;
             BOOL quickHasWrappedURL=wrappedURL && [wrappedURL[@"value"] isEqualToString:@"https://quick.select.test/wrapped-url"];
             BOOL quickQuotedPath=[quickMatches filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"kind == %@ AND value == %@",@"path",[NSString stringWithUTF8String:quickPath]]].count==1;
@@ -2022,12 +2041,15 @@ static int MicaRunUISelfTest(void) {
             BOOL quickHasHash= [quickMatches filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"kind == %@",@"hash"]].count==30;
             BOOL quickUniqueLabels=[NSSet setWithArray:[quickMatches valueForKey:@"label"]].count==quickMatches.count &&
                 [[quickMatches.lastObject objectForKey:@"label"] isEqualToString:@"AF"];
-            [quickDelegate.terminalView toggleQuickSelect:nil];
             NSDictionary *firstQuick=[quickDelegate.terminalView.quickSelectMatches filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"kind == %@",@"url"]].firstObject;
             [quickDelegate.terminalView finishQuickSelectWithLabel:firstQuick[@"label"] option:NO];
             BOOL quickCopies=quickDelegate.terminalView.testClipboardText.length>0;
             __block NSURL *quickRevealed=nil; quickDelegate.terminalView.testRevealURLHandler=^(NSURL *url){quickRevealed=url;};
             [quickDelegate.terminalView toggleQuickSelect:nil];
+            quickDeadline=[NSDate dateWithTimeIntervalSinceNow:0.75];
+            while (!quickDelegate.terminalView.quickSelectActive && [quickDeadline timeIntervalSinceNow] > 0)
+                [[NSRunLoop mainRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+            wrappedURL=[quickDelegate.terminalView.quickSelectMatches filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"kind == %@",@"url"]].firstObject;
             [quickDelegate.terminalView finishQuickSelectWithLabel:wrappedURL[@"label"] option:YES];
             BOOL quickOptionOpens=[quickRevealed.absoluteString isEqualToString:@"https://quick.select.test/wrapped-url"];
             MicaUITestRecord(report,&allPassed,quickHasWrappedURL && quickQuotedPath && quickRejectsUnquoted && quickHasHash && quickUniqueLabels && quickCopies && quickOptionOpens,

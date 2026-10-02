@@ -2094,6 +2094,10 @@ int mica_session_poll(MicaSession *session, int timeout_ms) {
     return 0;
 }
 
+int mica_session_fd(const MicaSession *session) {
+    return session ? session->master_fd : -1;
+}
+
 bool mica_session_take_output_metrics(MicaSession *session, MicaSessionOutputMetrics *metrics) {
     if (!session || !metrics) return false;
     *metrics = session->output_metrics;

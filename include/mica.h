@@ -41,6 +41,8 @@ MicaSession *mica_session_create(const char *cwd, const char *command, int rows,
 MicaSession *mica_session_create_prefilled(const char *cwd, const char *command, int rows, int cols);
 void mica_session_destroy(MicaSession *session);
 int mica_session_poll(MicaSession *session, int timeout_ms);
+// Master PTY descriptor, owned by the session. Returns -1 after EOF/close.
+int mica_session_fd(const MicaSession *session);
 bool mica_session_take_output_metrics(MicaSession *session, MicaSessionOutputMetrics *metrics);
 void mica_session_set_cleanup_logger(MicaSessionCleanupLogger logger);
 void mica_session_write(MicaSession *session, const void *bytes, size_t length);
