@@ -15,6 +15,7 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/sysctl.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <termios.h>
@@ -1198,6 +1199,44 @@ static size_t snapshot_process_tree(pid_t root_pid, MicaProcessIdentity **tree_o
     free(included);
     *tree_out = tree;
     return tree_count;
+}
+
+size_t mica_session_descendant_commands(const MicaSession *session, char *out, size_t capacity) {
+    if (!out || !capacity) return 0;
+    out[0] = '\0';
+    if (!session || session->child_pid <= 0) return 0;
+    MicaProcessIdentity *tree = NULL;
+    size_t count = snapshot_process_tree(session->child_pid, &tree), used = 0;
+    for (size_t i = 0; i < count && used + 1 < capacity; i++) {
+        if (tree[i].pid == session->child_pid) continue;
+        char path[PROC_PIDPATHINFO_MAXSIZE];
+        if (proc_pidpath(tree[i].pid, path, sizeof(path)) <= 0) continue;
+        const char *base = strrchr(path, '/'); base = base ? base + 1 : path;
+        int mib[3] = { CTL_KERN, KERN_PROCARGS2, tree[i].pid };
+        char args[8192]; size_t length = sizeof(args);
+        if (sysctl(mib, 3, args, &length, NULL, 0) != 0 || length < sizeof(int) + 1) continue;
+        int argc = 0; memcpy(&argc, args, sizeof(argc));
+        char *cursor = args + sizeof(argc), *end = args + length;
+        while (cursor < end && *cursor) cursor++;
+        while (cursor < end && !*cursor) cursor++;
+        char line[257]; size_t line_used = 0;
+        size_t base_len = strlen(base); if (base_len > 256) base_len = 256;
+        memcpy(line, base, base_len); line_used = base_len;
+        for (int arg = 0; arg < argc && cursor < end; arg++) {
+            size_t n = strnlen(cursor, (size_t)(end - cursor));
+            if (n == (size_t)(end - cursor)) break;
+            if (arg > 0 && line_used < 256) line[line_used++] = ' ';
+            size_t copy = n < 256 - line_used ? n : 256 - line_used;
+            memcpy(line + line_used, cursor, copy); line_used += copy;
+            cursor += n + 1;
+        }
+        size_t need = line_used + (used ? 1 : 0);
+        if (need > capacity - 1 - used) break;
+        if (used) out[used++] = '\n';
+        memcpy(out + used, line, line_used); used += line_used; out[used] = '\0';
+    }
+    free(tree);
+    return used;
 }
 
 static void signal_process_tree(const MicaProcessIdentity *tree, size_t tree_count,

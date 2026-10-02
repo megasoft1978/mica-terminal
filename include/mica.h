@@ -120,6 +120,7 @@ uint64_t mica_session_revision(const MicaSession *session);
 bool mica_session_take_dirty_rows(MicaSession *session, MicaDirtyRows *rows);
 uint64_t mica_session_attention_count(const MicaSession *session);
 pid_t mica_session_pid(const MicaSession *session);
+size_t mica_session_descendant_commands(const MicaSession *session, char *out, size_t capacity);
 bool mica_session_working_directory(const MicaSession *session, char *buffer, size_t capacity);
 const char *mica_session_command(const MicaSession *session);
 const char *mica_session_title(const MicaSession *session);
