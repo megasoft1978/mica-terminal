@@ -378,7 +378,8 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
     NSString *recentAction = nil;
     for (int row = rows - 1; row >= firstRow; row--) {
         BOOL lineHasPromptGlyph = NO;
-        NSMutableString *line = [NSMutableString string];
+        char lineBuffer[1024];
+        size_t lineLength = 0;
         for (int col = 0; col < cols; col++) {
             MicaCell cell;
             if (!mica_session_get_cell(session, row, col, &cell) || CellIsContinuation(cell)) continue;
@@ -386,10 +387,13 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
                 uint32_t codepoint = cell.chars[i];
                 if (row >= rows - 2 && (codepoint == 0x276f || codepoint == 0x203a))
                     lineHasPromptGlyph = YES;
-                if (codepoint >= 0x20 && codepoint <= 0x7e) [line appendFormat:@"%c", (char)codepoint];
-                else [line appendString:@" "];
+                if (lineLength + 1 < sizeof(lineBuffer))
+                    lineBuffer[lineLength++] = (codepoint >= 0x20 && codepoint <= 0x7e)
+                        ? (char)codepoint : ' ';
             }
         }
+        lineBuffer[lineLength] = '\0';
+        NSString *line = [[NSString alloc] initWithBytes:lineBuffer length:lineLength encoding:NSASCIIStringEncoding] ?: @"";
         NSString *trimmed = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
         if (!trimmed.length) continue;
         NSString *upper = trimmed.uppercaseString;
