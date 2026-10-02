@@ -2,31 +2,43 @@
 #import "mica_hook_install.h"
 #import <sys/stat.h>
 
-static void check(BOOL value, NSString *message) { if (!value) { fprintf(stderr,"FAIL: %s\n",message.UTF8String); exit(1); } }
+static void check(BOOL ok, NSString *message) { if (!ok) { fprintf(stderr,"FAIL: %s\n",message.UTF8String); exit(1); } }
+static NSString *home(void) { return [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]; }
+static NSString *config(NSString *h) { return [h stringByAppendingPathComponent:@".codex/config.toml"]; }
+static void put(NSString *path, NSData *data) { [[NSFileManager defaultManager] createDirectoryAtPath:path.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil]; check([data writeToFile:path atomically:YES],@"write fixture"); }
+static NSData *bytesAt(NSString *path) { return [NSData dataWithContentsOfFile:path]; }
+static void clean(NSString *h) { [[NSFileManager defaultManager] removeItemAtPath:h error:nil]; }
+
 int main(void) {
  @autoreleasepool {
-  NSString *home=[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
-  NSString *claude=[home stringByAppendingPathComponent:@".claude/settings.json"], *codex=[home stringByAppendingPathComponent:@".codex/hooks.json"];
-  NSError *e=nil; NSDictionary *preview=[MicaHookInstall previewForHome:home error:&e]; check(preview!=nil,@"empty preview");
-  check([MicaHookInstall applyForHome:home remove:NO error:&e],@"empty install");
-  [@"{\"before\":true}" writeToFile:claude atomically:YES encoding:NSUTF8StringEncoding error:nil];
-  check([MicaHookInstall applyForHome:home remove:NO error:&e],@"install over existing");
-  check([[NSFileManager defaultManager] fileExistsAtPath:[claude stringByAppendingString:@".mica-backup"]],@"backup created");
-  NSData *installed=[NSData dataWithContentsOfFile:claude]; id root=[NSJSONSerialization JSONObjectWithData:installed options:0 error:nil]; check([root[@"hooks"][@"UserPromptSubmit"] count]==1,@"Claude events installed");
-  check([MicaHookInstall applyForHome:home remove:NO error:&e],@"idempotent install");
-  NSString *other=@"{\"model\":\"keep\",\"hooks\":{\"Stop\":[{\"matcher\":\"x\",\"hooks\":[{\"type\":\"command\",\"command\":\"other\"}]}]}}";
-  [other writeToFile:claude atomically:YES encoding:NSUTF8StringEncoding error:nil];
-  check([MicaHookInstall applyForHome:home remove:NO error:&e],@"merge existing");
-  root=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:claude] options:0 error:nil];
-  check([root[@"model"] isEqual:@"keep"] && [root[@"hooks"][@"Stop"] count]==2,@"existing keys and hooks retained");
-  check([MicaHookInstall applyForHome:home remove:YES error:&e],@"remove");
-  root=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:claude] options:0 error:nil];
-  check([root[@"model"] isEqual:@"keep"] && [root[@"hooks"][@"Stop"] count]==1,@"remove retains unrelated semantic content");
-  [@"{" writeToFile:claude atomically:YES encoding:NSUTF8StringEncoding error:nil]; e=nil;
-  check([MicaHookInstall previewForHome:home error:&e]==nil && e!=nil,@"invalid JSON refused");
-  check([claude hasPrefix:home] && [codex hasPrefix:home],@"all installer paths stay under temporary HOME");
-  (void)codex;
-  [[NSFileManager defaultManager] removeItemAtPath:home error:nil];
+  NSError *e=nil; NSString *h=home(), *p=config(h);
+  NSDictionary *preview=[MicaHookInstall previewForHome:h error:&e]; check(preview!=nil,@"empty home preview");
+  check([MicaHookInstall applyForHome:h remove:NO error:&e],@"empty home install");
+  NSString *line=preview[@"codexLine"]; NSString *installed=[[NSString alloc] initWithData:bytesAt(p) encoding:NSUTF8StringEncoding];
+  check([installed containsString:line] && [[NSFileManager defaultManager] fileExistsAtPath:p],@"empty home config created with notify");
+  struct stat st; check(stat(p.fileSystemRepresentation,&st)==0 && (st.st_mode&0777)==0600,@"new config mode 0600"); clean(h);
+
+  h=home(); p=config(h); NSString *tables=@"# keep\n[model]\nname = \"x\"\n"; put(p,[tables dataUsingEncoding:NSUTF8StringEncoding]);
+  check([MicaHookInstall applyForHome:h remove:NO error:&e],@"tables only install"); installed=[[NSString alloc] initWithData:bytesAt(p) encoding:NSUTF8StringEncoding];
+  check([installed hasPrefix:[NSString stringWithFormat:@"# keep\n%@\n[model]",line]],@"notify inserted before first table");
+  NSArray *files=[[NSFileManager defaultManager] contentsOfDirectoryAtPath:p.stringByDeletingLastPathComponent error:nil]; BOOL backup=NO;
+  for(NSString *f in files) if([f hasPrefix:@"config.toml.mica-backup-"]) backup=YES;
+  check(backup,@"timestamped backup created"); clean(h);
+
+  h=home(); p=config(h); NSString *own=@"notify = [\"my-notifier\"]\n[table]\nx=1\n"; put(p,[own dataUsingEncoding:NSUTF8StringEncoding]); NSData *before=bytesAt(p);
+  preview=[MicaHookInstall previewForHome:h error:&e]; check([preview[@"codexPreview"] isEqual:@"Codex already has a notify command; Mica left it unchanged"],@"own notify preview note");
+  check([MicaHookInstall applyForHome:h remove:NO error:&e] && [bytesAt(p) isEqual:before],@"own notify left byte-identical"); clean(h);
+
+  h=home(); p=config(h); NSString *mica=[NSString stringWithFormat:@"# before\n%@\n[keep]\na = 1\n",line]; put(p,[mica dataUsingEncoding:NSUTF8StringEncoding]); before=bytesAt(p);
+  check([MicaHookInstall applyForHome:h remove:NO error:&e] && [bytesAt(p) isEqual:before],@"existing Mica line idempotent");
+  check([MicaHookInstall applyForHome:h remove:YES error:&e],@"remove Mica line");
+  check([[NSString alloc] initWithData:bytesAt(p) encoding:NSUTF8StringEncoding] && [bytesAt(p) isEqual:[@"# before\n[keep]\na = 1\n" dataUsingEncoding:NSUTF8StringEncoding]],@"remove preserves other bytes"); clean(h);
+
+  h=home(); p=config(h); const unsigned char invalid[]={0xff,0xfe}; put(p,[NSData dataWithBytes:invalid length:sizeof(invalid)]); before=bytesAt(p); e=nil;
+  check(![MicaHookInstall applyForHome:h remove:NO error:&e] && e && [bytesAt(p) isEqual:before],@"invalid UTF-8 refused without mutation"); clean(h);
+  h=home(); p=config(h); NSMutableData *large=[NSMutableData dataWithLength:262145]; put(p,large); before=bytesAt(p); e=nil;
+  check(![MicaHookInstall applyForHome:h remove:NO error:&e] && [bytesAt(p) isEqual:before],@"oversized config refused"); clean(h);
+  puts("hook installer Codex TOML temporary HOME cases passed");
  }
- puts("hook installer temporary HOME merge, idempotence, remove, backup, invalid JSON passed"); return 0;
+ return 0;
 }

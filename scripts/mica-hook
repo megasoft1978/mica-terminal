@@ -2,8 +2,16 @@
 # Agent hooks are best-effort; failures must never interrupt the agent.
 event=${1-}
 [ -n "${MICA_TAB_TOKEN-}" ] && [ -n "${MICA_HOOK_SOCK-}" ] && [ -n "$event" ] || exit 0
-payload=$(cat)
+agent=claude
+if [ "$event" = codex-notify ]; then
+    payload=${2-}
+    event=agent-turn-complete
+    agent=codex
+else
+    payload=$(cat)
+fi
+[ -n "$payload" ] || payload='{}'
 payload=${payload%\}}
-payload="$payload,\"token\":\"$MICA_TAB_TOKEN\",\"event\":\"$event\"}"
+payload="$payload,\"token\":\"$MICA_TAB_TOKEN\",\"event\":\"$event\",\"agent\":\"$agent\"}"
 printf '%s\n' "$payload" | nc -U -w 2 "$MICA_HOOK_SOCK" 2>/dev/null || :
 exit 0
