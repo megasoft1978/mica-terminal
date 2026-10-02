@@ -18,6 +18,12 @@ int main(void) {
         [inbox setMuted:YES tabID:1];
         NSCAssert(inbox.events.count == 0 && ![inbox postTabID:1 kind:MicaAttentionDone title:@"a" body:@"done" muted:NO], @"mute clears and blocks");
         [inbox setMuted:NO tabID:1];
+        __block MicaAttentionKind lastKind = MicaAttentionWaitingInput;
+        inbox.delivery = ^(NSDictionary *event) { delivered++; lastKind = [event[@"kind"] integerValue]; };
+        now += 2;
+        NSCAssert([inbox postTabID:3 kind:MicaAttentionTimerEnd title:@"Timer" body:@"Ended" muted:NO], @"timer end post");
+        NSCAssert(lastKind == MicaAttentionTimerEnd, @"timer end routed through inbox delivery");
+        [inbox clearTabID:3];
         [inbox postTabID:2 kind:MicaAttentionDone title:@"b" body:@"done" muted:NO];
         NSCAssert([inbox.dockBadge isEqual:@"1"], @"dock badge");
         [inbox clearTabID:2];

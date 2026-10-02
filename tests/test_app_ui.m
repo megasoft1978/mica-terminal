@@ -8,6 +8,23 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+@interface MicaTestNotificationContent : NSObject
+@property(nonatomic, copy) NSDictionary *userInfo;
+@end
+@implementation MicaTestNotificationContent @end
+@interface MicaTestNotificationRequest : NSObject
+@property(nonatomic, strong) MicaTestNotificationContent *content;
+@end
+@implementation MicaTestNotificationRequest @end
+@interface MicaTestNotification : NSObject
+@property(nonatomic, strong) MicaTestNotificationRequest *request;
+@end
+@implementation MicaTestNotification @end
+@interface MicaTestNotificationResponse : NSObject
+@property(nonatomic, strong) MicaTestNotification *notification;
+@end
+@implementation MicaTestNotificationResponse @end
+
 @interface MicaRedrawSpySidebar : MicaAgentSidebarView
 @property(nonatomic) NSUInteger redrawRequests;
 @end
@@ -1854,6 +1871,12 @@ static int MicaRunUISelfTest(void) {
             (void)body; (void)tab;
             [agentNotificationTitles addObject:title ?: @""];
         };
+        [MicaAttention() clearTabID:agentLabelTab.identifier];
+        void (^savedAttentionDelivery)(NSDictionary *) = MicaAttention().delivery;
+        MicaAttention().delivery = ^(NSDictionary *event) {
+            for (MicaTab *candidate in delegate.tabs) if (candidate.identifier == [event[@"tabID"] unsignedLongLongValue])
+                delegate.testAgentNotificationHandler(event[@"title"] ?: @"Mica", event[@"body"] ?: @"", candidate);
+        };
         agentLabelTab.completionLabel = @"codex";
         BOOL waitingTitle = [[delegate agentNotificationTitleForTab:agentLabelTab waiting:YES] isEqual:@"Codex needs input"];
         BOOL finishedTitle = [[delegate agentNotificationTitleForTab:agentLabelTab waiting:NO] isEqual:@"Codex finished"];
@@ -1862,17 +1885,19 @@ static int MicaRunUISelfTest(void) {
         BOOL muteMenuStartsOff = muteItem.state == NSControlStateValueOff;
         [delegate toggleMuteNotificationsForTab:muteItem];
         agentLabelTab.needsAttention = YES;
-        [delegate postAgentNotification:@"please continue" title:[delegate agentNotificationTitleForTab:agentLabelTab waiting:YES]
-                                   kind:MicaAgentNotificationKindWaiting forTab:agentLabelTab];
+        [MicaAttention() setMuted:agentLabelTab.muteNotifications tabID:agentLabelTab.identifier];
+        [MicaAttention() postTabID:agentLabelTab.identifier kind:MicaAttentionWaitingInput
+            title:[delegate agentNotificationTitleForTab:agentLabelTab waiting:YES] body:@"please continue" muted:NO];
         BOOL muteSuppressesNotice = agentNotificationTitles.count == 0;
         BOOL mutedBadgeRemains = [delegate.terminalView activityStateForTab:agentLabelTab] == MicaTabActivityStateNeedsAttention;
         NSMenu *mutedMenu = [delegate notificationMenuForTab:agentLabelTab];
         BOOL muteMenuShowsOn = [mutedMenu.itemArray.firstObject state] == NSControlStateValueOn;
         [delegate toggleMuteNotificationsForTab:mutedMenu.itemArray.firstObject];
-        [delegate postAgentNotification:@"please continue" title:[delegate agentNotificationTitleForTab:agentLabelTab waiting:YES]
-                                   kind:MicaAgentNotificationKindWaiting forTab:agentLabelTab];
-        [delegate postAgentNotification:@"work complete" title:[delegate agentNotificationTitleForTab:agentLabelTab waiting:NO]
-                                   kind:MicaAgentNotificationKindFinished forTab:agentLabelTab];
+        [MicaAttention() setMuted:agentLabelTab.muteNotifications tabID:agentLabelTab.identifier];
+        [MicaAttention() postTabID:agentLabelTab.identifier kind:MicaAttentionWaitingInput
+            title:[delegate agentNotificationTitleForTab:agentLabelTab waiting:YES] body:@"please continue" muted:NO];
+        [MicaAttention() postTabID:agentLabelTab.identifier kind:MicaAttentionDone
+            title:[delegate agentNotificationTitleForTab:agentLabelTab waiting:NO] body:@"work complete" muted:NO];
         NSArray *mutePaletteRows = [delegate paletteRows];
         NSUInteger mutePaletteIndex = [mutePaletteRows indexOfObjectPassingTest:^BOOL(NSDictionary *row, NSUInteger idx, BOOL *stop) {
             (void)idx; (void)stop;
@@ -1897,6 +1922,17 @@ static int MicaRunUISelfTest(void) {
             [NSString stringWithFormat:@"agent notices label waiting and finished states; per-tab mute suppresses notices while preserving the badge (titles=%@ mute=%d/%d badge=%d palette=%d)",
                 agentNotificationTitles, muteMenuStartsOff, muteMenuShowsOn, mutedBadgeRemains, paletteCanMute]);
         delegate.testAgentNotificationHandler = nil;
+        MicaAttention().delivery = savedAttentionDelivery;
+        NSDictionary *attentionProbe = @{@"tabID": @(agentLabelTab.identifier), @"kind": @(MicaAttentionDone),
+            @"title": @"Done", @"body": @"Finished"};
+        UNMutableNotificationContent *attentionContent = MicaNotificationContentForAttention(attentionProbe);
+        BOOL notificationDeliveryPolicy = MicaShouldDeliverAttention(NO, YES) &&
+            MicaShouldDeliverAttention(YES, NO) && !MicaShouldDeliverAttention(YES, YES);
+        BOOL notificationHasNoSound = attentionContent.sound == nil &&
+            [attentionContent.userInfo[@"tabID"] unsignedLongLongValue] == agentLabelTab.identifier &&
+            [attentionContent.userInfo[@"kind"] integerValue] == MicaAttentionDone;
+        MicaUITestRecord(report, &allPassed, notificationDeliveryPolicy && notificationHasNoSound,
+            @"attention notifications deliver only when inactive or away from the key window tab, carry stable IDs and kind, and have no sound");
         agentLabelTab.needsAttention = NO;
         agentLabelTab.completionLabel = nil;
         MicaUITestRecord(report, &allPassed, delegate.terminalView.terminalFont.pointSize >= 16,
@@ -2885,6 +2921,26 @@ static int MicaRunUISelfTest(void) {
             BOOL menuAtB = newTabItem.target == windowB;
             [windowA openProjectWindowWithArguments:@[@"mica", @"--layout", goodLayout]];   // already open: no third window
             BOOL noDuplicate = MicaControllers().count == 2;
+            [windowB addTabWithName:@"Click Target" cwd:NSTemporaryDirectory() command:nil prefilled:NO];
+            MicaTab *secondWindowTab = windowB.activeTab;
+            void (^savedDelivery)(NSDictionary *) = MicaAttention().delivery;
+            MicaAttention().delivery = nil;
+            [MicaAttention() clearTabID:secondWindowTab.identifier];
+            [MicaAttention() postTabID:secondWindowTab.identifier kind:MicaAttentionDone title:@"Done" body:@"Finished" muted:NO];
+            MicaTestNotificationContent *clickContent = [MicaTestNotificationContent new];
+            clickContent.userInfo = @{@"tabID": @(secondWindowTab.identifier), @"kind": @(MicaAttentionDone)};
+            MicaTestNotificationRequest *clickRequest = [MicaTestNotificationRequest new]; clickRequest.content = clickContent;
+            MicaTestNotification *clickNotification = [MicaTestNotification new]; clickNotification.request = clickRequest;
+            MicaTestNotificationResponse *clickResponse = [MicaTestNotificationResponse new]; clickResponse.notification = clickNotification;
+            [windowA userNotificationCenter:nil didReceiveNotificationResponse:(id)clickResponse withCompletionHandler:^{}];
+            BOOL clickRoutesAcrossWindows = windowB.activeIndex == 1 &&
+                ![MicaAttention().waitingTabIDs containsObject:@(secondWindowTab.identifier)] &&
+                ![MicaAttention().events filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSDictionary *event, NSDictionary *bindings) {
+                    (void)bindings; return [event[@"tabID"] unsignedLongLongValue] == secondWindowTab.identifier;
+                }]].count;
+            MicaAttention().delivery = savedDelivery;
+            MicaUITestRecord(report, &allPassed, clickRoutesAcrossWindows,
+                @"notification click finds a tab in a second window, selects it and clears its inbox events");
             NSUInteger tabsBeforeClose = windowA.tabs.count;
             pid_t closedShellPID = mica_session_pid(windowB.activeTab.session);
             [windowB windowWillClose:nil];

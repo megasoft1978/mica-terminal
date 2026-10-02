@@ -135,12 +135,6 @@ typedef NS_ENUM(NSInteger, MicaTabActivityState) {
     MicaTabActivityStateNeedsAttention,
 };
 
-typedef NS_ENUM(NSInteger, MicaAgentNotificationKind) {
-    MicaAgentNotificationKindUpdate = 0,
-    MicaAgentNotificationKindWaiting,
-    MicaAgentNotificationKindFinished,
-};
-
 static NSColor *MicaColor(uint32_t rgb) {
     static NSCache<NSNumber *, NSColor *> *colors;
     static dispatch_once_t once;
@@ -166,6 +160,18 @@ static MicaAttentionInbox *MicaAttention(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{ inbox = [MicaAttentionInbox new]; });
     return inbox;
+}
+static BOOL MicaShouldDeliverAttention(BOOL appActive, BOOL selectedInKeyWindow) {
+    return !appActive || !selectedInKeyWindow;
+}
+
+static UNMutableNotificationContent *MicaNotificationContentForAttention(NSDictionary *event) {
+    UNMutableNotificationContent *content = [UNMutableNotificationContent new];
+    content.title = event[@"title"] ?: @"Mica";
+    content.body = event[@"body"] ?: @"";
+    content.sound = nil;
+    content.userInfo = @{ @"tabID": event[@"tabID"] ?: @0, @"kind": event[@"kind"] ?: @0 };
+    return content;
 }
 
 // The terminal draws on a fixed surface (dark by default, white in the light theme), independent of the system appearance.
@@ -303,7 +309,6 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 @property(nonatomic, copy) NSArray<NSString *> *gitVocabularyTerms;
 @property(nonatomic, copy) NSString *recentVisibleText;
 @property(nonatomic, strong) NSDate *recentVisibleCapturedAt;
-@property(nonatomic, assign) NSTimeInterval lastAgentNotificationAt;
 @property(nonatomic, copy) NSString *gitBranchLookupPath;
 @property(nonatomic, assign) NSTimeInterval lastSelectedAt;
 @property(nonatomic, assign) NSInteger clipboardDecision;  // 0 ask, 2 deny in this tab
@@ -638,7 +643,6 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)prefScrollbackChanged:(NSPopUpButton *)sender;
 - (void)refreshPreferencesSizeLabel;
 - (void)newWorktreeTab:(id)sender;
-- (void)postAgentNotification:(NSString *)words title:(NSString *)title kind:(MicaAgentNotificationKind)kind forTab:(MicaTab *)tab;
 - (void)toggleMuteNotificationsForTab:(id)sender;
 - (NSMenu *)notificationMenuForTab:(MicaTab *)tab;
 - (NSString *)agentNotificationTitleForTab:(MicaTab *)tab waiting:(BOOL)waiting;
@@ -694,7 +698,6 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)updateMenuBarTimer;
 - (void)applyMenuBarTimerPreference;
 - (NSDictionary<NSString *, id> *)menuBarTimerPresentationAtTime:(double)now;
-- (NSString *)currentPomodoroNotificationIdentifier;
 @property(nonatomic, assign) MicaUIMode uiMode;
 @end
 
@@ -3861,37 +3864,6 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
     if (gMicaStatusItem) [self updateMenuBarTimer];
 }
 
-- (NSString *)currentPomodoroNotificationIdentifier {
-    NSString *phase = _pomodoro.phase == MICA_POMODORO_FOCUS ? @"focus" : @"break";
-    return [NSString stringWithFormat:@"com.megasoft78.mica.pomodoro.computer.%@.%llu", phase,
-        self.pomodoro.completed_focuses];
-}
-
-- (void)schedulePomodoroNotification {
-    if (!mica_pomodoro_is_running(&_pomodoro)) return;
-#if defined(MICA_APP_NO_MAIN)
-    return;
-#else
-    UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
-    [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
-        if (settings.authorizationStatus != UNAuthorizationStatusAuthorized &&
-            settings.authorizationStatus != UNAuthorizationStatusProvisional) return;
-        double seconds = mica_pomodoro_remaining(&self->_pomodoro, MicaContinuousTimeSeconds());
-        UNMutableNotificationContent *content = [UNMutableNotificationContent new];
-        content.title = _pomodoro.phase == MICA_POMODORO_FOCUS ? @"Focus time is over" : @"Break time is over";
-        content.body = _pomodoro.phase == MICA_POMODORO_FOCUS
-            ? [NSString stringWithFormat:@"Pause work and take a %ld-minute break.", (long)self.pomodoroCycleBreakMinutes]
-            : @"Your break is over. It’s time to get back to focus.";
-        content.sound = UNNotificationSound.defaultSound;
-        UNTimeIntervalNotificationTrigger *trigger = [UNTimeIntervalNotificationTrigger
-            triggerWithTimeInterval:MAX(1, seconds) repeats:NO];
-        UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:
-            [self currentPomodoroNotificationIdentifier] content:content trigger:trigger];
-        [center addNotificationRequest:request withCompletionHandler:nil];
-    }];
-#endif
-}
-
 - (void)startPomodoro:(id)sender {
     (void)sender;
     double now = MicaContinuousTimeSeconds();
@@ -3906,7 +3878,6 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
 #if !defined(MICA_APP_NO_MAIN)
     [self requestPomodoroNotifications];
 #endif
-    [self schedulePomodoroNotification];
 }
 
 - (void)takePomodoroBreak:(id)sender {
@@ -3916,7 +3887,7 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
     _pomodoro.paused_remaining = 0;
     _pomodoro.deadline = now + MAX(1, self.breakDurationMinutes) * 60.0;
     self.pomodoroLabel = @"";
-    [self savePomodoroState]; [self refreshPomodoroState]; [self schedulePomodoroNotification];
+    [self savePomodoroState]; [self refreshPomodoroState];
 }
 
 - (void)editPomodoroLabel:(id)sender {
@@ -3934,7 +3905,7 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
 - (void)togglePomodoroPause:(id)sender {
     (void)sender;
     if (!mica_pomodoro_toggle_pause(&_pomodoro, MicaContinuousTimeSeconds())) { [self startPomodoro:nil]; return; }
-    [self savePomodoroState]; [self refreshPomodoroState]; [self schedulePomodoroNotification];
+    [self savePomodoroState]; [self refreshPomodoroState];
 }
 
 - (void)resetPomodoro:(id)sender {
@@ -3957,7 +3928,7 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
         MAX(1, self.pomodoroCycleBreakMinutes) * 60.0);
     if (!changed) return;
     if (phase == MICA_POMODORO_BREAK || phase == MICA_POMODORO_PAUSED_BREAK) self.pomodoroLabel = @"";
-    [self savePomodoroState]; [self refreshPomodoroState]; [self schedulePomodoroNotification];
+    [self savePomodoroState]; [self refreshPomodoroState];
 }
 
 - (void)updatePomodoroTimer {
@@ -3994,7 +3965,7 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
             [defaults setInteger:count + 1 forKey:@"MicaDailyFocusCount"];
         }
         if (owner.pomodoro.phase == MICA_POMODORO_PAUSED_BREAK || owner.pomodoro.phase == MICA_POMODORO_BREAK) owner.pomodoroLabel = @"";
-        [owner savePomodoroState]; [owner refreshPomodoroState]; [owner schedulePomodoroNotification];
+        [owner savePomodoroState]; [owner refreshPomodoroState];
         if (!NSApp.isActive && owner.attentionRequest == 0) owner.attentionRequest = [NSApp requestUserAttention:NSInformationalRequest];
     }
     [owner updateMenuBarTimer];
@@ -4106,10 +4077,10 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
 #if !defined(MICA_APP_NO_MAIN)
     UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
     center.delegate = self;
-    [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert | UNAuthorizationOptionSound
+    [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert
         completionHandler:^(BOOL granted, NSError *error) {
+            (void)granted;
             if (error) MicaDiagnosticsLog(@"pomodoro", [NSString stringWithFormat:@"notification permission failed: %@", error]);
-            if (granted) dispatch_async(dispatch_get_main_queue(), ^{ [self schedulePomodoroNotification]; });
         }];
 #endif
 }
@@ -4212,33 +4183,33 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
     [self saveSessionState];
 }
 
-- (void)postAgentNotification:(NSString *)words title:(NSString *)title kind:(MicaAgentNotificationKind)kind forTab:(MicaTab *)tab {
-    if (!tab || tab.muteNotifications || !words.length) return;
+- (void)deliverAttentionEvent:(NSDictionary *)event {
+    uint64_t tabID = [event[@"tabID"] unsignedLongLongValue];
+    if (!tabID || !event) return;
 #if defined(MICA_APP_NO_MAIN)
-    if (self.testAgentNotificationHandler) self.testAgentNotificationHandler(title, words, tab);
-#endif
-#if !defined(MICA_APP_NO_MAIN)
-    NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
-    if (kind != MicaAgentNotificationKindFinished && now - tab.lastAgentNotificationAt < 10.0) return;
-    tab.lastAgentNotificationAt = now;
+    for (MicaAppDelegate *controller in MicaControllers()) for (MicaTab *tab in controller.tabs)
+        if (tab.identifier == tabID && controller.testAgentNotificationHandler)
+            controller.testAgentNotificationHandler(event[@"title"] ?: @"Mica", event[@"body"] ?: @"", tab);
+#else
+    MicaAppDelegate *tabController = nil;
+    MicaTab *tab = nil;
+    for (MicaAppDelegate *controller in MicaControllers()) for (MicaTab *candidate in controller.tabs)
+        if (candidate.identifier == tabID) { tabController = controller; tab = candidate; break; }
+    if (!tab || !MicaShouldDeliverAttention(NSApp.isActive,
+        tabController.window == NSApp.keyWindow && tabController.activeTab == tab)) return;
     static BOOL authorizationRequested;
     UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
     if (!authorizationRequested) {
         authorizationRequested = YES;
-        [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert
-            completionHandler:^(BOOL granted, NSError *error) { (void)granted; (void)error; }];
+        [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert completionHandler:^(BOOL granted, NSError *error) {
+            (void)granted; (void)error;
+        }];
     }
-    UNMutableNotificationContent *content = [UNMutableNotificationContent new];
-    content.title = title.length ? title : (tab.name ?: @"Mica");
-    content.body = words;
-    content.sound = nil;
-    content.userInfo = @{ @"window": @(self.window.windowNumber), @"tabID": @(tab.identifier) };
-    NSString *identifier = [NSString stringWithFormat:@"mica-agent-%ld-%llu", (long)self.window.windowNumber,
-        (unsigned long long)tab.identifier];
+    NSInteger kind = [event[@"kind"] integerValue];
+    UNMutableNotificationContent *content = MicaNotificationContentForAttention(event);
+    NSString *identifier = [NSString stringWithFormat:@"mica.attention.%llu.%ld", tabID, (long)kind];
     [center addNotificationRequest:[UNNotificationRequest requestWithIdentifier:identifier content:content trigger:nil]
         withCompletionHandler:nil];
-#else
-    (void)words; (void)title; (void)kind; (void)tab;
 #endif
 }
 
@@ -4247,19 +4218,18 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
          withCompletionHandler:(void (^)(void))completionHandler {
     (void)center;
     NSDictionary *info = response.notification.request.content.userInfo;
-    NSNumber *windowNumber = info[@"window"], *tabID = info[@"tabID"];
-    for (MicaAppDelegate *controller in MicaControllers()) {
-        if (windowNumber && controller.window.windowNumber == windowNumber.integerValue) {
+    NSNumber *tabID = [info[@"tabID"] isKindOfClass:NSNumber.class] ? info[@"tabID"] : nil;
+    if (tabID.unsignedLongLongValue) {
+        for (MicaAppDelegate *controller in MicaControllers()) {
+            NSUInteger index = [controller.tabs indexOfObjectPassingTest:^BOOL(MicaTab *tab, NSUInteger idx, BOOL *stop) {
+                (void)idx; (void)stop; return tab.identifier == tabID.unsignedLongLongValue;
+            }];
+            if (index == NSNotFound) continue;
             [NSApp activateIgnoringOtherApps:YES];
             [controller.window makeKeyAndOrderFront:nil];
-            if (tabID) {
-                for (NSUInteger index = 0; index < controller.tabs.count; index++) {
-                    if (controller.tabs[index].identifier == tabID.unsignedLongLongValue) {
-                        [controller selectTabAtIndex:(NSInteger)index];
-                        break;
-                    }
-                }
-            }
+            [controller selectTabAtIndex:(NSInteger)index];
+            [MicaAttention() clearTabID:tabID.unsignedLongLongValue];
+            NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
             break;
         }
     }
@@ -4270,7 +4240,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
        willPresentNotification:(UNNotification *)notification
          withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler {
     (void)center;
-    if ([notification.request.identifier hasPrefix:@"mica-agent-"])
+    if ([notification.request.identifier hasPrefix:@"mica.attention."])
         completionHandler(UNNotificationPresentationOptionBanner);
     else
         completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionSound);
@@ -4353,6 +4323,11 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 // (--layout, --project-name); nil means the process's own command line.
 - (void)startWindowWithArguments:(NSArray<NSString *> *)arguments {
     if (![MicaControllers() containsObject:self]) [MicaControllers() addObject:self];
+    static dispatch_once_t attentionDeliveryOnce;
+    dispatch_once(&attentionDeliveryOnce, ^{ MicaAttention().delivery = ^(NSDictionary *event) {
+        MicaAppDelegate *delegate = MicaControllers().firstObject;
+        [delegate deliverAttentionEvent:event];
+    }; });
     if (!getenv("MICA_TEST_NO_STARTUP")) {
         MicaHookServer *server = MicaHookServer.sharedServer;
         if ([server startAtPath:nil]) {
@@ -6152,11 +6127,19 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
                 if (agentWords && !NSApp.isActive) {
                     NSString *detail = nil;
                     NSString *activity = MicaAgentActivityForSession(tab.session, &detail);
-                    BOOL waiting = [activity isEqualToString:@"Needs input"];
+                    BOOL waitingPermission = [MicaAgentStateForTab(tab) isEqualToString:@"waitingPermission"] ||
+                        [activity isEqualToString:@"Needs permission"];
+                    BOOL waitingInput = [MicaAgentStateForTab(tab) isEqualToString:@"waitingInput"] ||
+                        [activity isEqualToString:@"Needs input"];
+                    BOOL waiting = waitingPermission || waitingInput;
                     NSString *title = waiting ? [self agentNotificationTitleForTab:tab waiting:YES] :
                         [NSString stringWithFormat:@"%@ update", MicaAgentNameForTab(tab) ?: @"Agent"];
-                    [self postAgentNotification:[NSString stringWithUTF8String:agentWords] title:title
-                        kind:waiting ? MicaAgentNotificationKindWaiting : MicaAgentNotificationKindUpdate forTab:tab];
+                    MicaAttentionKind kind = waitingPermission ? MicaAttentionWaitingPermission :
+                        (waitingInput ? MicaAttentionWaitingInput : MicaAttentionError);
+                    [MicaAttention() setMuted:tab.muteNotifications tabID:tab.identifier];
+                    [MicaAttention() postTabID:tab.identifier kind:kind title:title
+                        body:[NSString stringWithUTF8String:agentWords] muted:NO];
+                    NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
                 }
                 redraw = YES;
             }
@@ -6176,9 +6159,11 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
                 tab.needsAttention = YES;
                 NSString *label = tab.completionLabel.length ? tab.completionLabel : @"Command";
                 NSString *result = tab.completionStatus == 0 ? @"finished" : [NSString stringWithFormat:@"failed (%d)", tab.completionStatus];
-                [self postAgentNotification:[NSString stringWithFormat:@"%@ %@", label, result]
+                [MicaAttention() setMuted:tab.muteNotifications tabID:tab.identifier];
+                [MicaAttention() postTabID:tab.identifier kind:MicaAttentionDone
                     title:[self agentNotificationTitleForTab:tab waiting:NO]
-                    kind:MicaAgentNotificationKindFinished forTab:tab];
+                    body:[NSString stringWithFormat:@"%@ %@", label, result] muted:NO];
+                NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
                 if (!NSApp.isActive && self.attentionRequest == 0)
                     self.attentionRequest = [NSApp requestUserAttention:NSInformationalRequest];
             }
