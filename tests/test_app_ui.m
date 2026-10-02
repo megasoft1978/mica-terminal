@@ -1551,6 +1551,9 @@ static int MicaRunUISelfTest(void) {
         NSString *savedFixtureCommand = fixtureTab.currentCommand;
         NSString *savedFixtureActivity = fixtureTab.agentActivity;
         BOOL savedFixtureAttention = fixtureTab.needsAttention;
+        NSString *savedAgentState = fixtureTab.agentState;
+        NSString *savedAgentMessage = fixtureTab.agentLastMessage;
+        BOOL savedReceivedAgentHook = fixtureTab.receivedAgentHook;
         NSMenuItem *sidebarMenuItem = [[NSApp.mainMenu itemWithTitle:@"View"].submenu itemWithTitle:@"Show Sidebar"];
         BOOL sidebarDefaultOff = !delegate.sidebarVisible && delegate.windowContentView.sidebarView == nil &&
             sidebarMenuItem != nil && sidebarMenuItem.state == NSControlStateValueOff;
@@ -1566,6 +1569,29 @@ static int MicaRunUISelfTest(void) {
         [sidebarRedrawProbe refreshRows];
         [sidebarRedrawProbe refreshRows];
         BOOL unchangedSidebarSkipsRedraw = sidebarRedrawProbe.redrawRequests == 1;
+        fixtureTab.receivedAgentHook = YES;
+        NSArray<NSString *> *agentStates = @[@"idle", @"working", @"waitingPermission", @"waitingInput", @"done", @"error"];
+        NSArray<NSString *> *agentStateLabels = @[@"Idle", @"Working", @"Needs permission", @"Needs input", @"Done", @"Error"];
+        BOOL allAgentStatesAccessible = YES;
+        for (NSUInteger stateIndex = 0; stateIndex < agentStates.count; stateIndex++) {
+            fixtureTab.agentState = agentStates[stateIndex];
+            NSString *stateLabel = [[[delegate.windowContentView.sidebarView accessibilityChildren] firstObject] accessibilityLabel];
+            if (![stateLabel containsString:agentStateLabels[stateIndex]]) allAgentStatesAccessible = NO;
+        }
+        fixtureTab.agentState = @"working";
+        NSString *longAgentMessage = [@"preview " stringByPaddingToLength:100 withString:@"x" startingAtIndex:0];
+        fixtureTab.agentLastMessage = longAgentMessage;
+        NSString *previewLabel = [[[delegate.windowContentView.sidebarView accessibilityChildren] firstObject] accessibilityLabel];
+        NSString *expectedPreview = [[longAgentMessage substringToIndex:79] stringByAppendingString:@"…"];
+        BOOL previewTruncates = [previewLabel containsString:expectedPreview] && ![previewLabel containsString:longAgentMessage];
+        MicaRedrawSpySidebar *modelChangeProbe = [MicaRedrawSpySidebar new];
+        modelChangeProbe.owner = delegate;
+        [modelChangeProbe refreshRows]; [modelChangeProbe refreshRows];
+        fixtureTab.agentState = @"done"; [modelChangeProbe refreshRows];
+        BOOL changedAgentStateRedrawsOnce = modelChangeProbe.redrawRequests == 2;
+        fixtureTab.agentLastMessage = @"updated preview"; [modelChangeProbe refreshRows];
+        BOOL changedAgentMessageRedrawsOnce = modelChangeProbe.redrawRequests == 3;
+        fixtureTab.agentState = @"waitingInput";
         NSArray *sidebarElements = [delegate.windowContentView.sidebarView accessibilityChildren];
         BOOL sidebarStateAccessible = sidebarElements.count == delegate.tabs.count &&
             [sidebarElements[0] accessibilityLabel].length && [[sidebarElements[0] accessibilityLabel] containsString:@"Needs input"] &&
@@ -1605,6 +1631,9 @@ static int MicaRunUISelfTest(void) {
         fixtureTab.currentCommand = savedFixtureCommand;
         fixtureTab.agentActivity = savedFixtureActivity;
         fixtureTab.needsAttention = savedFixtureAttention;
+        fixtureTab.agentState = savedAgentState;
+        fixtureTab.agentLastMessage = savedAgentMessage;
+        fixtureTab.receivedAgentHook = savedReceivedAgentHook;
         [delegate selectTabAtIndex:sidebarOriginalIndex];
         MicaUITestRecord(report, &allPassed, sidebarDefaultOff && sidebarVisible && sidebarStateAccessible && sidebarActivationSelects &&
             sidebarWindowIsolation && sidebarResizePreservesPTY && sidebarHiddenReleasesView,
@@ -1613,6 +1642,9 @@ static int MicaRunUISelfTest(void) {
                 (long)sidebarOriginalCols, (long)resizedSidebarCols, sidebarHiddenReleasesView]);
         MicaUITestRecord(report, &allPassed, unchangedSidebarSkipsRedraw,
             @"sidebar refresh skips redraw requests when row state is unchanged");
+        MicaUITestRecord(report, &allPassed, allAgentStatesAccessible && previewTruncates && changedAgentMessageRedrawsOnce,
+            [NSString stringWithFormat:@"sidebar exposes each agent state and truncated message, and redraws once for state/message changes (states=%d preview=%d state-redraw=%d message-redraw=%d)",
+                allAgentStatesAccessible, previewTruncates, changedAgentStateRedrawsOnce, changedAgentMessageRedrawsOnce]);
         NSString *agentDetail = nil;
         NSString *agentActivity = MicaAgentActivityForSession(fixtureTab.session, &agentDetail);
         MicaUITestRecord(report, &allPassed, [agentActivity isEqualToString:@"Working"] &&

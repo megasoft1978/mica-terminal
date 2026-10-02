@@ -692,14 +692,36 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 
 @implementation MicaAgentSidebarView
 - (BOOL)isFlipped { return YES; }
+- (NSString *)stateTextForTab:(MicaTab *)tab {
+    if (tab.receivedAgentHook) {
+        NSString *state = MicaAgentStateForTab(tab);
+        if ([state isEqualToString:@"working"]) return @"Working";
+        if ([state isEqualToString:@"waitingPermission"]) return @"Needs permission";
+        if ([state isEqualToString:@"waitingInput"]) return @"Needs input";
+        if ([state isEqualToString:@"done"]) return @"Done";
+        if ([state isEqualToString:@"error"]) return @"Error";
+        return @"Idle";
+    }
+    MicaTabActivityState state = [self.owner.terminalView activityStateForTab:tab];
+    return state == MicaTabActivityStateWaiting ? @"Needs input" :
+        state == MicaTabActivityStateRunning ? @"Running" : state == MicaTabActivityStateComplete ? @"Finished" :
+        state == MicaTabActivityStateNeedsAttention ? @"Needs attention" : @"Idle";
+}
+- (NSString *)previewForTab:(MicaTab *)tab {
+    NSString *message = [tab.agentLastMessage stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
+    message = [message stringByReplacingOccurrencesOfString:@"\r" withString:@" "];
+    if (message.length > 80) message = [[message substringToIndex:79] stringByAppendingString:@"…"];
+    return message ?: @"";
+}
 - (void)refreshRows {
     NSMutableArray<NSString *> *rows = [NSMutableArray arrayWithCapacity:self.owner.tabs.count];
     for (NSUInteger i = 0; i < self.owner.tabs.count; i++) {
         MicaTab *tab = self.owner.tabs[i];
-        [rows addObject:[NSString stringWithFormat:@"%llu|%@|%@|%@|%ld|%d",
+        [rows addObject:[NSString stringWithFormat:@"%llu|%@|%@|%@|%ld|%d|%@|%@",
             (unsigned long long)tab.identifier, tab.name ?: @"Terminal",
             tab.cwd.lastPathComponent ?: @"/", tab.gitBranch ?: @"",
-            (long)[self.owner.terminalView activityStateForTab:tab], tab.needsAttention]];
+            (long)[self.owner.terminalView activityStateForTab:tab], tab.needsAttention,
+            MicaAgentStateForTab(tab), tab.agentLastMessage ?: @""]];
     }
     NSString *signature = [NSString stringWithFormat:@"%ld:%@", (long)self.owner.activeIndex,
         [rows componentsJoinedByString:@"\n"]];
@@ -713,9 +735,9 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
     NSDictionary *titleAttrs = @{NSFontAttributeName:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold], NSForegroundColorAttributeName:NSColor.secondaryLabelColor};
     [@"TABS" drawAtPoint:NSMakePoint(14, 14) withAttributes:titleAttrs];
     CGFloat y = 42;
-    for (NSUInteger i = 0; i < self.owner.tabs.count; i++, y += 56) {
+    for (NSUInteger i = 0; i < self.owner.tabs.count; i++, y += 70) {
         MicaTab *tab = self.owner.tabs[i];
-        NSRect row = NSMakeRect(6, y - 5, self.bounds.size.width - 12, 51);
+        NSRect row = NSMakeRect(6, y - 5, self.bounds.size.width - 12, 65);
         BOOL selected = (NSInteger)i == self.owner.activeIndex;
         if (selected) { [NSColor.selectedContentBackgroundColor setFill]; [[NSBezierPath bezierPathWithRoundedRect:row xRadius:6 yRadius:6] fill]; }
         NSColor *fg = selected ? NSColor.selectedMenuItemTextColor : NSColor.labelColor;
@@ -727,27 +749,34 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
         NSString *branch = tab.gitBranch.length ? [NSString stringWithFormat:@" · %@", tab.gitBranch] : @"";
         [([folder stringByAppendingString:branch]) drawInRect:NSMakeRect(14, y + 20, self.bounds.size.width - 25, 15) withAttributes:detailAttrs];
         MicaTabActivityState state = [self.owner.terminalView activityStateForTab:tab];
-        NSString *stateText = state == MicaTabActivityStateWaiting ? @"Needs input" :
-            state == MicaTabActivityStateRunning ? @"Running" : state == MicaTabActivityStateComplete ? @"Finished" :
-            state == MicaTabActivityStateNeedsAttention ? @"Needs attention" : @"Idle";
+        NSString *stateText = [self stateTextForTab:tab];
         NSColor *stateColor = state == MicaTabActivityStateWaiting ? NSColor.systemOrangeColor :
             state == MicaTabActivityStateNeedsAttention ? NSColor.systemRedColor : NSColor.secondaryLabelColor;
         [stateText drawInRect:NSMakeRect(14, y + 36, self.bounds.size.width - 28, 13)
             withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:9], NSForegroundColorAttributeName:selected ? fg : stateColor}];
-        NSString *symbol = state == MicaTabActivityStateWaiting ? @"!" : state == MicaTabActivityStateRunning ? @"●" : state == MicaTabActivityStateComplete ? @"✓" : @"";
+        NSString *symbol = [stateText isEqualToString:@"Needs permission"] ? @"!" :
+            [stateText isEqualToString:@"Needs input"] ? @"?" :
+            [stateText isEqualToString:@"Working"] || [stateText isEqualToString:@"Running"] ? @"●" :
+            [stateText isEqualToString:@"Done"] || [stateText isEqualToString:@"Finished"] ? @"✓" :
+            [stateText isEqualToString:@"Error"] ? @"×" : @"";
         if (symbol.length) [symbol drawAtPoint:NSMakePoint(self.bounds.size.width - 25, y + 1) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:12 weight:NSFontWeightBold], NSForegroundColorAttributeName:state == MicaTabActivityStateWaiting ? NSColor.systemOrangeColor : fg}];
         if (tab.needsAttention) [@"•" drawAtPoint:NSMakePoint(self.bounds.size.width - 23, y + 20) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:14 weight:NSFontWeightBold], NSForegroundColorAttributeName:NSColor.systemRedColor}];
+        NSString *preview = [self previewForTab:tab];
+        if (preview.length) [preview drawInRect:NSMakeRect(14, y + 51, self.bounds.size.width - 28, 12)
+            withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:9], NSForegroundColorAttributeName:NSColor.secondaryLabelColor}];
     }
 }
 - (void)mouseDown:(NSEvent *)event {
+    [self.window makeFirstResponder:self];
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
-    NSInteger index = (NSInteger)floor((point.y - 42) / 56.0);
+    NSInteger index = (NSInteger)floor((point.y - 42) / 70.0);
     if (index >= 0 && index < (NSInteger)self.owner.tabs.count) [self.owner selectTabAtIndex:index];
 }
 - (BOOL)acceptsFirstResponder { return YES; }
 - (void)keyDown:(NSEvent *)event {
     NSInteger delta = event.keyCode == 126 ? -1 : event.keyCode == 125 ? 1 : 0;
     if (delta) [self.owner selectTabAtIndex:MAX(0, MIN((NSInteger)self.owner.tabs.count - 1, self.owner.activeIndex + delta))];
+    else if (event.keyCode == 36 || event.keyCode == 76) [self.owner selectTabAtIndex:self.owner.activeIndex];
     else [super keyDown:event];
 }
 - (BOOL)isAccessibilityElement { return NO; }
@@ -755,12 +784,10 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
     NSMutableArray *children = [NSMutableArray array];
     for (NSUInteger i = 0; i < self.owner.tabs.count; i++) {
         MicaTab *tab = self.owner.tabs[i];
-        MicaTabActivityState activity = [self.owner.terminalView activityStateForTab:tab];
-        NSString *state = activity == MicaTabActivityStateWaiting ? @"Needs input" :
-            activity == MicaTabActivityStateRunning ? @"Running" : activity == MicaTabActivityStateComplete ? @"Finished" :
-            activity == MicaTabActivityStateNeedsAttention ? @"Needs attention" : @"Idle";
-        NSString *label = [NSString stringWithFormat:@"%@%@, folder %@, branch %@, %@%@", tab.name ?: @"Terminal", (NSInteger)i == self.owner.activeIndex ? @", selected" : @"", tab.cwd.lastPathComponent ?: @"/", tab.gitBranch ?: @"no branch", state, tab.needsAttention ? @", unread attention" : @""];
-        MicaTabAccessibilityElement *element = [MicaTabAccessibilityElement accessibilityElementWithRole:NSAccessibilityButtonRole frame:[self.window convertRectToScreen:[self convertRect:NSMakeRect(6, 37 + i * 56, self.bounds.size.width - 12, 51) toView:nil]] label:label parent:self];
+        NSString *state = [self stateTextForTab:tab];
+        NSString *preview = [self previewForTab:tab];
+        NSString *label = [NSString stringWithFormat:@"%@%@, folder %@, branch %@, %@%@%@", tab.name ?: @"Terminal", (NSInteger)i == self.owner.activeIndex ? @", selected" : @"", tab.cwd.lastPathComponent ?: @"/", tab.gitBranch ?: @"no branch", state, tab.needsAttention ? @", unread attention" : @"", preview.length ? [@", message " stringByAppendingString:preview] : @""];
+        MicaTabAccessibilityElement *element = [MicaTabAccessibilityElement accessibilityElementWithRole:NSAccessibilityButtonRole frame:[self.window convertRectToScreen:[self convertRect:NSMakeRect(6, 37 + i * 70, self.bounds.size.width - 12, 65) toView:nil]] label:label parent:self];
         uint64_t tabID = tab.identifier;
         __weak typeof(self) weakSelf = self; element.pressHandler = ^BOOL {
             for (NSUInteger index = 0; index < weakSelf.owner.tabs.count; index++)
