@@ -34,6 +34,7 @@ typedef NS_ENUM(NSInteger, MicaVoiceControllerState) {
 @property(nonatomic, copy, readonly) NSString *prefetchStatus;
 @property(nonatomic, assign, readonly) double prefetchFraction;
 
+- (instancetype)initWithHelperURL:(NSURL *)helperURL defaults:(NSUserDefaults *)defaults;
 - (instancetype)initWithHelperURL:(NSURL *)helperURL;
 - (void)startPushToTalkForWorkingDirectory:(NSString *)workingDirectory;
 - (void)finishPushToTalk;

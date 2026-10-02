@@ -476,6 +476,14 @@ static int MicaRunUISelfTest(void) {
         BOOL diagnosticDirectoryCreated = diagnosticDirectoryPath != NULL;
         if (diagnosticDirectoryCreated)
             setenv("MICA_DIAGNOSTICS_LOG_DIR", diagnosticDirectoryPath, 1);
+        MicaDiagnosticsSetEnabled(NO);
+        MicaDiagnosticsLog(@"test", @"disabled diagnostic record");
+        NSArray<NSURL *> *disabledDiagnosticFiles = diagnosticDirectoryCreated
+            ? [NSFileManager.defaultManager contentsOfDirectoryAtURL:
+                [NSURL fileURLWithPath:[NSString stringWithUTF8String:diagnosticDirectoryPath] isDirectory:YES]
+                includingPropertiesForKeys:nil options:0 error:nil] : @[];
+        BOOL diagnosticsAreOffByDefault = disabledDiagnosticFiles.count == 0;
+        MicaDiagnosticsSetEnabled(YES);
         MicaDiagnosticsInitialize();
         MicaDiagnosticsLog(@"test", @"startup diagnostic record");
         NSURL *diagnosticDirectory = MicaDiagnosticsLogDirectory();
@@ -485,9 +493,9 @@ static int MicaRunUISelfTest(void) {
         NSString *diagnosticContents = diagnosticFiles.count
             ? [NSString stringWithContentsOfURL:diagnosticFiles.firstObject
                 encoding:NSUTF8StringEncoding error:nil] : nil;
-        MicaUITestRecord(report, &allPassed, diagnosticDirectoryCreated && diagnosticFiles.count == 1 &&
+        MicaUITestRecord(report, &allPassed, diagnosticsAreOffByDefault && diagnosticDirectoryCreated && diagnosticFiles.count == 1 &&
             [diagnosticContents containsString:@"[test] startup diagnostic record"],
-            @"startup diagnostics write timestamped plain-text logs in an easy-to-open folder");
+            @"diagnostics stay off until enabled, then write timestamped plain-text logs in an easy-to-open folder");
 
         char helperPath[] = "/tmp/mica-voice-cancel-XXXXXX";
         int helperFD = mkstemp(helperPath);
@@ -1723,7 +1731,7 @@ static int MicaRunUISelfTest(void) {
         agentLabelTab.name = @"Codex";
         agentLabelTab.agentActivity = @"Working";
         agentLabelTab.lastOutputReadAt = NSProcessInfo.processInfo.systemUptime;
-        NSString *firstAgentLabel = [delegate.terminalView labelForTab:agentLabelTab active:YES];
+        NSString *firstAgentLabel = [delegate.terminalView labelForTab:agentLabelTab];
         BOOL reportsRunning = [delegate.terminalView activityStateForTab:agentLabelTab] == MicaTabActivityStateRunning;
         agentLabelTab.lastOutputReadAt = NSProcessInfo.processInfo.systemUptime - kAgentActivityQuietInterval - 1.0;
         BOOL quietAgentStopsAnimating = [delegate.terminalView activityStateForTab:agentLabelTab] == MicaTabActivityStateIdle;
@@ -1750,7 +1758,7 @@ static int MicaRunUISelfTest(void) {
         agentLabelTab.agentActivity = @"Working";
         agentLabelTab.lastOutputReadAt = NSProcessInfo.processInfo.systemUptime;
         agentLabelTab.agentActivityDetail = @"Read src/mica_app.m";
-        NSString *updatedAgentLabel = [delegate.terminalView labelForTab:agentLabelTab active:YES];
+        NSString *updatedAgentLabel = [delegate.terminalView labelForTab:agentLabelTab];
         BOOL configuredTabNameIsStable = [firstAgentLabel isEqualToString:@"Codex"] &&
             [updatedAgentLabel isEqualToString:firstAgentLabel] && reportsRunning && reportsWaiting &&
             reportsNeedsAttention && reportsComplete && quietAgentStopsAnimating && readyAgentDoesNotAnimate &&
@@ -1778,22 +1786,21 @@ static int MicaRunUISelfTest(void) {
         [delegate toggleMuteNotificationsForTab:muteItem];
         agentLabelTab.needsAttention = YES;
         [delegate postAgentNotification:@"please continue" title:[delegate agentNotificationTitleForTab:agentLabelTab waiting:YES]
-                                 forTab:agentLabelTab];
+                                   kind:MicaAgentNotificationKindWaiting forTab:agentLabelTab];
         BOOL muteSuppressesNotice = agentNotificationTitles.count == 0;
         BOOL mutedBadgeRemains = [delegate.terminalView activityStateForTab:agentLabelTab] == MicaTabActivityStateNeedsAttention;
         NSMenu *mutedMenu = [delegate notificationMenuForTab:agentLabelTab];
         BOOL muteMenuShowsOn = [mutedMenu.itemArray.firstObject state] == NSControlStateValueOn;
         [delegate toggleMuteNotificationsForTab:mutedMenu.itemArray.firstObject];
         [delegate postAgentNotification:@"please continue" title:[delegate agentNotificationTitleForTab:agentLabelTab waiting:YES]
-                                 forTab:agentLabelTab];
+                                   kind:MicaAgentNotificationKindWaiting forTab:agentLabelTab];
         [delegate postAgentNotification:@"work complete" title:[delegate agentNotificationTitleForTab:agentLabelTab waiting:NO]
-                                 forTab:agentLabelTab];
+                                   kind:MicaAgentNotificationKindFinished forTab:agentLabelTab];
         NSArray *mutePaletteRows = [delegate paletteRows];
-        NSUInteger agentLabelIndex = [delegate.tabs indexOfObjectIdenticalTo:agentLabelTab];
         NSUInteger mutePaletteIndex = [mutePaletteRows indexOfObjectPassingTest:^BOOL(NSDictionary *row, NSUInteger idx, BOOL *stop) {
             (void)idx; (void)stop;
             return [row[@"kind"] isEqual:@"mute"] && [row[@"title"] hasPrefix:@"Mute notifications for"] &&
-                [row[@"tabIndex"] unsignedIntegerValue] == agentLabelIndex;
+                [row[@"tabID"] unsignedLongLongValue] == agentLabelTab.identifier;
         }];
         BOOL paletteCanMute = mutePaletteIndex != NSNotFound;
         if (paletteCanMute) {
@@ -2062,11 +2069,11 @@ static int MicaRunUISelfTest(void) {
                 [delegate.commandPaletteTable.accessibilityLabel isEqualToString:@"Command palette results"];
             NSArray *initialTabRows = [delegate.commandPaletteRows filteredArrayUsingPredicate:
                 [NSPredicate predicateWithFormat:@"kind == %@", @"tab"]];
-            BOOL activeTabFirst = initialTabRows.count == 3 && [initialTabRows.firstObject[@"tabIndex"] integerValue] == 0;
+            BOOL activeTabFirst = initialTabRows.count == 3 && [initialTabRows.firstObject[@"tabID"] unsignedLongLongValue] == [delegate.tabs[0] identifier];
             [delegate selectTabAtIndex:1];
             NSArray *recentTabRows = [[delegate paletteRows] filteredArrayUsingPredicate:
                 [NSPredicate predicateWithFormat:@"kind == %@", @"tab"]];
-            BOOL recentTabFirst = recentTabRows.count == 3 && [recentTabRows.firstObject[@"tabIndex"] integerValue] == 1;
+            BOOL recentTabFirst = recentTabRows.count == 3 && [recentTabRows.firstObject[@"tabID"] unsignedLongLongValue] == [delegate.tabs[1] identifier];
             [delegate selectTabAtIndex:0];
             [delegate filterCommandPalette:nil];
             NSInteger indexBeforePaletteAction = delegate.activeIndex;
@@ -2644,6 +2651,14 @@ static int MicaRunUISelfTest(void) {
                 [restoredStateOwner.activeTab.cwd isEqual:MicaStandardizedWorkingDirectory(@"/tmp")] &&
                 [restoredStateOwner.activeTab.command isEqual:@"printf MICA_RESTORED"] &&
                 restoredStateOwner.activeTab.muteNotifications;
+            for (int attempt = 0; restoredSession && attempt < 300; attempt++) {
+                [restoredStateOwner pollSessions:nil];
+                if (MicaUITestFindText(restoredStateOwner.activeTab.session, @"printf MICA_RESTORED", NULL, NULL)) break;
+                usleep(10000);
+            }
+            BOOL restorePrefillsWithoutRunning = restoredSession &&
+                MicaUITestFindText(restoredStateOwner.activeTab.session, @"printf MICA_RESTORED", NULL, NULL) &&
+                mica_session_command_completion_count(restoredStateOwner.activeTab.session) == 0;
             for (NSValue *value in [restoredStateOwner detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
             NSDictionary *missingFolderState = @{@"version":@1,@"windows":@[@{@"tabs":@[@{
                 @"name":@"Missing folder",@"cwd":[stateDirectory stringByAppendingPathComponent:@"deleted-folder"]}]}]};
@@ -2675,6 +2690,14 @@ static int MicaRunUISelfTest(void) {
                 @"name":@"Bad mute type",@"cwd":safeTempFolder,@"muteNotifications":@1}]}]};
             [[NSJSONSerialization dataWithJSONObject:numericMuteState options:0 error:nil] writeToFile:statePath atomically:YES];
             hostileIgnored = hostileIgnored && [stateOwner readSessionState].count == 0;
+            NSDictionary *mixedState = @{ @"version":@1, @"windows":@[@{ @"tabs":@[
+                @{ @"name":@"Invalid", @"cwd":safeTempFolder, @"muteNotifications":@1 },
+                @{ @"name":@"Survivor", @"cwd":safeTempFolder }
+            ]}]};
+            [[NSJSONSerialization dataWithJSONObject:mixedState options:0 error:nil] writeToFile:statePath atomically:YES];
+            NSDictionary *mixedRead = [stateOwner readSessionState].firstObject;
+            NSArray *mixedTabs = mixedRead[@"tabs"];
+            BOOL badEntryDropped = mixedTabs.count == 1 && [mixedTabs[0][@"name"] isEqual:@"Survivor"];
             NSString *fileLink = [stateDirectory stringByAppendingPathComponent:@"file-link"];
             symlink("/etc/hosts", fileLink.fileSystemRepresentation);
             NSDictionary *linkHostile = @{@"version":@1,@"windows":@[@{@"tabs":@[@{@"name":@"Link",@"cwd":fileLink}]}]};
@@ -2694,7 +2717,7 @@ static int MicaRunUISelfTest(void) {
             [NSFileManager.defaultManager removeItemAtPath:stateDirectory error:nil];
             gMicaSessionStateURLOverride = nil;
             [MicaControllers() removeAllObjects]; [MicaControllers() addObjectsFromArray:savedControllers];
-            MicaUITestRecord(report, &allPassed, stateRoundTrips && restoredSession && missingFolderFallsHome && corruptIgnored && oversizedIgnored && hostileIgnored && privateStatePermissions,
+            MicaUITestRecord(report, &allPassed, stateRoundTrips && restoredSession && restorePrefillsWithoutRunning && missingFolderFallsHome && corruptIgnored && oversizedIgnored && hostileIgnored && badEntryDropped && privateStatePermissions,
                 [NSString stringWithFormat:@"session state validates names/folders, ignores hostile metadata and uses private permissions (roundtrip=%d restore=%d corrupt=%d oversized=%d hostile=%d private=%d command=%d mode=%o/%o saved=%@ actual=%@ raw=%@)",
                     stateRoundTrips, restoredSession, corruptIgnored, oversizedIgnored, hostileIgnored, privateStatePermissions,
                     commandRestoredSafely, [stateAttributes[NSFilePosixPermissions] unsignedShortValue],
@@ -3566,7 +3589,7 @@ static int MicaRunUISelfTest(void) {
         BOOL commandLabelUpdated = NO;
         for (int attempt = 0; configuredCommandStarted && attempt < 300; attempt++) {
             [layoutDelegate pollSessions:nil];
-            NSString *runningLabel = [layoutDelegate.terminalView labelForTab:configuredCommandTab active:YES];
+            NSString *runningLabel = [layoutDelegate.terminalView labelForTab:configuredCommandTab];
             if (configuredCommandTab.currentCommand.length &&
                 [runningLabel isEqualToString:configuredCommandTab.name] &&
                 [layoutDelegate.terminalView activityStateForTab:configuredCommandTab] == MicaTabActivityStateRunning)
@@ -3581,7 +3604,7 @@ static int MicaRunUISelfTest(void) {
             usleep(10000);
         }
         BOOL commandLabelCleared = configuredCommandTab.currentCommand.length == 0 &&
-            [[layoutDelegate.terminalView labelForTab:configuredCommandTab active:YES] isEqualToString:@"Claude Code"];
+            [[layoutDelegate.terminalView labelForTab:configuredCommandTab] isEqualToString:@"Claude Code"];
         NSString *layoutScreen = MicaUITestScreenTail(configuredCommandTab.session);
         BOOL layoutSessionCleaned = configuredCommandTab.session != NULL;
         if (configuredCommandTab.session) {
@@ -3603,7 +3626,7 @@ static int MicaRunUISelfTest(void) {
         shortcutDelegate.uiMode = MicaUIModeNormal;
         MicaUITestAttachWindow(shortcutDelegate);
         [shortcutDelegate addTabWithName:@"Shortcut probe" cwd:@"/tmp"
-            command:@"stty -icanon -echo min 1 time 0; printf 'MICA-KEYS-READY\\n'; dd if=/dev/tty bs=1 count=2 2>/dev/null | od -An -t x1; stty sane"
+            command:@"stty -icanon -echo min 1 time 0; printf '\\033[?1049hMICA-KEYS-READY\\n'; keys=$(dd if=/dev/tty bs=1 count=5 2>/dev/null | od -An -t x1); printf '\\033[?1049lMICA-KEYS-RESULT:%s\\n' \"$keys\"; stty sane"
             prefilled:NO];
         MicaTab *shortcutTab = shortcutDelegate.activeTab;
         BOOL shortcutPromptReady = NO;
@@ -3617,10 +3640,12 @@ static int MicaRunUISelfTest(void) {
         }
         MicaUITestSendKey(shortcutDelegate, @"t", NSEventModifierFlagControl, 17);
         MicaUITestSendKey(shortcutDelegate, @"s", NSEventModifierFlagControl, 1);
+        MicaUITestSendKey(shortcutDelegate, @"↓", NSEventModifierFlagCommand, 125);
         BOOL controlKeysForwarded = NO;
         for (int attempt = 0; attempt < 300; attempt++) {
             [shortcutDelegate pollSessions:nil];
-            if (MicaUITestFindText(shortcutTab.session, @"14  13", NULL, NULL)) {
+            if (MicaUITestFindText(shortcutTab.session, @"14  13", NULL, NULL) &&
+                MicaUITestFindText(shortcutTab.session, @"1b  5b  42", NULL, NULL)) {
                 controlKeysForwarded = YES;
                 break;
             }
@@ -3635,7 +3660,7 @@ static int MicaRunUISelfTest(void) {
         historyShortcutWorks = historyShortcutWorks && shortcutDelegate.uiMode == MicaUIModeNormal;
         MicaUITestRecord(report, &allPassed,
             shortcutPromptReady && controlKeysForwarded && pickerShortcutWorks && historyShortcutWorks,
-            [NSString stringWithFormat:@"Codex-safe app shortcuts leave Ctrl-T/Ctrl-S available to terminal TUIs (ready=%d forwarded=%d picker=%d history=%d screen=%@)",
+            [NSString stringWithFormat:@"Codex-safe app shortcuts leave Ctrl-T/Ctrl-S available and Command-Down reaches alternate-screen TUIs (ready=%d forwarded=%d picker=%d history=%d screen=%@)",
                 shortcutPromptReady, controlKeysForwarded, pickerShortcutWorks, historyShortcutWorks,
                 MicaUITestScreenTail(shortcutTab.session)]);
         BOOL shortcutSessionExited = MicaUITestExitTabs(shortcutDelegate.tabs);

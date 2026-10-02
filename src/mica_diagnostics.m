@@ -10,6 +10,7 @@
 
 static pthread_mutex_t MicaDiagnosticsLock = PTHREAD_MUTEX_INITIALIZER;
 static int MicaDiagnosticsFD = -1;
+static BOOL MicaDiagnosticsEnabled = NO;
 static NSURL *MicaDiagnosticsDirectoryURL;
 static const off_t MicaDiagnosticsMaximumBytes = 1024 * 1024;
 
@@ -44,6 +45,10 @@ static void MicaDiagnosticsWriteBytes(int fd, const void *bytes, size_t length) 
 
 void MicaDiagnosticsInitialize(void) {
     pthread_mutex_lock(&MicaDiagnosticsLock);
+    if (!MicaDiagnosticsEnabled) {
+        pthread_mutex_unlock(&MicaDiagnosticsLock);
+        return;
+    }
     if (MicaDiagnosticsFD >= 0) {
         pthread_mutex_unlock(&MicaDiagnosticsLock);
         return;
@@ -91,14 +96,31 @@ void MicaDiagnosticsInitialize(void) {
     }
     pthread_mutex_unlock(&MicaDiagnosticsLock);
 
-    if (directoryError)
-        MicaDiagnosticsLog(@"startup", [NSString stringWithFormat:@"could not create log directory: %@", directoryError.localizedDescription]);
+    if (directoryError) MicaDiagnosticsLog(@"startup", @"could not create diagnostic log directory");
+}
+
+void MicaDiagnosticsSetEnabled(BOOL enabled) {
+    pthread_mutex_lock(&MicaDiagnosticsLock);
+    MicaDiagnosticsEnabled = enabled;
+    if (!enabled && MicaDiagnosticsFD >= 0) {
+        close(MicaDiagnosticsFD);
+        MicaDiagnosticsFD = -1;
+    }
+    pthread_mutex_unlock(&MicaDiagnosticsLock);
+    if (enabled) MicaDiagnosticsInitialize();
+}
+
+BOOL MicaDiagnosticsIsEnabled(void) {
+    pthread_mutex_lock(&MicaDiagnosticsLock);
+    BOOL enabled = MicaDiagnosticsEnabled;
+    pthread_mutex_unlock(&MicaDiagnosticsLock);
+    return enabled;
 }
 
 void MicaDiagnosticsLog(NSString *category, NSString *message) {
     if (!message.length) return;
     pthread_mutex_lock(&MicaDiagnosticsLock);
-    if (MicaDiagnosticsFD < 0) {
+    if (!MicaDiagnosticsEnabled || MicaDiagnosticsFD < 0) {
         pthread_mutex_unlock(&MicaDiagnosticsLock);
         return;
     }

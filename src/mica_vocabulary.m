@@ -1,5 +1,19 @@
 #import "mica_vocabulary.h"
 
+NSURL *MicaGitExecutableURL(void) {
+    NSMutableArray<NSString *> *directories = [NSMutableArray array];
+    NSString *path = NSProcessInfo.processInfo.environment[@"PATH"] ?: @"";
+    for (NSString *directory in [path componentsSeparatedByString:@":"])
+        if (directory.length) [directories addObject:directory];
+    [directories addObjectsFromArray:@[@"/usr/bin", @"/opt/homebrew/bin", @"/usr/local/bin"]];
+    NSFileManager *files = NSFileManager.defaultManager;
+    for (NSString *directory in directories) {
+        NSString *candidate = [directory stringByAppendingPathComponent:@"git"];
+        if ([files isExecutableFileAtPath:candidate]) return [NSURL fileURLWithPath:candidate];
+    }
+    return nil;
+}
+
 #include <sys/wait.h>
 #include <ctype.h>
 #include <unistd.h>
@@ -97,7 +111,8 @@ NSString *MicaApplyDictationSnippet(NSString *transcript, NSDictionary<NSString 
 NSArray<NSString *> *MicaVocabularyTermsFromGitFiles(NSString *directory) {
     if (!directory.length || directory.length > 4096) return @[];
     NSPipe *pipe = [NSPipe pipe]; NSTask *task = [NSTask new];
-    task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/git"];
+    task.executableURL = MicaGitExecutableURL();
+    if (!task.executableURL) return @[];
     task.arguments = @[@"-C", directory, @"ls-files", @"-z", @"--cached", @"--", @"."];
     task.standardOutput = pipe; task.standardError = [NSFileHandle fileHandleWithNullDevice];
     @try { [task launch]; } @catch (__unused NSException *e) { return @[]; }

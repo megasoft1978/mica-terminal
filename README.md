@@ -112,6 +112,7 @@ The microphone starts recording the moment you hold <kbd>⌥</kbd>, so nothing y
 | Undo latest dictation | **Edit → Undo Last Dictation** (when no later prompt text was typed) |
 | Quick Select visible URLs, paths and hashes | <kbd>⌘⇧U</kbd> |
 | Previous/next prompt at a prompt | <kbd>⌘↑</kbd> · <kbd>⌘↓</kbd> |
+| Copy selection; without a selection, send Ctrl-C to the program | <kbd>⌘C</kbd> |
 | Select/copy latest command output | Edit → Select Last Command Output / Copy Last Command Output |
 | Find, next, previous | <kbd>⌘F</kbd> · <kbd>⌘G</kbd> · <kbd>⇧⌘G</kbd> |
 | Text size, reset | <kbd>⌘+</kbd> <kbd>⌘−</kbd> · <kbd>⌘0</kbd> |

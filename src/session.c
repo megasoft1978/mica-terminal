@@ -2,6 +2,7 @@
 #include "mica.h"
 
 #include <CoreFoundation/CoreFoundation.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -669,7 +670,32 @@ static bool write_startup_file(const char *directory, const char *name, const ch
     return close(fd) == 0;
 }
 
+static void sweep_stale_zsh_startup_dirs(void) {
+    DIR *temporary_directory = opendir("/tmp");
+    if (!temporary_directory) return;
+    time_t now = time(NULL);
+    struct dirent *entry;
+    while ((entry = readdir(temporary_directory)) != NULL) {
+        if (strncmp(entry->d_name, "mica-zsh-", 9) != 0) continue;
+        char directory[PATH_MAX];
+        int length = snprintf(directory, sizeof(directory), "/tmp/%s", entry->d_name);
+        if (length < 0 || (size_t)length >= sizeof(directory)) continue;
+        struct stat info;
+        if (lstat(directory, &info) != 0 || !S_ISDIR(info.st_mode) ||
+            now < info.st_mtime || now - info.st_mtime <= 24 * 60 * 60) continue;
+        const char *names[] = { ".zshenv", ".zprofile", ".zshrc", ".zlogin" };
+        char path[PATH_MAX];
+        for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+            length = snprintf(path, sizeof(path), "%s/%s", directory, names[i]);
+            if (length > 0 && (size_t)length < sizeof(path)) unlink(path);
+        }
+        (void)rmdir(directory);
+    }
+    closedir(temporary_directory);
+}
+
 static char *create_prefill_startup_dir(void) {
+    sweep_stale_zsh_startup_dirs();
     char template[] = "/tmp/mica-zsh-XXXXXX";
     char *directory = mkdtemp(template);
     if (!directory) return NULL;
@@ -701,7 +727,6 @@ static char *create_prefill_startup_dir(void) {
         "[[ -r \"$original/.zshrc\" ]] && source \"$original/.zshrc\"\n"
         "export MICA_ORIGINAL_ZDOTDIR=\"${ZDOTDIR:-$original}\"\n"
         "export ZDOTDIR=\"$MICA_ZSH_WRAPPER\"\n"
-        "[[ -n $HISTFILE ]] || HISTFILE=\"$original/.zsh_history\"\n"
         "if [[ -n $MICA_INITIAL_COMMAND ]]; then\n"
         "    print -z -- \"$MICA_INITIAL_COMMAND\"\n"
         "    unset MICA_INITIAL_COMMAND\n"
@@ -738,12 +763,6 @@ static char *create_prefill_startup_dir(void) {
         "    bindkey '^X^B' mica_test_capture_buffer\n"
         "    autoload -Uz add-zle-hook-widget\n"
         "    add-zle-hook-widget zle-line-init mica_test_prompt_ready\n"
-        "fi\n"
-        "if [[ \"$MICA_TEST_NO_STARTUP\" != 1 ]] && (( ! $+functions[compdef] )); then\n"
-        "    export ZDOTDIR=\"$MICA_ORIGINAL_ZDOTDIR\"\n"
-        "    autoload -Uz compinit\n"
-        "    compinit -i\n"
-        "    export ZDOTDIR=\"$MICA_ZSH_WRAPPER\"\n"
         "fi\n";
     static const char login[] =
         "if [[ \"$MICA_TEST_NO_STARTUP\" != 1 ]]; then\n"
@@ -1584,7 +1603,7 @@ static int selection_set(VTermSelectionMask mask, VTermStringFragment frag, void
     }
     return 1;
 }
-static int selection_query(VTermSelectionMask mask, void *user) { (void)mask; (void)user; return 1; }
+static int selection_query(VTermSelectionMask mask, void *user) { (void)mask; (void)user; return 0; }
 static const VTermSelectionCallbacks selection_callbacks = { .set = selection_set, .query = selection_query };
 
 // DEC private mode 2026 (synchronized output): a TUI brackets a frame with

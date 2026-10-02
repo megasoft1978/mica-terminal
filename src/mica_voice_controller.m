@@ -9,6 +9,7 @@
 
 @interface MicaVoiceController ()
 @property(nonatomic, strong) NSURL *helperURL;
+@property(nonatomic, strong) NSUserDefaults *micaDefaults;
 @property(nonatomic, assign, readwrite) MicaVoiceControllerState state;
 @property(nonatomic, copy, readwrite) NSString *statusText;
 @property(nonatomic, copy, readwrite) NSString *transcript;
@@ -82,7 +83,7 @@ float _displayLevel;
     if (self.prefetchTask.isRunning || ![NSFileManager.defaultManager isExecutableFileAtPath:path]) return;
     NSDate *modified = [NSFileManager.defaultManager attributesOfItemAtPath:path error:nil][NSFileModificationDate];
     NSString *stamp = [NSString stringWithFormat:@"%.0f", modified.timeIntervalSince1970];
-    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    NSUserDefaults *defaults = self.micaDefaults;
     if ([[defaults stringForKey:@"MicaWarmedHelperStamp"] isEqualToString:stamp]) return;
     NSTask *task = [NSTask new];
     NSPipe *output = [NSPipe pipe];
@@ -139,10 +140,11 @@ float _displayLevel;
 - (BOOL)isPrefetchingModel { return self.prefetchTask.isRunning; }
 - (BOOL)isCapturing { return self.recordingStartedAt != nil && self.elapsedTimer != nil; }
 
-- (instancetype)initWithHelperURL:(NSURL *)helperURL {
+- (instancetype)initWithHelperURL:(NSURL *)helperURL defaults:(NSUserDefaults *)defaults {
     self = [super init];
     if (self) {
         _helperURL = helperURL;
+        _micaDefaults = defaults ?: NSUserDefaults.standardUserDefaults;
         _state = MicaVoiceControllerStateIdle;
         _audioWriteQueue = dispatch_queue_create("com.megasoft78.mica.voice-audio", DISPATCH_QUEUE_SERIAL);
         atomic_init(&_acceptAudio, false);
@@ -154,6 +156,10 @@ float _displayLevel;
         atomic_init(&_audioGeneration, 0);
     }
     return self;
+}
+
+- (instancetype)initWithHelperURL:(NSURL *)helperURL {
+    return [self initWithHelperURL:helperURL defaults:NSUserDefaults.standardUserDefaults];
 }
 
 - (void)dealloc {
@@ -206,7 +212,7 @@ float _displayLevel;
     [self.helperExitTimer invalidate];
     self.helperExitTimer = nil;
     self.workingDirectory = workingDirectory.length ? workingDirectory : NSFileManager.defaultManager.currentDirectoryPath;
-    MicaDiagnosticsLog(@"dictation", [NSString stringWithFormat:@"requested folder=%@", self.workingDirectory]);
+    MicaDiagnosticsLog(@"dictation", @"dictation requested");
     self.transcript = @"";
     self.confirmedTranscript = @"";
     self.rawTranscript = nil;
@@ -346,8 +352,7 @@ float _displayLevel;
     if (![task launchAndReturnError:&launchError]) {
         self.process = nil;
         [self releaseOutputPipe];
-        MicaDiagnosticsLog(@"dictation", [NSString stringWithFormat:@"helper launch failed: %@",
-            launchError.localizedDescription ?: @"unknown error"]);
+        MicaDiagnosticsLog(@"dictation", @"helper launch failed");
         [self failWithMessage:[NSString stringWithFormat:@"Could not start local speech processing: %@",
                                launchError.localizedDescription ?: @"unknown error"]];
         return;
@@ -428,8 +433,8 @@ float _displayLevel;
         if (![messageText isEqualToString:self.lastLoggedHelperStatus] ||
             (bucket >= 0 && bucket != self.lastLoggedProgressBucket)) {
             NSString *detail = bucket >= 0
-                ? [NSString stringWithFormat:@"%@ progress=%ld%%", messageText ?: @"working", (long)(bucket * 10)]
-                : (messageText ?: @"working");
+                ? [NSString stringWithFormat:@"helper status changed progress=%ld%%", (long)(bucket * 10)]
+                : @"helper status changed";
             MicaDiagnosticsLog(@"dictation", detail);
             self.lastLoggedHelperStatus = messageText;
             self.lastLoggedProgressBucket = bucket;
@@ -438,7 +443,7 @@ float _displayLevel;
     } else if ([type isEqualToString:@"ready"]) {
         [self helperBecameReady];
     } else if ([type isEqualToString:@"diagnostic"]) {
-        if (messageText.length) MicaDiagnosticsLog(@"dictation.metrics", messageText);
+        if (messageText.length) MicaDiagnosticsLog(@"dictation.metrics", @"helper reported diagnostic metrics");
     } else if ([type isEqualToString:@"transcript"]) {
         self.transcript = text ?: @"";
         self.confirmedTranscript = [message[@"confirmedText"] isKindOfClass:NSString.class]
@@ -817,7 +822,7 @@ float _displayLevel;
 - (void)failWithMessage:(NSString *)message {
     self.recordingGeneration++;
     atomic_store(&_audioGeneration, (unsigned)self.recordingGeneration);
-    MicaDiagnosticsLog(@"dictation", [NSString stringWithFormat:@"failed: %@", message ?: @"unknown error"]);
+    MicaDiagnosticsLog(@"dictation", @"dictation failed");
     [self stopAudioCaptureSendingCancel:YES];
     [self.elapsedTimer invalidate];
     self.elapsedTimer = nil;

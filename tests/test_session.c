@@ -10,6 +10,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifdef MICA_SESSION_TESTING
@@ -124,7 +126,7 @@ static void restore_env(const char *name, char *value) {
     }
 }
 
-static void test_clean_zsh_completion(void) {
+static void test_clean_zsh_startup(void) {
     char profile_template[] = "/tmp/mica-default-completion-XXXXXX";
     char *profile_dir = mkdtemp(profile_template);
     assert(profile_dir != NULL);
@@ -155,13 +157,8 @@ static void test_clean_zsh_completion(void) {
              !screen_contains(session, "MICA-ZSH-STARTUP-COMPLETE"); attempt++)
             mica_session_poll(session, 10);
         assert(screen_contains(session, "MICA-ZSH-STARTUP-COMPLETE"));
-        mica_session_write(session, "git stat", strlen("git stat"));
-        mica_session_key(session, VTERM_KEY_TAB, VTERM_MOD_NONE);
-        for (int attempt = 0; attempt < 1000 && !screen_contains(session, "git status"); attempt++)
-            mica_session_poll(session, 10);
-        if (!screen_contains(session, "git status")) print_screen(session);
-        assert(screen_contains(session, "git status"));
-        if (launch == 0) assert(access(dump_path, F_OK) == 0);
+        assert(access(dump_path, F_OK) != 0);
+        assert(access(dump_compiled_path, F_OK) != 0);
         mica_session_write(session, "\003", 1);
         mica_session_destroy(session);
     }
@@ -177,7 +174,7 @@ static void test_clean_zsh_completion(void) {
     unlink(dump_compiled_path);
     unlink(history_path);
     assert(rmdir(profile_dir) == 0);
-    puts("clean zsh profiles get built-in Tab completion from a persistent compinit cache");
+    puts("clean zsh profiles run their startup files without Mica forcing compinit");
 }
 
 int main(void) {
@@ -1206,6 +1203,17 @@ color_checked:
     free(clip_text);
     assert(mica_session_take_clipboard_write(clip_session) == NULL);
     mica_session_destroy(clip_session);
+    // Malformed base64 and a payload over the cap are discarded; a later valid write still works.
+    MicaSession *bad_clip_session = mica_session_create("/tmp",
+        "perl -e '$|=1; print \"\\e]52;c;%%%bad\\a\"; print \"\\e]52;c;\".(\"QUJD\" x 90000).\"\\a\"; print \"\\e]52;c;Z29vZA==\\a\"; print \"BADCLIPDONE\\n\"'; sleep 1", 6, 80);
+    assert(bad_clip_session != NULL);
+    for (int i = 0; i < 500 && !screen_contains(bad_clip_session, "BADCLIPDONE"); i++)
+        mica_session_poll(bad_clip_session, 10);
+    char *valid_after_bad = mica_session_take_clipboard_write(bad_clip_session);
+    assert(valid_after_bad != NULL && strcmp(valid_after_bad, "good") == 0);
+    free(valid_after_bad);
+    assert(mica_session_take_clipboard_write(bad_clip_session) == NULL);
+    mica_session_destroy(bad_clip_session);
     printf("OSC 52 clipboard writes are captured for the app to approve\n");
 
     // The shell environment is built before fork: NO_COLOR is removed, Mica's variables are set,
@@ -1325,17 +1333,29 @@ color_checked:
         "export ZDOTDIR='%s'\n", custom_zdotdir) > 0);
     write_test_file(profile_zshenv_path, custom_zshenv_contents, 0600);
     write_test_file(custom_zprofile_path, "export MICA_CUSTOM_PROFILE=loaded\n", 0600);
-    write_test_file(custom_zshrc_path, "export MICA_CUSTOM_RC=loaded\n", 0600);
+    write_test_file(custom_zshrc_path,
+        "export MICA_CUSTOM_RC=loaded\n"
+        "export HISTFILE=\"$HOME/custom-history\"\n", 0600);
     write_test_file(custom_zlogin_path, "export MICA_CUSTOM_LOGIN=loaded\n", 0600);
+    char stale_wrapper_template[] = "/tmp/mica-zsh-stale-XXXXXX";
+    char *stale_wrapper_dir = mkdtemp(stale_wrapper_template);
+    assert(stale_wrapper_dir != NULL);
+    char stale_wrapper_rc[PATH_MAX];
+    assert(snprintf(stale_wrapper_rc, sizeof(stale_wrapper_rc), "%s/.zshrc", stale_wrapper_dir) > 0);
+    write_test_file(stale_wrapper_rc, "# stale Mica wrapper fixture\n", 0600);
+    struct timeval stale_times[2] = { { .tv_sec = time(NULL) - 25 * 60 * 60 },
+                                      { .tv_sec = time(NULL) - 25 * 60 * 60 } };
+    assert(utimes(stale_wrapper_dir, stale_times) == 0);
     MicaSession *custom_zdot_session = mica_session_create(profile_dir,
-        "printf 'MICA-CUSTOM-ZDOTDIR:%s|%s|%s\\n' \"$MICA_CUSTOM_PROFILE\" \"$MICA_CUSTOM_RC\" \"$MICA_CUSTOM_LOGIN\"; sleep 0.5",
+        "printf 'MICA-CUSTOM-ZDOTDIR:%s|%s|%s|%s\\n' \"$MICA_CUSTOM_PROFILE\" \"$MICA_CUSTOM_RC\" \"$MICA_CUSTOM_LOGIN\" \"$HISTFILE\"; sleep 0.5",
         8, 120);
     assert(custom_zdot_session != NULL);
     for (int i = 0; i < 500 && !screen_contains(custom_zdot_session, "MICA-CUSTOM-ZDOTDIR:"); i++)
         mica_session_poll(custom_zdot_session, 10);
-    if (!screen_contains(custom_zdot_session, "MICA-CUSTOM-ZDOTDIR:loaded|loaded|loaded"))
-        print_screen(custom_zdot_session);
     assert(screen_contains(custom_zdot_session, "MICA-CUSTOM-ZDOTDIR:loaded|loaded|loaded"));
+    assert(screen_contains(custom_zdot_session, "custom-history"));
+    assert(access(custom_zcompdump_path, F_OK) != 0); // Mica must not run compinit for the user's shell.
+    assert(access(stale_wrapper_dir, F_OK) != 0); // Startup removes wrapper directories older than a day.
     mica_session_destroy(custom_zdot_session);
     unlink(profile_zshenv_path);
     unlink(custom_zprofile_path);
@@ -1523,7 +1543,7 @@ color_checked:
     assert(rmdir(bin_dir) == 0);
     assert(rmdir(profile_dir) == 0);
 
-    test_clean_zsh_completion();
+    test_clean_zsh_startup();
 
     puts("session tests passed");
     return 0;
