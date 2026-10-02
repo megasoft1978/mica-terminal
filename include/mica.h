@@ -99,6 +99,7 @@ bool mica_session_get_cell(const MicaSession *session, int row, int col, MicaCel
 bool mica_session_row_continues(const MicaSession *session, int row);
 const char *mica_session_hyperlink_uri(const MicaSession *session, uint32_t hyperlink_id);
 bool mica_session_is_running(const MicaSession *session);
+const char *mica_session_hook_token(const MicaSession *session);
 int mica_session_exit_status(const MicaSession *session);
 uint64_t mica_session_command_completion_count(const MicaSession *session);
 int mica_session_command_exit_status(const MicaSession *session);

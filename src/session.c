@@ -147,6 +147,7 @@ bool sync_output;
 bool bracketed_paste;
     bool alt_screen;
 char mark_token[33];
+char hook_token[33];
 char notification_text[256];
 bool notification_ready;
 char sync_tail[8];
@@ -1821,6 +1822,10 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
         arc4random_buf(random_bytes, sizeof(random_bytes));
         for (size_t i = 0; i < sizeof(random_bytes); i++) snprintf(session->mark_token + i * 2, 3, "%02x", random_bytes[i]);
     }
+    {
+        unsigned char random_bytes[16]; arc4random_buf(random_bytes, sizeof(random_bytes));
+        for (size_t i=0;i<sizeof(random_bytes);i++) snprintf(session->hook_token+i*2,3,"%02x",random_bytes[i]);
+    }
     session->command = command ? strdup(command) : strdup("/bin/zsh -l -i");
     session->startup_dir = create_prefill_startup_dir();
     session->vt = vterm_new(rows, cols);
@@ -1853,7 +1858,7 @@ static MicaSession *session_create(const char *cwd, const char *command, int row
     // GUI launchers can inherit NO_COLOR from an unrelated parent shell.
     // Mica advertises a color-capable xterm-256color terminal.
     EnvOverride overrides[] = {
-        { "LANG", locale_hint }, { "MICA_MARK_TOKEN", session->mark_token }, { "TERM", "xterm-256color" }, { "COLORTERM", "truecolor" },
+        { "LANG", locale_hint }, { "MICA_MARK_TOKEN", session->mark_token }, { "MICA_TAB_TOKEN", session->hook_token }, { "MICA_HOOK_SOCK", getenv("MICA_HOOK_SOCK") }, { "TERM", "xterm-256color" }, { "COLORTERM", "truecolor" },
         { "TERM_PROGRAM", "Mica" }, { "TERM_PROGRAM_VERSION", MICA_VERSION },
         { "TERM_PROGRAM_REVISION", MICA_REVISION }, { "CLICOLOR", "1" }, { "NO_COLOR", NULL },
         { "MICA_ORIGINAL_ZDOTDIR", use_wrapper ? original_zdotdir : NULL },
@@ -2589,6 +2594,7 @@ bool mica_session_fold_info_at_view_row(const MicaSession *session, int row, siz
 }
 
 bool mica_session_is_running(const MicaSession *session) { return session && session->running; }
+const char *mica_session_hook_token(const MicaSession *session) { return session ? session->hook_token : NULL; }
 int mica_session_exit_status(const MicaSession *session) { return session && !session->running ? session->exit_status : -1; }
 uint64_t mica_session_command_completion_count(const MicaSession *session) { return session ? session->command_completion_count : 0; }
 int mica_session_command_exit_status(const MicaSession *session) { return session ? session->command_exit_status : -1; }

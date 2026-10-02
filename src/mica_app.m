@@ -5,6 +5,9 @@
 #import "mica_vocabulary.h"
 #import "mica_pomodoro.h"
 #import "mica_status_item.h"
+#import "mica_hook_server.h"
+#import "mica_hook_install.h"
+#import "mica_agent_state.h"
 #import <UserNotifications/UserNotifications.h>
 #import <Carbon/Carbon.h>
 
@@ -268,6 +271,15 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 @property(nonatomic, copy) NSString *currentCommand;
 @property(nonatomic, copy) NSString *agentActivity;
 @property(nonatomic, copy) NSString *agentActivityDetail;
+@property(nonatomic, copy) NSString *hookToken;
+@property(nonatomic, copy) NSString *agentKind;
+@property(nonatomic, copy) NSString *agentState;
+@property(nonatomic, copy) NSString *agentStateSource;
+@property(nonatomic, copy) NSString *agentSessionID;
+@property(nonatomic, copy) NSString *agentLastMessage;
+@property(nonatomic, copy) NSDate *agentUpdatedAt;
+@property(nonatomic, copy) NSDictionary *lastHookEvent;
+@property(nonatomic, assign) BOOL receivedAgentHook;
 @property(nonatomic, assign) NSInteger displayedActivityState;
 @property(nonatomic, assign) NSTimeInterval commandStartedAt;
 @property(nonatomic, assign) NSInteger commandClockSecond;
@@ -332,7 +344,12 @@ static NSString *MicaLastWords(NSString *text, NSUInteger count) {
     return [@"… " stringByAppendingString:[tail componentsJoinedByString:@" "]];
 }
 
+static NSString *MicaAgentStateForTab(MicaTab *tab) { return tab.agentState ?: @"idle"; }
+
 static NSString *MicaAgentNameForTab(MicaTab *tab) {
+    if ([tab.agentKind isEqualToString:@"claude"]) return @"Claude Code";
+    if ([tab.agentKind isEqualToString:@"codex"]) return @"Codex";
+    if ([tab.agentKind isEqualToString:@"other"]) return @"Agent";
     if (tab.currentCommand.length) return MicaAgentNameForText(tab.currentCommand);
     NSString *terminalTitleAgent = MicaAgentNameForText(tab.terminalTitle);
     if (terminalTitleAgent) return terminalTitleAgent;
@@ -352,8 +369,8 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
     NSString *activity = nil;
     NSString *activityLine = nil;
     NSString *recentAction = nil;
-    BOOL hasInputPromptGlyph = NO;
     for (int row = rows - 1; row >= firstRow; row--) {
+        BOOL lineHasPromptGlyph = NO;
         NSMutableString *line = [NSMutableString string];
         for (int col = 0; col < cols; col++) {
             MicaCell cell;
@@ -361,7 +378,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
             for (NSUInteger i = 0; i < VTERM_MAX_CHARS_PER_CELL && cell.chars[i]; i++) {
                 uint32_t codepoint = cell.chars[i];
                 if (row >= rows - 2 && (codepoint == 0x276f || codepoint == 0x203a))
-                    hasInputPromptGlyph = YES;
+                    lineHasPromptGlyph = YES;
                 if (codepoint >= 0x20 && codepoint <= 0x7e) [line appendFormat:@"%c", (char)codepoint];
                 else [line appendString:@" "];
             }
@@ -370,17 +387,17 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
         if (!trimmed.length) continue;
         NSString *upper = trimmed.uppercaseString;
         NSString *lineActivity = nil;
-        if ([upper containsString:@"TRUST THIS FOLDER"] || [upper containsString:@"NEEDS APPROVAL"] ||
+        if (lineHasPromptGlyph && ([upper containsString:@"TRUST THIS FOLDER"] || [upper containsString:@"NEEDS APPROVAL"] ||
             [upper containsString:@"WAITING FOR APPROVAL"] || [upper containsString:@"CONFIRMATION REQUIRED"] ||
-            [upper containsString:@"APPROVE THIS"] || [upper containsString:@"ALLOW THIS"]) {
+            [upper containsString:@"APPROVE THIS"] || [upper containsString:@"ALLOW THIS"])) {
             lineActivity = @"Needs approval";
-        } else if ([upper containsString:@"WAITING FOR YOUR INPUT"] ||
+        } else if (lineHasPromptGlyph && ([upper containsString:@"WAITING FOR YOUR INPUT"] ||
                    [upper containsString:@"WAITING FOR INPUT"] ||
                    [upper containsString:@"PRESS ENTER TO CONTINUE"] ||
                    [upper containsString:@"PRESS RETURN TO CONTINUE"] ||
                    [upper containsString:@"SELECT AN OPTION"] || [upper containsString:@"CHOOSE AN OPTION"] ||
                    [upper containsString:@"TYPE YOUR ANSWER"] || [upper containsString:@"ENTER TO SUBMIT"] ||
-                   [upper containsString:@"(Y/N)"] || [upper containsString:@"[Y/N]"]) {
+                   [upper containsString:@"(Y/N)"] || [upper containsString:@"[Y/N]"])) {
             lineActivity = @"Needs input";
         } else if ([upper containsString:@"RESUME A PREVIOUS SESSION"] ||
                    [upper containsString:@"RESUME SESSION"]) {
@@ -400,8 +417,6 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
             lineActivity = @"Working";
         } else if ([upper containsString:@"THINKING"]) {
             lineActivity = @"Thinking";
-        } else if ([upper containsString:@"RUNNING"]) {
-            lineActivity = @"Running";
         } else if ([upper containsString:@"EXPLORING"]) {
             lineActivity = @"Exploring";
         } else if ([upper containsString:@"TESTING"]) {
@@ -422,11 +437,6 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
             activity = lineActivity;
             activityLine = trimmed;
         }
-    }
-    if (hasInputPromptGlyph && (!activity || [activity isEqualToString:@"Ready"] ||
-                                [activity isEqualToString:@"Running"])) {
-        activity = @"Needs input";
-        if (!activityLine) activityLine = @"Input prompt";
     }
     if (detailOut) *detailOut = recentAction ?: activityLine;
     return activity ?: @"Idle";
@@ -619,6 +629,8 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)startWindowWithArguments:(NSArray<NSString *> *)arguments;
 - (void)openProjectWindowWithArguments:(NSArray<NSString *> *)arguments;
 - (void)takeMenuOwnership;
+- (void)handleHookEvent:(MicaHookEvent)event forTab:(MicaTab *)tab;
+- (void)setupAgentHooks:(id)sender;
 - (void)buildMenus;
 - (void)teardownWindow;
 - (NSArray<NSValue *> *)detachSessionsForTermination;
@@ -849,6 +861,19 @@ static NSMutableArray<NSMenuItem *> *gControllerMenuItems;   // menu items whose
 static NSMutableArray<NSMenuItem *> *gViewMenuItems;         // ... and those whose target is its terminal view
 static BOOL gMenuBuilt;
 static NSString *gAppliedIconProject;
+
+static void MicaDeliverHook(MicaHookEvent event) {
+    NSString *token = [NSString stringWithUTF8String:event.token];
+    if (!token.length) return;
+    for (MicaAppDelegate *controller in MicaControllers()) {
+        for (MicaTab *tab in controller.tabs) {
+            if ([tab.hookToken isEqualToString:token]) {
+                [controller handleHookEvent:event forTab:tab];
+                return;
+            }
+        }
+    }
+}
 
 // Apple's physical footprint for a process: the same number Activity Monitor calls Memory.
 static uint64_t MicaFootprintBytes(pid_t pid) {
@@ -1689,6 +1714,14 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
 
 - (MicaTabActivityState)activityStateForTab:(MicaTab *)tab {
     if (!tab) return MicaTabActivityStateIdle;
+    if (tab.receivedAgentHook) {
+        NSString *state = MicaAgentStateForTab(tab);
+        if ([state isEqualToString:@"waitingPermission"] || [state isEqualToString:@"waitingInput"]) return MicaTabActivityStateWaiting;
+        if ([state isEqualToString:@"working"]) return MicaTabActivityStateRunning;
+        if ([state isEqualToString:@"done"]) return MicaTabActivityStateComplete;
+        if ([state isEqualToString:@"error"]) return MicaTabActivityStateNeedsAttention;
+        return tab.needsAttention ? MicaTabActivityStateNeedsAttention : MicaTabActivityStateIdle;
+    }
     if (tab.currentCommand.length) {
         if ([tab.agentActivity isEqualToString:@"Needs approval"] ||
             [tab.agentActivity isEqualToString:@"Needs input"] ||
@@ -4269,6 +4302,13 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 // (--layout, --project-name); nil means the process's own command line.
 - (void)startWindowWithArguments:(NSArray<NSString *> *)arguments {
     if (![MicaControllers() containsObject:self]) [MicaControllers() addObject:self];
+    if (!getenv("MICA_TEST_NO_STARTUP")) {
+        MicaHookServer *server = MicaHookServer.sharedServer;
+        if ([server startAtPath:nil]) {
+            server.delivery = ^(MicaHookEvent event) { MicaDeliverHook(event); };
+            setenv("MICA_HOOK_SOCK", server.socketPath.fileSystemRepresentation, 1);
+        }
+    }
     self.tabs = [NSMutableArray array];
     self.activeIndex = 0;
     self.focusDurationMinutes = kDefaultFocusMinutes;
@@ -4547,6 +4587,33 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     [self.window makeFirstResponder:self.terminalView];
 }
 
+- (void)handleHookEvent:(MicaHookEvent)event forTab:(MicaTab *)tab {
+    NSString *eventName = [NSString stringWithUTF8String:event.event] ?: @"";
+    NSString *agent = [NSString stringWithUTF8String:event.agent] ?: @"";
+    NSString *sessionID = [NSString stringWithUTF8String:event.session_id] ?: @"";
+    NSString *notificationType = [NSString stringWithUTF8String:event.notification_type] ?: @"";
+    NSString *message = [NSString stringWithUTF8String:event.message] ?: @"";
+    NSString *lastMessage = [NSString stringWithUTF8String:event.last_assistant_message] ?: @"";
+    NSString *cwd = [NSString stringWithUTF8String:event.cwd] ?: @"";
+    NSString *tool = [NSString stringWithUTF8String:event.tool_name] ?: @"";
+    tab.lastHookEvent = @{ @"event":eventName, @"agent":agent, @"session_id":sessionID, @"cwd":cwd,
+        @"notification_type":notificationType, @"message":message, @"last_assistant_message":lastMessage, @"tool_name":tool };
+    tab.receivedAgentHook = YES;
+    if (agent.length) tab.agentKind = agent;
+    if (sessionID.length) tab.agentSessionID = sessionID;
+    NSString *next = MicaAgentStateForHookEvent(eventName, notificationType, MicaAgentStateForTab(tab));
+    if ([eventName isEqualToString:@"SessionEnd"]) { tab.agentKind = @"none"; tab.agentSessionID = nil; }
+    if ([eventName isEqualToString:@"Stop"] || [eventName isEqualToString:@"notify"])
+        if (lastMessage.length || message.length) { NSString *value = lastMessage.length ? lastMessage : message; tab.agentLastMessage = value.length > 200 ? [value substringToIndex:200] : value; }
+    if (next.length) {
+        tab.agentState = next; tab.agentStateSource = @"hook"; tab.agentUpdatedAt = NSDate.date;
+        tab.agentActivity = next; tab.agentActivityDetail = tab.agentLastMessage;
+        [self.terminalView setNeedsDisplay:YES];
+    }
+}
+
+- (void)setupAgentHooks:(id)sender { (void)sender; [MicaHookInstall presentFromWindow:self.window]; }
+
 - (void)buildMenus {
     NSMenu *main = [[NSMenu alloc] initWithTitle:@"Mica"];
     NSMenuItem *appRoot = [[NSMenuItem alloc] initWithTitle:@"Mica" action:nil keyEquivalent:@""];
@@ -4555,6 +4622,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     AddMenuItem(appMenu, @"New Window", @selector(newInstance:), @"n",
                 NSEventModifierFlagCommand).target = self;
     AddMenuItem(appMenu, @"New Project Launcher…", @selector(newProjectLauncher:), @"", 0).target = self;
+    AddMenuItem(appMenu, @"Set Up Agent Hooks…", @selector(setupAgentHooks:), @"", 0).target = self;
     [appMenu addItem:NSMenuItem.separatorItem];
     // Standard macOS place for Settings (⌘,): appearance, plus links to the project and timer settings.
     AddMenuItem(appMenu, @"Settings…", @selector(openSettings:), @",", NSEventModifierFlagCommand).target = self;
@@ -4980,6 +5048,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         [alert runModal];
         return;
     }
+    const char *rawHookToken = mica_session_hook_token(tab.session);
+    if (rawHookToken && rawHookToken[0]) tab.hookToken = [NSString stringWithUTF8String:rawHookToken];
     if (gMicaLightTheme) mica_session_set_light_theme(tab.session, true);
     [self installSourceForTab:tab];
     MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"session started pid=%d command_prefilled=%d",
@@ -6000,7 +6070,7 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
         uint64_t revision = mica_session_revision(tab.session);
         if (revision != tab.revision) {
             tab.revision = revision;
-            if (currentCommand.length && !activityScanPerformed && now - tab.lastActivityScanAt >= 0.50) {
+            if (!tab.receivedAgentHook && currentCommand.length && !activityScanPerformed && now - tab.lastActivityScanAt >= 0.50) {
                 tab.lastActivityScanAt = now;
                 activityScanPerformed = YES;
                 NSString *detail = nil;
@@ -6210,6 +6280,8 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     (void)notification;
     [self saveSessionState];
     MicaDiagnosticsLog(@"app", @"application is terminating");
+    [MicaHookServer.sharedServer stop];
+    unsetenv("MICA_HOOK_SOCK");
 }
 - (void)applicationWillResignActive:(NSNotification *)notification {
     (void)notification;

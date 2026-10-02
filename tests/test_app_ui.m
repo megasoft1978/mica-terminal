@@ -1649,8 +1649,8 @@ static int MicaRunUISelfTest(void) {
         NSString *waitingActivity = waitingProbe
             ? MicaAgentActivityForSession(waitingProbe, &waitingDetail) : nil;
         MicaUITestRecord(report, &allPassed,
-            waitingPromptFound && [waitingActivity isEqualToString:@"Needs input"],
-            @"the shared activity detector marks a generic command waiting for terminal input");
+            waitingPromptFound && [waitingActivity isEqualToString:@"Idle"],
+            @"generic shell prose does not become agent input state without an agent prompt glyph and UI marker");
         if (waitingProbe) mica_session_destroy(waitingProbe);
         MicaSession *glyphPromptProbe = mica_session_create("/tmp", "printf '\\033[5;1H\\u276f'; sleep 2", 6, 80);
         BOOL glyphPromptFound = NO;
@@ -1664,8 +1664,8 @@ static int MicaRunUISelfTest(void) {
         NSString *glyphPromptActivity = glyphPromptProbe
             ? MicaAgentActivityForSession(glyphPromptProbe, NULL) : nil;
         MicaUITestRecord(report, &allPassed,
-            glyphPromptFound && [glyphPromptActivity isEqualToString:@"Needs input"],
-            [NSString stringWithFormat:@"a Claude-style input prompt glyph is classified as waiting for input (found=%d activity=%@ screen=%@)",
+            glyphPromptFound && [glyphPromptActivity isEqualToString:@"Idle"],
+            [NSString stringWithFormat:@"a prompt glyph alone does not imply that an agent needs input (found=%d activity=%@ screen=%@)",
                 glyphPromptFound, glyphPromptActivity, MicaUITestScreenTail(glyphPromptProbe)]);
         if (glyphPromptProbe) mica_session_destroy(glyphPromptProbe);
         MicaAppDelegate *pollProbe = [[MicaAppDelegate alloc] init];

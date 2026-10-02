@@ -1,0 +1,9 @@
+#!/bin/sh
+# Agent hooks are best-effort; failures must never interrupt the agent.
+event=${1-}
+[ -n "${MICA_TAB_TOKEN-}" ] && [ -n "${MICA_HOOK_SOCK-}" ] && [ -n "$event" ] || exit 0
+payload=$(cat)
+payload=${payload%\}}
+payload="$payload,\"token\":\"$MICA_TAB_TOKEN\",\"event\":\"$event\"}"
+printf '%s\n' "$payload" | nc -U -w 2 "$MICA_HOOK_SOCK" 2>/dev/null || :
+exit 0
