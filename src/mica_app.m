@@ -4172,6 +4172,8 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
     } else if (!represented) tab = self.activeTab;
     if (![tab isKindOfClass:MicaTab.class]) return;
     tab.muteNotifications = !tab.muteNotifications;
+    [MicaAttention() setMuted:tab.muteNotifications tabID:tab.identifier];
+    NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
     [self saveSessionState];
 }
 
@@ -4520,16 +4522,19 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     [table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
 }
 
-- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView { (void)tableView; return self.commandPaletteRows.count; }
+- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView { (void)tableView; return (NSInteger)self.commandPaletteRows.count; }
 - (NSTableRowView *)tableView:(NSTableView *)tableView rowViewForRow:(NSInteger)row {
     (void)tableView;
+    if (row < 0 || row >= (NSInteger)self.commandPaletteRows.count) return [NSTableRowView new];
     MicaPaletteRowView *view = [MicaPaletteRowView new];
     NSDictionary *entry = self.commandPaletteRows[(NSUInteger)row];
     view.paletteAccessibilityLabel = entry[@"accessibility"] ?: [NSString stringWithFormat:@"%@ %@", entry[@"title"], entry[@"detail"]];
     return view;
 }
 - (id)tableView:(NSTableView *)tableView objectValueForTableColumn:(NSTableColumn *)column row:(NSInteger)row {
-    (void)tableView; NSDictionary *entry = self.commandPaletteRows[(NSUInteger)row];
+    (void)tableView;
+    if (row < 0 || row >= (NSInteger)self.commandPaletteRows.count) return @"";
+    NSDictionary *entry = self.commandPaletteRows[(NSUInteger)row];
     return [column.identifier isEqualToString:@"name"] ? entry[@"title"] : entry[@"detail"];
 }
 - (void)controlTextDidChange:(NSNotification *)notification { if (notification.object == self.commandPaletteSearch) [self filterCommandPalette:nil]; }
@@ -5479,6 +5484,8 @@ static BOOL MicaValidBranchName(NSString *name) {
         previous.session ? mica_session_pid(previous.session) : -1]);
     if (previous == self.voiceTargetTab) [self cancelDictation];
     if (previous.session && NSApp.isActive) mica_session_focus(previous.session, false);
+    [MicaAttention() clearTabID:previous.identifier];
+    NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
     self.uiMode = MicaUIModeNormal;
     [self.terminalView clearSelection];
     [self.tabs removeObjectAtIndex:(NSUInteger)self.activeIndex];
