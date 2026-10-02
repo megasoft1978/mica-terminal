@@ -44,6 +44,23 @@ int main(void) {
     assert(timer.phase == MICA_POMODORO_PAUSED_BREAK && timer.deadline == 0);
     assert(fabs(mica_pomodoro_remaining(&timer, 500) - 5) < 0.001);
 
+    // Skip is an explicit clock injection: moving the deadline to now advances immediately.
+    mica_pomodoro_reset(&timer);
+    assert(mica_pomodoro_start(&timer, 1000, 60));
+    timer.deadline = 1012;
+    assert(mica_pomodoro_advance(&timer, 1012, 60, 15));
+    assert(timer.phase == MICA_POMODORO_BREAK && timer.completed_focuses == 1);
+    timer.deadline = 1013;
+    assert(mica_pomodoro_advance(&timer, 1013, 60, 15));
+    assert(timer.phase == MICA_POMODORO_FOCUS && timer.completed_focuses == 1);
+
+    // An expired focus advances once; the caller can persist the paused next phase on relaunch.
+    mica_pomodoro_reset(&timer);
+    assert(mica_pomodoro_start(&timer, 2000, 10));
+    assert(mica_pomodoro_advance_with_options(&timer, 2010, 10, 5, false, true));
+    assert(timer.phase == MICA_POMODORO_PAUSED_BREAK && timer.completed_focuses == 1);
+    assert(fabs(mica_pomodoro_remaining(&timer, 9000) - 5) < 0.001);
+
     mica_pomodoro_reset(&timer);
     assert(timer.phase == MICA_POMODORO_IDLE && timer.completed_focuses == 0);
     assert(!mica_pomodoro_start(&timer, 0, 0));
