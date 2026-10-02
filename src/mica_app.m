@@ -10,6 +10,7 @@
 #import "mica_agent_detect.h"
 #import "mica_agent_state.h"
 #import "mica_attention.h"
+#import "mica_resume.h"
 #import <UserNotifications/UserNotifications.h>
 #import <Carbon/Carbon.h>
 
@@ -4943,6 +4944,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         (unsigned long)tabSpecs.count]);
     for (NSDictionary *spec in tabSpecs) {
         NSString *command = [spec[@"command"] length] ? spec[@"command"] : nil;
+        NSString *resumeCommand = restoringSession ? MicaResumeCommand(spec[@"agentKind"], spec[@"agentSessionID"]) : nil;
+        BOOL resumeEnabled = [[self micaDefaults] boolForKey:@"MicaResumeAgentsOnRestore"];
+        if (resumeCommand) command = resumeCommand;
         // Older layouts used a built-in Git view. Keep them useful by turning
         // that entry into the regular lazygit shell command.
         if ([command isEqualToString:@"mica-git"]) command = @"lazygit";
@@ -4951,7 +4955,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         if (![[NSFileManager defaultManager] fileExistsAtPath:cwd isDirectory:&isDirectory] || !isDirectory)
             cwd = NSHomeDirectory();
         [self addTabWithName:spec[@"name"] cwd:cwd command:command
-                   prefilled:[spec[@"prefilled"] boolValue] || (restoringSession && command.length > 0)];
+                   prefilled:resumeCommand ? !resumeEnabled : ([spec[@"prefilled"] boolValue] || (restoringSession && command.length > 0))];
         if (self.tabs.count && [spec[@"muteNotifications"] isKindOfClass:NSNumber.class])
             self.tabs.lastObject.muteNotifications = [spec[@"muteNotifications"] boolValue];
     }
@@ -5040,7 +5044,17 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
             if (name.length == 0 || name.length > 64 || [name rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound ||
                 cwd.length == 0 || cwd.length > PATH_MAX || !cwd.isAbsolutePath ||
                 [[cwd pathComponents] containsObject:@".."]) continue;
-            if (validTabs.count < 64) [validTabs addObject:tab];
+            if (validTabs.count < 64) {
+                NSMutableDictionary *cleanTab = [tab mutableCopy];
+                NSString *resumeCommand = MicaResumeCommand(tab[@"agentKind"], tab[@"agentSessionID"]);
+                [cleanTab removeObjectForKey:@"agentKind"];
+                [cleanTab removeObjectForKey:@"agentSessionID"];
+                if (resumeCommand) {
+                    cleanTab[@"agentKind"] = tab[@"agentKind"];
+                    cleanTab[@"agentSessionID"] = tab[@"agentSessionID"];
+                }
+                [validTabs addObject:cleanTab];
+            }
         }
         if (validTabs.count) {
             NSMutableDictionary *clean = [window mutableCopy];
@@ -5074,6 +5088,10 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
             NSMutableDictionary *savedTab = [@{@"name":name, @"cwd":cwd,
                 @"muteNotifications":@(tab.muteNotifications)} mutableCopy];
             if (tab.command.length && tab.command.length <= 4096) savedTab[@"command"] = tab.command;
+            if (MicaResumeCommand(tab.agentKind, tab.agentSessionID)) {
+                savedTab[@"agentKind"] = tab.agentKind;
+                savedTab[@"agentSessionID"] = tab.agentSessionID;
+            }
             [tabs addObject:savedTab];
         }
         if (tabs.count) {
@@ -5766,6 +5784,10 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     [[self micaDefaults] setBool:sender.state == NSControlStateValueOn forKey:@"MicaDictationVocabularyEnabled"];
 }
 
+- (void)prefResumeAgentsChanged:(NSButton *)sender {
+    [[self micaDefaults] setBool:sender.state == NSControlStateValueOn forKey:@"MicaResumeAgentsOnRestore"];
+}
+
 - (void)editVocabulary:(id)sender {
     (void)sender;
     NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Mica/vocabulary.txt"];
@@ -5828,6 +5850,8 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
             [[self micaDefaults] boolForKey:@"MicaMenuBarTimer"] ? NSControlStateValueOn : NSControlStateValueOff;
         ((NSButton *)[self.preferencesWindow.contentView viewWithTag:110]).state =
             [[self micaDefaults] boolForKey:@"MicaDiagnosticsEnabled"] ? NSControlStateValueOn : NSControlStateValueOff;
+        ((NSButton *)[self.preferencesWindow.contentView viewWithTag:112]).state =
+            [[self micaDefaults] boolForKey:@"MicaResumeAgentsOnRestore"] ? NSControlStateValueOn : NSControlStateValueOff;
         ((NSButton *)[self.preferencesWindow.contentView viewWithTag:108]).state =
             (![[self micaDefaults] objectForKey:@"MicaDictationVocabularyEnabled"] ||
              [[self micaDefaults] boolForKey:@"MicaDictationVocabularyEnabled"]) ? NSControlStateValueOn : NSControlStateValueOff;
@@ -5855,15 +5879,24 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     [settingsAppearance performAsCurrentDrawingAppearance:^{ settingsBackground = NSColor.windowBackgroundColor; }];
     window.backgroundColor = settingsBackground;
     NSView *content = window.contentView;
+    NSTextField *generalTitle = [NSTextField labelWithString:@"General"];
+    generalTitle.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
+    generalTitle.frame = NSMakeRect(20, 500, 100, 18);
+    [content addSubview:generalTitle];
     NSTextField *advancedTitle = [NSTextField labelWithString:@"Advanced"];
     advancedTitle.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
-    advancedTitle.frame = NSMakeRect(20, 500, 100, 18);
+    advancedTitle.frame = NSMakeRect(20, 420, 100, 18);
     [content addSubview:advancedTitle];
     NSButton *diagnostics = [NSButton checkboxWithTitle:@"Enable diagnostic logging" target:self action:@selector(prefDiagnosticsChanged:)];
     diagnostics.tag = 110;
     diagnostics.state = [[self micaDefaults] boolForKey:@"MicaDiagnosticsEnabled"] ? NSControlStateValueOn : NSControlStateValueOff;
-    diagnostics.frame = NSMakeRect(122, 497, 280, 20);
+    diagnostics.frame = NSMakeRect(122, 417, 280, 20);
     [content addSubview:diagnostics];
+    NSButton *resumeAgents = [NSButton checkboxWithTitle:@"Resume agents when restoring windows" target:self action:@selector(prefResumeAgentsChanged:)];
+    resumeAgents.tag = 112;
+    resumeAgents.frame = NSMakeRect(122, 470, 320, 20);
+    resumeAgents.state = [[self micaDefaults] boolForKey:@"MicaResumeAgentsOnRestore"] ? NSControlStateValueOn : NSControlStateValueOff;
+    [content addSubview:resumeAgents];
     content.wantsLayer = YES;
     content.layer.backgroundColor = settingsBackground.CGColor;
     NSArray<NSString *> *labels = @[@"Theme", @"Cursor", @"Text size"];

@@ -2739,6 +2739,7 @@ static int MicaRunUISelfTest(void) {
             NSString *safeTempFolder = @"/private/tmp";
             MicaTab *savedTab = [MicaTab new]; savedTab.name = @"Remembered"; savedTab.cwd = safeTempFolder;
             savedTab.command = @"printf MICA_RESTORED"; savedTab.muteNotifications = YES;
+            savedTab.agentKind = @"claude"; savedTab.agentSessionID = @"session-1234";
             [stateOwner.tabs addObject:savedTab]; [MicaControllers() addObject:stateOwner];
             NSString *stateDirectory = [NSTemporaryDirectory() stringByAppendingPathComponent:
                 [NSString stringWithFormat:@"mica-state-%d", getpid()]];
@@ -2751,11 +2752,19 @@ static int MicaRunUISelfTest(void) {
                 [savedState[@"tabs"][0][@"name"] isEqual:@"Remembered"] &&
                 [savedState[@"tabs"][0][@"cwd"] isEqual:safeTempFolder] &&
                 [savedState[@"tabs"][0][@"command"] isEqual:@"printf MICA_RESTORED"] &&
+                [savedState[@"tabs"][0][@"agentKind"] isEqual:@"claude"] &&
+                [savedState[@"tabs"][0][@"agentSessionID"] isEqual:@"session-1234"] &&
                 [savedState[@"tabs"][0][@"muteNotifications"] boolValue];
             NSDictionary *stateAttributes = [NSFileManager.defaultManager attributesOfItemAtPath:statePath error:nil];
             NSDictionary *directoryAttributes = [NSFileManager.defaultManager attributesOfItemAtPath:stateDirectory error:nil];
             BOOL privateStatePermissions = [stateAttributes[NSFilePosixPermissions] unsignedShortValue] == 0600 &&
                 [directoryAttributes[NSFilePosixPermissions] unsignedShortValue] == 0700;
+            NSMutableDictionary *legacyWindow = [savedState mutableCopy];
+            NSMutableDictionary *legacyTab = [[legacyWindow[@"tabs"] firstObject] mutableCopy];
+            [legacyTab removeObjectForKey:@"agentKind"]; [legacyTab removeObjectForKey:@"agentSessionID"];
+            legacyWindow[@"tabs"] = @[legacyTab];
+            NSDictionary *legacyState = @{@"version":@1, @"windows":@[legacyWindow]};
+            [[NSJSONSerialization dataWithJSONObject:legacyState options:0 error:nil] writeToFile:statePath atomically:YES];
             MicaAppDelegate *restoredStateOwner = [MicaAppDelegate new];
             restoredStateOwner.tabs = [NSMutableArray array]; restoredStateOwner.activeIndex = 0;
             [restoredStateOwner loadLaunchConfigurationFromArguments:@[@"mica"] bundleInfo:@{}];
@@ -2826,11 +2835,74 @@ static int MicaRunUISelfTest(void) {
             BOOL commandRestoredSafely = commandFieldRead && commandRestored.tabs.count == 1 &&
                 [commandRestored.activeTab.command isEqual:@"printf COMMAND_RESTORED"];
             for (NSValue *value in [commandRestored detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
+            NSString *stubDirectory = [stateDirectory stringByAppendingPathComponent:@"bin"];
+            [NSFileManager.defaultManager createDirectoryAtPath:stubDirectory withIntermediateDirectories:YES attributes:nil error:nil];
+            NSString *stub = [stubDirectory stringByAppendingPathComponent:@"claude"];
+            NSString *capture = [stateDirectory stringByAppendingPathComponent:@"capture"];
+            NSString *stubScript = @"#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$MICA_RESUME_CAPTURE\"\nprintf 'RESUME_STUB_RAN\\n'\n";
+            [stubScript writeToFile:stub atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            chmod(stub.fileSystemRepresentation, 0755);
+            NSString *oldPath = NSProcessInfo.processInfo.environment[@"PATH"] ?: @"/usr/bin:/bin";
+            NSString *testPath = [NSString stringWithFormat:@"%@:%@", stubDirectory, oldPath];
+            setenv("PATH", testPath.UTF8String, 1); setenv("MICA_RESUME_CAPTURE", capture.UTF8String, 1);
+            NSDictionary *agentRestoreFixture = @{ @"version":@1, @"windows":@[@{@"tabs":@[@{
+                @"name":@"Agent", @"cwd":safeTempFolder, @"agentKind":@"claude", @"agentSessionID":@"session-1234"}]}]};
+            [[NSJSONSerialization dataWithJSONObject:agentRestoreFixture options:0 error:nil] writeToFile:statePath atomically:YES];
+            NSString *resumeSuite = [NSString stringWithFormat:@"mica-resume-%d", getpid()];
+            NSUserDefaults *resumeDefaults = [[NSUserDefaults alloc] initWithSuiteName:resumeSuite];
+            [resumeDefaults removePersistentDomainForName:resumeSuite]; gMicaDefaultsOverride = resumeDefaults;
+            MicaAppDelegate *resumeOff = [MicaAppDelegate new]; resumeOff.tabs = [NSMutableArray array]; resumeOff.activeIndex = 0;
+            [resumeOff loadLaunchConfigurationFromArguments:@[@"mica"] bundleInfo:@{}];
+            for (int attempt = 0; attempt < 100; attempt++) {
+                [resumeOff pollSessions:nil];
+                if (MicaUITestFindText(resumeOff.activeTab.session, @"claude --resume session-1234", NULL, NULL)) break;
+                usleep(10000);
+            }
+            BOOL resumeOffPrefilled = MicaUITestFindText(resumeOff.activeTab.session, @"claude --resume session-1234", NULL, NULL) &&
+                ![NSFileManager.defaultManager fileExistsAtPath:capture];
+            for (NSValue *value in [resumeOff detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
+            [resumeDefaults setBool:YES forKey:@"MicaResumeAgentsOnRestore"];
+            MicaAppDelegate *resumeOn = [MicaAppDelegate new]; resumeOn.tabs = [NSMutableArray array]; resumeOn.activeIndex = 0;
+            [resumeOn loadLaunchConfigurationFromArguments:@[@"mica"] bundleInfo:@{}];
+            for (int attempt = 0; attempt < 200 && ![NSFileManager.defaultManager fileExistsAtPath:capture]; attempt++) {
+                [resumeOn pollSessions:nil]; usleep(10000);
+            }
+            NSString *capturedArgs = [NSString stringWithContentsOfFile:capture encoding:NSUTF8StringEncoding error:nil];
+            BOOL resumeOnRan = [capturedArgs isEqualToString:@"--resume session-1234\n"];
+            for (NSValue *value in [resumeOn detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
+            NSString *codexStub = [stubDirectory stringByAppendingPathComponent:@"codex"];
+            symlink(stub.fileSystemRepresentation, codexStub.fileSystemRepresentation);
+            NSDictionary *codexRestoreFixture = @{ @"version":@1, @"windows":@[@{@"tabs":@[@{
+                @"name":@"Codex", @"cwd":safeTempFolder, @"agentKind":@"codex", @"agentSessionID":@"codex-1234"}]}]};
+            [[NSJSONSerialization dataWithJSONObject:codexRestoreFixture options:0 error:nil] writeToFile:statePath atomically:YES];
+            [NSFileManager.defaultManager removeItemAtPath:capture error:nil];
+            MicaAppDelegate *codexResume = [MicaAppDelegate new]; codexResume.tabs = [NSMutableArray array]; codexResume.activeIndex = 0;
+            [codexResume loadLaunchConfigurationFromArguments:@[@"mica"] bundleInfo:@{}];
+            for (int attempt = 0; attempt < 200 && ![NSFileManager.defaultManager fileExistsAtPath:capture]; attempt++) {
+                [codexResume pollSessions:nil]; usleep(10000);
+            }
+            NSString *codexArgs = [NSString stringWithContentsOfFile:capture encoding:NSUTF8StringEncoding error:nil];
+            BOOL codexResumeRan = [codexArgs isEqualToString:@"resume codex-1234\n"];
+            for (NSValue *value in [codexResume detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
+            NSString *pwned = [stateDirectory stringByAppendingPathComponent:@"pwned"];
+            NSDictionary *tampered = @{ @"version":@1, @"windows":@[@{@"tabs":@[@{
+                @"name":@"Tampered", @"cwd":safeTempFolder, @"agentKind":@"claude",
+                @"agentSessionID":[NSString stringWithFormat:@"x; touch %@", pwned]}]}]};
+            [[NSJSONSerialization dataWithJSONObject:tampered options:0 error:nil] writeToFile:statePath atomically:YES];
+            [NSFileManager.defaultManager removeItemAtPath:capture error:nil];
+            MicaAppDelegate *resumeTampered = [MicaAppDelegate new]; resumeTampered.tabs = [NSMutableArray array]; resumeTampered.activeIndex = 0;
+            [resumeTampered loadLaunchConfigurationFromArguments:@[@"mica"] bundleInfo:@{}];
+            for (int attempt = 0; attempt < 30; attempt++) { [resumeTampered pollSessions:nil]; usleep(10000); }
+            BOOL tamperedDropped = ![NSFileManager.defaultManager fileExistsAtPath:pwned] &&
+                !MicaUITestFindText(resumeTampered.activeTab.session, @"touch", NULL, NULL);
+            for (NSValue *value in [resumeTampered detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
+            setenv("PATH", oldPath.UTF8String, 1); unsetenv("MICA_RESUME_CAPTURE");
+            gMicaDefaultsOverride = nil; [resumeDefaults removePersistentDomainForName:resumeSuite];
             hostileIgnored = hostileIgnored && commandRestoredSafely;
             [NSFileManager.defaultManager removeItemAtPath:stateDirectory error:nil];
             gMicaSessionStateURLOverride = nil;
             [MicaControllers() removeAllObjects]; [MicaControllers() addObjectsFromArray:savedControllers];
-            MicaUITestRecord(report, &allPassed, stateRoundTrips && restoredSession && restorePrefillsWithoutRunning && missingFolderFallsHome && corruptIgnored && oversizedIgnored && hostileIgnored && badEntryDropped && privateStatePermissions,
+            MicaUITestRecord(report, &allPassed, stateRoundTrips && restoredSession && restorePrefillsWithoutRunning && missingFolderFallsHome && corruptIgnored && oversizedIgnored && hostileIgnored && badEntryDropped && privateStatePermissions && resumeOffPrefilled && resumeOnRan && codexResumeRan && tamperedDropped,
                 [NSString stringWithFormat:@"session state validates names/folders, ignores hostile metadata and uses private permissions (roundtrip=%d restore=%d corrupt=%d oversized=%d hostile=%d private=%d command=%d mode=%o/%o saved=%@ actual=%@ raw=%@)",
                     stateRoundTrips, restoredSession, corruptIgnored, oversizedIgnored, hostileIgnored, privateStatePermissions,
                     commandRestoredSafely, [stateAttributes[NSFilePosixPermissions] unsignedShortValue],
