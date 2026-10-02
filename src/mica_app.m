@@ -8,6 +8,7 @@
 #import "mica_hook_server.h"
 #import "mica_hook_install.h"
 #import "mica_agent_state.h"
+#import "mica_attention.h"
 #import <UserNotifications/UserNotifications.h>
 #import <Carbon/Carbon.h>
 
@@ -159,6 +160,12 @@ static NSColor *MicaColor(uint32_t rgb) {
 }
 
 static uint64_t gMicaNextTabIdentifier = 1;
+static MicaAttentionInbox *MicaAttention(void) {
+    static MicaAttentionInbox *inbox;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ inbox = [MicaAttentionInbox new]; });
+    return inbox;
+}
 
 // The terminal draws on a fixed surface (dark by default, white in the light theme), independent of the system appearance.
 static BOOL gMicaLightTheme = NO;
@@ -596,6 +603,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (NSString *)visibleTextForTab:(MicaTab *)tab;
 - (void)closeActiveTab;
 - (void)selectRelativeTab:(NSInteger)delta;
+- (void)jumpToNextWaitingTab:(id)sender;
 - (void)selectTabAtIndex:(NSInteger)index;
 - (void)toggleTabPicker;
 - (void)toggleCommandPalette:(id)sender;
@@ -3937,6 +3945,12 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
         owner.pomodoroCycleFocusMinutes * 60.0, owner.pomodoroCycleBreakMinutes * 60.0,
         owner.autoStartBreaks, owner.autoStartFocus);
     if (changed) {
+        MicaTab *timerTab = owner.activeTab;
+        if (timerTab) {
+            [MicaAttention() postTabID:timerTab.identifier kind:MicaAttentionTimerEnd
+                title:@"Focus timer phase ended" body:@"Your timer phase has ended." muted:NO];
+            NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
+        }
         if (previousPhase == MICA_POMODORO_FOCUS) {
             NSString *day = [NSDateFormatter localizedStringFromDate:NSDate.date dateStyle:NSDateFormatterShortStyle timeStyle:NSDateFormatterNoStyle];
             NSUserDefaults *defaults = [owner micaDefaults];
@@ -4541,6 +4555,16 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         }
         return compact.length > 0;
     }]];
+    if (query.length) {
+        // Exact title matches, then title prefixes, then the rest, each in menu order.
+        NSMutableArray *exact = [NSMutableArray array], *prefix = [NSMutableArray array], *rest = [NSMutableArray array];
+        for (NSDictionary *entry in self.commandPaletteRows) {
+            NSString *title = [entry[@"title"] lowercaseString];
+            NSMutableArray *bucket = [title isEqualToString:query] ? exact : ([title hasPrefix:query] ? prefix : rest);
+            [bucket addObject:entry];
+        }
+        self.commandPaletteRows = [[exact arrayByAddingObjectsFromArray:prefix] arrayByAddingObjectsFromArray:rest];
+    }
     [self.commandPaletteTable reloadData];
     if (self.commandPaletteRows.count) [self.commandPaletteTable selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
 }
@@ -4608,6 +4632,18 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     if (next.length) {
         tab.agentState = next; tab.agentStateSource = @"hook"; tab.agentUpdatedAt = NSDate.date;
         tab.agentActivity = next; tab.agentActivityDetail = tab.agentLastMessage;
+        MicaAttentionKind kind;
+        BOOL hasAttention = YES;
+        if ([next isEqualToString:@"waitingPermission"]) kind = MicaAttentionWaitingPermission;
+        else if ([next isEqualToString:@"waitingInput"]) kind = MicaAttentionWaitingInput;
+        else if ([next isEqualToString:@"done"]) kind = MicaAttentionDone;
+        else if ([next isEqualToString:@"error"]) kind = MicaAttentionError;
+        else { hasAttention = NO; [MicaAttention() clearTabID:tab.identifier]; }
+        if (hasAttention) {
+            [MicaAttention() setMuted:tab.muteNotifications tabID:tab.identifier];
+            [MicaAttention() postTabID:tab.identifier kind:kind title:[self agentNotificationTitleForTab:tab waiting:(kind == MicaAttentionWaitingPermission || kind == MicaAttentionWaitingInput)] body:tab.agentLastMessage ?: @"" muted:NO];
+            NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
+        }
         [self.terminalView setNeedsDisplay:YES];
     }
 }
@@ -4667,6 +4703,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     AddMenuItem(sessionMenu, @"New Shell Tab", @selector(newShell:), @"t", NSEventModifierFlagCommand).target = self;
     AddMenuItem(sessionMenu, @"New Worktree Tab…", @selector(newWorktreeTab:), @"", 0).target = self;
     AddMenuItem(sessionMenu, @"Choose Tab…", @selector(toggleTabPicker), @"", 0).target = self;
+    AddMenuItem(sessionMenu, @"Jump to Next Waiting Tab", @selector(jumpToNextWaitingTab:), @"j",
+                NSEventModifierFlagCommand | NSEventModifierFlagShift).target = self;
     AddMenuItem(sessionMenu, @"Browse Scrollback", @selector(toggleScrollback), @"s",
                 NSEventModifierFlagCommand | NSEventModifierFlagShift).target = self;
     [sessionMenu addItem:NSMenuItem.separatorItem];
@@ -5458,6 +5496,29 @@ static BOOL MicaValidBranchName(NSString *name) {
     [self selectTabAtIndex:(self.activeIndex + delta + count) % count];
 }
 
+- (void)jumpToNextWaitingTab:(id)sender {
+    (void)sender;
+    NSArray<NSNumber *> *waiting = [MicaAttention() waitingTabIDs];
+    if (!waiting.count) return;
+    uint64_t currentID = self.activeTab.identifier;
+    NSUInteger start = 0;
+    for (NSUInteger i = 0; i < waiting.count; i++) if (waiting[i].unsignedLongLongValue == currentID) { start = i + 1; break; }
+    for (NSUInteger offset = 0; offset < waiting.count; offset++) {
+        uint64_t targetID = waiting[(start + offset) % waiting.count].unsignedLongLongValue;
+        for (MicaAppDelegate *controller in MicaControllers()) {
+            for (NSUInteger index = 0; index < controller.tabs.count; index++) {
+                if (controller.tabs[index].identifier != targetID) continue;
+                [NSApp activateIgnoringOtherApps:YES];
+                [controller.window makeKeyAndOrderFront:nil];
+                if (controller != self || (NSInteger)index != controller.activeIndex) [controller selectTabAtIndex:(NSInteger)index];
+                [MicaAttention() clearTabID:targetID];
+                NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
+                return;
+            }
+        }
+    }
+}
+
 - (void)selectTabAtIndex:(NSInteger)index {
     if (index < 0 || index >= (NSInteger)self.tabs.count || index == self.activeIndex) return;
     [self.terminalView.inputContext discardMarkedText];
@@ -5471,6 +5532,10 @@ static BOOL MicaValidBranchName(NSString *name) {
     [self requestWorkingDirectoryForTab:tab];
     tab.lastSelectedAt = NSProcessInfo.processInfo.systemUptime;
     tab.needsAttention = NO;
+    if (self.window.isKeyWindow) {
+        [MicaAttention() clearTabID:tab.identifier];
+        NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
+    }
     if (tab.session && NSApp.isActive) mica_session_focus(tab.session, true);
     [self updateWindowTitle];
     [self.windowContentView.sidebarView refreshRows];

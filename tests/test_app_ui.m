@@ -2084,7 +2084,7 @@ static int MicaRunUISelfTest(void) {
             NSInteger indexBeforePaletteAction = delegate.activeIndex;
             delegate.commandPaletteSearch.stringValue = @"Next Tab";
             [delegate filterCommandPalette:nil];
-            BOOL filterFindsAction = delegate.commandPaletteRows.count == 1 &&
+            BOOL filterFindsAction = delegate.commandPaletteRows.count >= 1 &&
                 [delegate.commandPaletteRows.firstObject[@"title"] isEqualToString:@"Next Tab"];
             [delegate runCommandPaletteSelection:nil];
             BOOL paletteRunsAction = delegate.activeIndex == (indexBeforePaletteAction + 1) % (NSInteger)delegate.tabs.count;

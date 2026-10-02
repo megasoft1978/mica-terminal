@@ -20,7 +20,10 @@
     if (!tabID || muted || [self isMutedTabID:tabID]) return NO;
     NSString *key = [self key:tabID kind:kind]; NSTimeInterval now = self.clock ? self.clock() : 0;
     NSNumber *last = self.lastPost[key];
-    if (last && now >= last.doubleValue && now - last.doubleValue < 2.0) return NO;
+    if (last && now >= last.doubleValue && now - last.doubleValue < 2.0) {
+        self.pending[key] = @{@"tabID":@(tabID), @"kind":@(kind), @"title":title ?: @"Mica", @"body":body ?: @""};
+        return NO;
+    }
     self.lastPost[key] = @(now);
     NSDictionary *event = @{@"tabID":@(tabID), @"kind":@(kind), @"title":title ?: @"Mica", @"body":body ?: @""};
     self.pending[key] = event;
@@ -30,15 +33,23 @@
 - (void)clearTabID:(uint64_t)tabID {
     NSString *prefix = [NSString stringWithFormat:@"%llu:", tabID];
     for (NSString *key in self.pending.allKeys) if ([key hasPrefix:prefix]) [self.pending removeObjectForKey:key];
+    for (NSString *key in self.lastPost.allKeys) if ([key hasPrefix:prefix]) [self.lastPost removeObjectForKey:key];
 }
-- (void)setMuted:(BOOL)muted tabID:(uint64_t)tabID { if (muted) self.mutedTabs[@(tabID)] = @YES; else [self.mutedTabs removeObjectForKey:@(tabID)]; }
+- (void)setMuted:(BOOL)muted tabID:(uint64_t)tabID {
+    if (muted) { self.mutedTabs[@(tabID)] = @YES; [self clearTabID:tabID]; }
+    else [self.mutedTabs removeObjectForKey:@(tabID)];
+}
 - (BOOL)isMutedTabID:(uint64_t)tabID { return [self.mutedTabs[@(tabID)] boolValue]; }
 - (NSArray<NSDictionary *> *)events { return self.pending.allValues; }
 - (NSArray<NSNumber *> *)waitingTabIDs {
     NSMutableArray *ids = [NSMutableArray array];
+    NSMutableSet<NSNumber *> *seen = [NSMutableSet set];
     for (NSDictionary *event in self.pending.allValues) {
         NSInteger kind = [event[@"kind"] integerValue];
-        if (kind == MicaAttentionWaitingPermission || kind == MicaAttentionWaitingInput) [ids addObject:event[@"tabID"]];
+        NSNumber *tabID = event[@"tabID"];
+        if ((kind == MicaAttentionWaitingPermission || kind == MicaAttentionWaitingInput) && ![seen containsObject:tabID]) {
+            [ids addObject:tabID]; [seen addObject:tabID];
+        }
     }
     return ids;
 }

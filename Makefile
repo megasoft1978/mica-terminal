@@ -151,12 +151,16 @@ $(BUILD)/test-pomodoro: tests/test_pomodoro.c $(POMODORO) include/mica_pomodoro.
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(C_WARNINGS) $(CPPFLAGS) $(POMODORO) tests/test_pomodoro.c -lm -o $@
 
+$(BUILD)/test-attention: tests/test_attention.m src/mica_attention.m src/mica_attention.h
+	@mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(OBJC_WARNINGS) -fobjc-arc -Isrc -framework Foundation src/mica_attention.m tests/test_attention.m -o $@
+
 $(BUILD)/test-ui: src/mica_agent_state.m src/mica_agent_state.h src/mica_attention.m src/mica_attention.h $(VTERM_STATIC) src/mica_hook_install.m src/mica_hook_install.h tests/test_app_ui.m src/mica_status_item.m src/mica_status_item.h src/mica_app.m src/mica_vocabulary.m src/mica_vocabulary.h src/mica_voice_controller.m src/mica_voice_controller.h src/mica_diagnostics.m src/mica_diagnostics.h src/mica_hook_server.m src/mica_hook_server.h src/mica_hook_install.m src/mica_hook_install.h $(HOOK) include/mica_hook.h $(CORE) $(POMODORO) include/mica.h include/mica_pomodoro.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(OBJC_WARNINGS) -DMICA_SESSION_TESTING -fobjc-arc $(CPPFLAGS) \
 		-framework Cocoa -framework Carbon -framework AVFoundation -framework UserNotifications $(CORE_FRAMEWORK) $(CORE) $(POMODORO) src/mica_diagnostics.m src/mica_vocabulary.m src/mica_voice_controller.m src/mica_attention.m src/mica_status_item.m src/mica_hook_server.m src/mica_hook_install.m src/mica_agent_state.m tests/test_app_ui.m $(HOOK) $(VTERM_STATIC) -o $@
 
-test: $(BUILD)/test-vterm-history $(BUILD)/test-session $(BUILD)/test-hook $(BUILD)/test-hook-server $(BUILD)/test-pomodoro $(BUILD)/test-hook-install $(BUILD)/test-ui $(APP_ICON) $(PROJECT_ICON_TOOL)
+test: $(BUILD)/test-vterm-history $(BUILD)/test-session $(BUILD)/test-hook $(BUILD)/test-hook-server $(BUILD)/test-pomodoro $(BUILD)/test-attention $(BUILD)/test-hook-install $(BUILD)/test-ui $(APP_ICON) $(PROJECT_ICON_TOOL)
 	rm -f $(BUILD)/ui-smoke.png $(BUILD)/ui-smoke-report.txt
 	$(BUILD)/test-vterm-history
 	$(BUILD)/test-session
@@ -165,6 +169,7 @@ test: $(BUILD)/test-vterm-history $(BUILD)/test-session $(BUILD)/test-hook $(BUI
 	$(BUILD)/test-hook-server
 	python3 tests/test_hook_helper.py
 	$(BUILD)/test-pomodoro
+	$(BUILD)/test-attention
 	MICA_PROJECT_ICON_TOOL="$(PROJECT_ICON_TOOL)" MICA_TEST_APP_ICON="$(APP_ICON)" python3 tests/test_desktop_apps.py
 	python3 tests/test_memory_processes.py
 	MICA_UI_SMOKE_IMAGE=$(BUILD)/ui-smoke.png MICA_UI_SMOKE_REPORT=$(BUILD)/ui-smoke-report.txt $(BUILD)/test-ui
