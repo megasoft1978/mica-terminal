@@ -3,7 +3,7 @@
 NS_ASSUME_NONNULL_BEGIN
 typedef NS_ENUM(NSInteger, MicaAttentionKind) {
     MicaAttentionWaitingPermission, MicaAttentionWaitingInput, MicaAttentionDone,
-    MicaAttentionError, MicaAttentionTimerEnd,
+    MicaAttentionError, MicaAttentionTimerEnd, MicaAttentionHighMemory,
 };
 
 @interface MicaAttentionInbox : NSObject

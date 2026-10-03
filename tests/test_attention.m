@@ -24,6 +24,12 @@ int main(void) {
         NSCAssert([inbox postTabID:3 kind:MicaAttentionTimerEnd title:@"Timer" body:@"Ended" muted:NO], @"timer end post");
         NSCAssert(lastKind == MicaAttentionTimerEnd, @"timer end routed through inbox delivery");
         now += 2;
+        NSCAssert([inbox postTabID:4 kind:MicaAttentionHighMemory title:@"Codex is using 5 GB" body:@"Memory threshold" muted:NO],
+            @"high memory event is delivered");
+        NSCAssert(inbox.waitingTabIDs.count == 0, @"memory warning is not a waiting prompt");
+        NSCAssert([inbox.dockBadge isEqual:@"2"], @"memory warning contributes to attention badge");
+        [inbox clearTabID:4];
+        now += 2;
         NSCAssert([inbox postTabID:0 kind:MicaAttentionTimerEnd title:@"Timer" body:@"No active tab" muted:NO],
             @"timer end without an owning window tab is retained");
         NSCAssert([inbox.events filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSDictionary *event, NSDictionary *bindings) {

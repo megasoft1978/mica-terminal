@@ -11,6 +11,7 @@
 #import "mica_agent_state.h"
 #import "mica_attention.h"
 #import "mica_resume.h"
+#import "mica_agent_rss.h"
 #import <UserNotifications/UserNotifications.h>
 #import <Carbon/Carbon.h>
 
@@ -305,6 +306,7 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 @property(nonatomic, strong) dispatch_source_t ioSource;
 @property(nonatomic, assign) uint64_t revision;
 @property(nonatomic, assign) uint64_t attentionCount;
+@property(nonatomic, assign) uint64_t agentRSSBytes;
 @property(nonatomic, copy) NSString *gitBranch;
 @property(nonatomic, copy) NSArray<NSString *> *vocabularyFileTerms;
 @property(nonatomic, copy) NSArray<NSString *> *gitVocabularyTerms;
@@ -596,6 +598,9 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, assign) MicaPomodoro pomodoro;
 @property(nonatomic, copy) NSString *pomodoroLabel;
 @property(nonatomic, strong) NSTimer *pomodoroTimer;
+@property(nonatomic, strong) NSTimer *agentRSSTimer;
+@property(nonatomic, strong) MicaAgentRSSMonitor *agentRSSMonitor;
+@property(nonatomic, assign) BOOL agentRSSStatusMenuOpen;
 @property(nonatomic, assign) BOOL dictationToggleMode;
 @property(nonatomic, copy) NSString *lastDictationText;
 @property(nonatomic, copy) NSString *lastDictationRawText;
@@ -696,8 +701,12 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)pomodoroTimerFired:(NSTimer *)timer;
 - (void)prefMenuBarTimerChanged:(NSButton *)sender;
 - (void)prefDiagnosticsChanged:(NSButton *)sender;
+- (void)prefAgentRSSWarningChanged:(NSPopUpButton *)sender;
 - (void)updateMenuBarTimer;
 - (void)applyMenuBarTimerPreference;
+- (void)updateAgentRSSTimer;
+- (void)agentRSSTimerFired:(NSTimer *)timer;
+- (void)prefAgentRSSWarningChanged:(NSPopUpButton *)sender;
 - (NSDictionary<NSString *, id> *)menuBarTimerPresentationAtTime:(double)now;
 @property(nonatomic, assign) MicaUIMode uiMode;
 @end
@@ -729,11 +738,11 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
     NSMutableArray<NSString *> *rows = [NSMutableArray arrayWithCapacity:self.owner.tabs.count];
     for (NSUInteger i = 0; i < self.owner.tabs.count; i++) {
         MicaTab *tab = self.owner.tabs[i];
-        [rows addObject:[NSString stringWithFormat:@"%llu|%@|%@|%@|%ld|%d|%@|%@",
+        [rows addObject:[NSString stringWithFormat:@"%llu|%@|%@|%@|%ld|%d|%@|%@|%llu",
             (unsigned long long)tab.identifier, tab.name ?: @"Terminal",
             tab.cwd.lastPathComponent ?: @"/", tab.gitBranch ?: @"",
             (long)[self.owner.terminalView activityStateForTab:tab], tab.needsAttention,
-            MicaAgentStateForTab(tab), tab.agentLastMessage ?: @""]];
+            MicaAgentStateForTab(tab), tab.agentLastMessage ?: @"", (unsigned long long)tab.agentRSSBytes]];
     }
     NSString *signature = [NSString stringWithFormat:@"%ld:%@", (long)self.owner.activeIndex,
         [rows componentsJoinedByString:@"\n"]];
@@ -764,7 +773,8 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
         NSString *stateText = [self stateTextForTab:tab];
         NSColor *stateColor = state == MicaTabActivityStateWaiting ? NSColor.systemOrangeColor :
             state == MicaTabActivityStateNeedsAttention ? NSColor.systemRedColor : NSColor.secondaryLabelColor;
-        [stateText drawInRect:NSMakeRect(14, y + 36, self.bounds.size.width - 28, 13)
+        CGFloat stateWidth = tab.agentRSSBytes ? self.bounds.size.width - 82 : self.bounds.size.width - 28;
+        [stateText drawInRect:NSMakeRect(14, y + 36, stateWidth, 13)
             withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:9], NSForegroundColorAttributeName:selected ? fg : stateColor}];
         NSString *symbol = [stateText isEqualToString:@"Needs permission"] ? @"!" :
             [stateText isEqualToString:@"Needs input"] ? @"?" :
@@ -776,6 +786,11 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
         NSString *preview = [self previewForTab:tab];
         if (preview.length) [preview drawInRect:NSMakeRect(14, y + 51, self.bounds.size.width - 28, 12)
             withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:9], NSForegroundColorAttributeName:NSColor.secondaryLabelColor}];
+        if (tab.agentRSSBytes) {
+            NSString *rss = [NSString stringWithFormat:@"%.1f GB", (double)tab.agentRSSBytes / (1024.0 * 1024.0 * 1024.0)];
+            [rss drawInRect:NSMakeRect(self.bounds.size.width - 58, y + 36, 48, 13)
+                withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:9], NSForegroundColorAttributeName:selected ? fg : NSColor.secondaryLabelColor}];
+        }
     }
 }
 - (void)mouseDown:(NSEvent *)event {
@@ -798,7 +813,8 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
         MicaTab *tab = self.owner.tabs[i];
         NSString *state = [self stateTextForTab:tab];
         NSString *preview = [self previewForTab:tab];
-        NSString *label = [NSString stringWithFormat:@"%@%@, folder %@, branch %@, %@%@%@", tab.name ?: @"Terminal", (NSInteger)i == self.owner.activeIndex ? @", selected" : @"", tab.cwd.lastPathComponent ?: @"/", tab.gitBranch ?: @"no branch", state, tab.needsAttention ? @", unread attention" : @"", preview.length ? [@", message " stringByAppendingString:preview] : @""];
+        NSString *rss = tab.agentRSSBytes ? [NSString stringWithFormat:@", %.1f GB memory", (double)tab.agentRSSBytes / (1024.0 * 1024.0 * 1024.0)] : @"";
+        NSString *label = [NSString stringWithFormat:@"%@%@, folder %@, branch %@, %@%@%@%@", tab.name ?: @"Terminal", (NSInteger)i == self.owner.activeIndex ? @", selected" : @"", tab.cwd.lastPathComponent ?: @"/", tab.gitBranch ?: @"no branch", state, tab.needsAttention ? @", unread attention" : @"", rss, preview.length ? [@", message " stringByAppendingString:preview] : @""];
         MicaTabAccessibilityElement *element = [MicaTabAccessibilityElement accessibilityElementWithRole:NSAccessibilityButtonRole frame:[self.window convertRectToScreen:[self convertRect:NSMakeRect(6, 37 + i * 70, self.bounds.size.width - 12, 65) toView:nil]] label:label parent:self];
         uint64_t tabID = tab.identifier;
         __weak typeof(self) weakSelf = self; element.pressHandler = ^BOOL {
@@ -868,6 +884,16 @@ static NSMutableArray<MicaAppDelegate *> *MicaControllers(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{ controllers = [NSMutableArray array]; });
     return controllers;
+}
+
+static NSInteger MicaAgentRSSWarningGB(NSUserDefaults *defaults) {
+    id stored = [defaults objectForKey:@"MicaAgentRSSWarningGB"];
+    NSInteger value = [stored respondsToSelector:@selector(integerValue)] ? [stored integerValue] : 4;
+    return value == 0 || value == 2 || value == 4 || value == 8 || value == 16 ? value : 4;
+}
+
+static uint64_t MicaAgentRSSWarningBytes(NSUserDefaults *defaults) {
+    return (uint64_t)MicaAgentRSSWarningGB(defaults) * 1024ULL * 1024ULL * 1024ULL;
 }
 
 static NSMutableArray<NSURL *> *MicaPendingOpenURLs(void) {
@@ -3973,6 +3999,76 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
     for (MicaAppDelegate *controller in MicaControllers()) [controller.terminalView setNeedsDisplayInRect:NSMakeRect(0, 0, controller.terminalView.bounds.size.width, kStatusHeight)];
 }
 
+- (void)updateAgentRSSTimer {
+    MicaAppDelegate *root = MicaControllers().firstObject ?: self;
+    if (root != self) {
+        [self.agentRSSTimer invalidate]; self.agentRSSTimer = nil; self.agentRSSMonitor = nil;
+        [root updateAgentRSSTimer];
+        return;
+    }
+    BOOL needed = self.agentRSSStatusMenuOpen || (gMicaStatusItem && gMicaStatusItem.menuOpen);
+    for (MicaAppDelegate *controller in MicaControllers())
+        if (controller.sidebarVisible) { needed = YES; break; }
+    if (!needed) {
+        [self.agentRSSTimer invalidate]; self.agentRSSTimer = nil; self.agentRSSMonitor = nil;
+        return;
+    }
+    if (!self.agentRSSMonitor) self.agentRSSMonitor = [MicaAgentRSSMonitor new];
+    self.agentRSSMonitor.thresholdBytes = MicaAgentRSSWarningBytes([self micaDefaults]);
+    if (!self.agentRSSTimer) {
+        self.agentRSSTimer = [NSTimer timerWithTimeInterval:5.0 target:self
+            selector:@selector(agentRSSTimerFired:) userInfo:nil repeats:YES];
+        self.agentRSSTimer.tolerance = 1.0;
+        [[NSRunLoop mainRunLoop] addTimer:self.agentRSSTimer forMode:NSRunLoopCommonModes];
+    }
+}
+
+- (void)agentRSSTimerFired:(NSTimer *)timer {
+    (void)timer;
+    MicaAppDelegate *root = MicaControllers().firstObject ?: self;
+    if (root != self) { [root agentRSSTimerFired:timer]; return; }
+    BOOL needed = self.agentRSSStatusMenuOpen || (gMicaStatusItem && gMicaStatusItem.menuOpen);
+    for (MicaAppDelegate *controller in MicaControllers())
+        if (controller.sidebarVisible) { needed = YES; break; }
+    if (!needed) { [self updateAgentRSSTimer]; return; }
+
+    NSMutableArray<MicaTab *> *agentTabs = [NSMutableArray array];
+    for (MicaAppDelegate *controller in MicaControllers()) for (MicaTab *tab in controller.tabs) {
+        BOOL supported = [tab.agentKind isEqualToString:@"claude"] || [tab.agentKind isEqualToString:@"codex"] ||
+            [tab.processAgentKind isEqualToString:@"claude"] || [tab.processAgentKind isEqualToString:@"codex"];
+        if (supported) [agentTabs addObject:tab];
+        else if (tab.agentRSSBytes) { tab.agentRSSBytes = 0; [controller.windowContentView.sidebarView refreshRows]; }
+    }
+    if (!agentTabs.count) return;
+    MicaAgentRSSMonitor *monitor = self.agentRSSMonitor;
+    if (!monitor) return;
+    monitor.thresholdBytes = MicaAgentRSSWarningBytes([self micaDefaults]);
+    NSDictionary<NSNumber *, NSNumber *> *samples = [monitor sampleTabs:agentTabs];
+    for (MicaAppDelegate *controller in MicaControllers()) {
+        BOOL changed = NO;
+        for (MicaTab *tab in controller.tabs) {
+            NSNumber *sample = samples[@(tab.identifier)];
+            if (sample && tab.agentRSSBytes != sample.unsignedLongLongValue) {
+                tab.agentRSSBytes = sample.unsignedLongLongValue;
+                changed = YES;
+            }
+        }
+        if (changed) [controller.windowContentView.sidebarView refreshRows];
+    }
+    uint64_t threshold = monitor.thresholdBytes;
+    if (!threshold) return;
+    for (NSNumber *tabID in [monitor crossingsForSamples:samples]) {
+        for (MicaAppDelegate *controller in MicaControllers()) for (MicaTab *tab in controller.tabs) {
+            if (tab.identifier != tabID.unsignedLongLongValue) continue;
+            double gigabytes = (double)tab.agentRSSBytes / (1024.0 * 1024.0 * 1024.0);
+            NSString *title = [NSString stringWithFormat:@"%@ is using %.1f GB", tab.name ?: @"Agent", gigabytes];
+            BOOL posted = [MicaAttention() postTabID:tab.identifier kind:MicaAttentionHighMemory
+                title:title body:@"The agent process group exceeded your memory warning level." muted:NO];
+            if (posted) NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
+        }
+    }
+}
+
 - (MicaAppDelegate *)menuBarTimerOwner {
     if (NSApp.keyWindow) for (MicaAppDelegate *controller in MicaControllers())
         if (controller.window == NSApp.keyWindow) return controller;
@@ -3995,6 +4091,11 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
             MicaAppDelegate *owner = [weakSelf menuBarTimerOwner];
             return owner ? [owner menuBarTimerMenu] : [[NSMenu alloc] initWithTitle:@"Mica"];
         }];
+        gMicaStatusItem.menuOpenChanged = ^(BOOL open) {
+            MicaAppDelegate *root = MicaControllers().firstObject ?: weakSelf;
+            root.agentRSSStatusMenuOpen = open;
+            [root updateAgentRSSTimer];
+        };
         [self updateMenuBarTimer];
     } else if (!enabled && gMicaStatusItem) {
         [gMicaStatusItem disable];
@@ -4016,6 +4117,13 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
     BOOL enabled = sender.state == NSControlStateValueOn;
     [[self micaDefaults] setBool:enabled forKey:@"MicaDiagnosticsEnabled"];
     MicaDiagnosticsSetEnabled(enabled);
+}
+
+- (void)prefAgentRSSWarningChanged:(NSPopUpButton *)sender {
+    static const NSInteger values[] = {0, 2, 4, 8, 16};
+    NSInteger index = MAX(0, MIN((NSInteger)(sizeof(values) / sizeof(values[0])) - 1, sender.indexOfSelectedItem));
+    [[self micaDefaults] setInteger:values[index] forKey:@"MicaAgentRSSWarningGB"];
+    [self updateAgentRSSTimer];
 }
 
 - (void)updateMenuBarTimer {
@@ -4411,6 +4519,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     if (!getenv("MICA_TEST_NO_STARTUP")) [self.window makeKeyAndOrderFront:nil];   // tests keep windows off screen
     [self.window makeFirstResponder:self.terminalView];
     [self installSessionSources];
+    [self updateAgentRSSTimer];
 }
 
 - (void)installMenus {
@@ -5610,6 +5719,7 @@ static BOOL MicaValidBranchName(NSString *name) {
         if (candidate.action == @selector(toggleSidebar:)) { item = candidate; break; }
     item.title = self.sidebarVisible ? @"Hide Sidebar" : @"Show Sidebar";
     item.state = self.sidebarVisible ? NSControlStateValueOn : NSControlStateValueOff;
+    [self updateAgentRSSTimer];
 }
 
 - (void)toggleTabPicker {
@@ -5852,6 +5962,9 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
             [[self micaDefaults] boolForKey:@"MicaDiagnosticsEnabled"] ? NSControlStateValueOn : NSControlStateValueOff;
         ((NSButton *)[self.preferencesWindow.contentView viewWithTag:112]).state =
             [[self micaDefaults] boolForKey:@"MicaResumeAgentsOnRestore"] ? NSControlStateValueOn : NSControlStateValueOff;
+        NSPopUpButton *memoryWarning = (NSPopUpButton *)[self.preferencesWindow.contentView viewWithTag:114];
+        NSInteger warningGB = MicaAgentRSSWarningGB([self micaDefaults]);
+        [memoryWarning selectItemAtIndex:warningGB == 0 ? 0 : warningGB == 2 ? 1 : warningGB == 4 ? 2 : warningGB == 8 ? 3 : 4];
         ((NSButton *)[self.preferencesWindow.contentView viewWithTag:108]).state =
             (![[self micaDefaults] objectForKey:@"MicaDictationVocabularyEnabled"] ||
              [[self micaDefaults] boolForKey:@"MicaDictationVocabularyEnabled"]) ? NSControlStateValueOn : NSControlStateValueOff;
@@ -5897,6 +6010,17 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     resumeAgents.frame = NSMakeRect(122, 470, 320, 20);
     resumeAgents.state = [[self micaDefaults] boolForKey:@"MicaResumeAgentsOnRestore"] ? NSControlStateValueOn : NSControlStateValueOff;
     [content addSubview:resumeAgents];
+    NSTextField *memoryWarningCaption = [NSTextField labelWithString:@"Agent memory warning"];
+    memoryWarningCaption.alignment = NSTextAlignmentRight;
+    memoryWarningCaption.frame = NSMakeRect(8, 442, 104, 18);
+    [content addSubview:memoryWarningCaption];
+    NSPopUpButton *memoryWarning = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 437, 160, 26) pullsDown:NO];
+    [memoryWarning addItemsWithTitles:@[@"Never", @"2 GB", @"4 GB", @"8 GB", @"16 GB"]];
+    NSInteger warningGB = MicaAgentRSSWarningGB([self micaDefaults]);
+    [memoryWarning selectItemAtIndex:warningGB == 0 ? 0 : warningGB == 2 ? 1 : warningGB == 4 ? 2 : warningGB == 8 ? 3 : 4];
+    memoryWarning.tag = 114;
+    memoryWarning.target = self; memoryWarning.action = @selector(prefAgentRSSWarningChanged:);
+    [content addSubview:memoryWarning];
     content.wantsLayer = YES;
     content.layer.backgroundColor = settingsBackground.CGColor;
     NSArray<NSString *> *labels = @[@"Theme", @"Cursor", @"Text size"];
@@ -6430,9 +6554,16 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     }
     NSMutableArray<MicaAppDelegate *> *controllers = MicaControllers();
     if (![controllers containsObject:self] || controllers.count <= 1) return;   // last window: quitting cleans up
+    if (self == controllers.firstObject) {
+        [self.agentRSSTimer invalidate]; self.agentRSSTimer = nil;
+        self.agentRSSMonitor = nil;
+    }
     [self teardownWindow];
     [controllers removeObject:self];
-    if (controllers.firstObject) [controllers.firstObject refreshPomodoroState];
+    if (controllers.firstObject) {
+        [controllers.firstObject refreshPomodoroState];
+        [controllers.firstObject updateAgentRSSTimer];
+    }
     [self saveSessionState];
     for (MicaAppDelegate *other in controllers) if (other.window) { [other takeMenuOwnership]; break; }
     MicaDiagnosticsLog(@"launch", [NSString stringWithFormat:@"closed a window (windows left=%lu)", (unsigned long)controllers.count]);

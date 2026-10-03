@@ -1239,6 +1239,38 @@ size_t mica_session_descendant_commands(const MicaSession *session, char *out, s
     return used;
 }
 
+uint64_t mica_session_tree_rss(const MicaSession *session) {
+    if (!session || session->child_pid <= 0) return 0;
+    MicaProcessIdentity *tree = NULL;
+    size_t count = snapshot_process_tree(session->child_pid, &tree);
+    uint64_t total = 0;
+    for (size_t i = 0; i < count; i++) {
+        struct proc_taskinfo info;
+        if (proc_pidinfo(tree[i].pid, PROC_PIDTASKINFO, 0, &info, sizeof(info)) == sizeof(info)) {
+            if (UINT64_MAX - total < info.pti_resident_size) total = UINT64_MAX;
+            else total += info.pti_resident_size;
+        }
+    }
+    free(tree);
+    return total;
+}
+uint64_t mica_process_tree_rss(pid_t rootPid) {
+    if (rootPid <= 0) return 0;
+    MicaProcessIdentity *tree = NULL;
+    size_t count = snapshot_process_tree(rootPid, &tree);
+    uint64_t total = 0;
+    for (size_t i = 0; i < count; i++) {
+        struct proc_taskinfo info;
+        if (proc_pidinfo(tree[i].pid, PROC_PIDTASKINFO, 0, &info, sizeof(info)) == sizeof(info)) {
+            if (UINT64_MAX - total < info.pti_resident_size) total = UINT64_MAX;
+            else total += info.pti_resident_size;
+        }
+    }
+    free(tree);
+    return total;
+}
+pid_t mica_session_root_pid(const MicaSession *session) { return session ? session->child_pid : -1; }
+
 static void signal_process_tree(const MicaProcessIdentity *tree, size_t tree_count,
                                 int signal_number) {
     for (size_t index = 0; index < tree_count; index++) {

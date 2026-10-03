@@ -1579,6 +1579,55 @@ static int MicaRunUISelfTest(void) {
         BOOL sidebarVisible = delegate.sidebarVisible && delegate.windowContentView.sidebarView != nil &&
             delegate.terminalView.frame.origin.x == 220 && delegate.terminalView.bounds.size.width < delegate.windowContentView.bounds.size.width &&
             [sidebarMenuItem.title isEqualToString:@"Hide Sidebar"] && sidebarMenuItem.state == NSControlStateValueOn;
+        NSString *savedFixtureAgentKind = fixtureTab.agentKind;
+        uint64_t savedFixtureRSS = fixtureTab.agentRSSBytes;
+        NSUInteger rssOwnerOriginalIndex = [MicaControllers() indexOfObject:delegate];
+        if (rssOwnerOriginalIndex == NSNotFound) {
+            [MicaControllers() insertObject:delegate atIndex:0];
+        } else if (rssOwnerOriginalIndex > 0) {
+            [MicaControllers() removeObjectAtIndex:rssOwnerOriginalIndex];
+            [MicaControllers() insertObject:delegate atIndex:0];
+        }
+        MicaAppDelegate *rssOwner = delegate;
+        rssOwner.agentRSSStatusMenuOpen = NO;
+        [rssOwner updateAgentRSSTimer];
+        BOOL sidebarArmsRSSSampling = rssOwner.agentRSSTimer != nil;
+        id savedRSSPreference = [[rssOwner micaDefaults] objectForKey:@"MicaAgentRSSWarningGB"];
+        [[rssOwner micaDefaults] setInteger:2 forKey:@"MicaAgentRSSWarningGB"];
+        fixtureTab.agentKind = @"codex";
+        rssOwner.agentRSSMonitor = [MicaAgentRSSMonitor new];
+        rssOwner.agentRSSMonitor.sampler = ^uint64_t(pid_t pid) { (void)pid; return 3ULL * 1024 * 1024 * 1024; };
+        NSDictionary *directRSSSamples = [rssOwner.agentRSSMonitor sampleTabs:@[fixtureTab]];
+        rssOwner.agentRSSStatusMenuOpen = YES;
+        [rssOwner agentRSSTimerFired:nil];
+        NSUInteger fixtureIndexForRSS = [delegate.tabs indexOfObject:fixtureTab];
+        NSArray *rssAccessibilityRows = [delegate.windowContentView.sidebarView accessibilityChildren];
+        NSString *rssAccessibility = fixtureIndexForRSS < rssAccessibilityRows.count ?
+            [rssAccessibilityRows[fixtureIndexForRSS] accessibilityLabel] : @"";
+        BOOL rssSidebarAndWarning = fixtureTab.agentRSSBytes == 3ULL * 1024 * 1024 * 1024 &&
+            [rssAccessibility containsString:@"3.0 GB memory"] &&
+            [MicaAttention().events filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSDictionary *event, NSDictionary *bindings) {
+                (void)bindings; return [event[@"tabID"] unsignedLongLongValue] == fixtureTab.identifier &&
+                    [event[@"kind"] integerValue] == MicaAttentionHighMemory;
+            }]].count == 1;
+        uint64_t rssObservedBytes = fixtureTab.agentRSSBytes;
+        NSUInteger rssObservedAlerts = [MicaAttention().events filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSDictionary *event, NSDictionary *bindings) {
+            (void)bindings; return [event[@"tabID"] unsignedLongLongValue] == fixtureTab.identifier &&
+                [event[@"kind"] integerValue] == MicaAttentionHighMemory;
+        }]].count;
+        fixtureTab.agentKind = savedFixtureAgentKind;
+        fixtureTab.agentRSSBytes = savedFixtureRSS;
+        if (savedRSSPreference) [[rssOwner micaDefaults] setObject:savedRSSPreference forKey:@"MicaAgentRSSWarningGB"];
+        else [[rssOwner micaDefaults] removeObjectForKey:@"MicaAgentRSSWarningGB"];
+        rssOwner.agentRSSStatusMenuOpen = NO;
+        if (rssOwnerOriginalIndex == NSNotFound) {
+            [MicaControllers() removeObject:delegate];
+        } else if (rssOwnerOriginalIndex > 0) {
+            [MicaControllers() removeObject:delegate];
+            [MicaControllers() insertObject:delegate atIndex:MIN(rssOwnerOriginalIndex, MicaControllers().count)];
+        }
+        [MicaAttention() clearTabID:fixtureTab.identifier];
+        [rssOwner updateAgentRSSTimer];
         fixtureTab.currentCommand = @"codex"; fixtureTab.agentActivity = @"Needs input"; fixtureTab.needsAttention = YES;
         [delegate.windowContentView.sidebarView refreshRows];
         MicaRedrawSpySidebar *sidebarRedrawProbe = [MicaRedrawSpySidebar new];
@@ -1636,6 +1685,15 @@ static int MicaRunUISelfTest(void) {
         BOOL sidebarResizePreservesPTY = sidebarOriginalCols > resizedSidebarCols && fixtureReady &&
             MicaUITestFindText(fixtureTab.session, @"UI-TRUECOLOR", NULL, NULL);
         [delegate toggleSidebar:nil];
+        rssOwner.agentRSSStatusMenuOpen = NO;
+        [rssOwner updateAgentRSSTimer];
+        BOOL hiddenSidebarDisarmsRSSSampling = rssOwner.agentRSSTimer == nil;
+        rssOwner.agentRSSStatusMenuOpen = YES;
+        [rssOwner updateAgentRSSTimer];
+        BOOL openStatusMenuArmsRSSSampling = rssOwner.agentRSSTimer != nil;
+        rssOwner.agentRSSStatusMenuOpen = NO;
+        [rssOwner updateAgentRSSTimer];
+        BOOL hiddenSidebarAndMenuDisarmRSSSampling = rssOwner.agentRSSTimer == nil;
         for (int attempt = 0; attempt < 40 && mica_session_cols(sidebarResizeTab.session) < sidebarOriginalCols; attempt++)
             [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
         BOOL sidebarHiddenReleasesView = !delegate.sidebarVisible && delegate.windowContentView.sidebarView == nil &&
@@ -1652,13 +1710,21 @@ static int MicaRunUISelfTest(void) {
         fixtureTab.agentLastMessage = savedAgentMessage;
         fixtureTab.receivedAgentHook = savedReceivedAgentHook;
         [delegate selectTabAtIndex:sidebarOriginalIndex];
-        MicaUITestRecord(report, &allPassed, sidebarDefaultOff && sidebarVisible && sidebarStateAccessible && sidebarActivationSelects &&
+        MicaUITestRecord(report, &allPassed, sidebarDefaultOff && sidebarVisible && rssSidebarAndWarning && sidebarStateAccessible && sidebarActivationSelects &&
             sidebarWindowIsolation && sidebarResizePreservesPTY && sidebarHiddenReleasesView,
             [NSString stringWithFormat:@"optional sidebar is per-window, exposes fake agent attention state, selects tabs, resizes the PTY without losing fixture output, and releases hidden views (visible=%d accessible=%d select=%d isolated=%d resize=%ld→%ld hidden=%d)",
                 sidebarDefaultOff && sidebarVisible, sidebarStateAccessible, sidebarActivationSelects, sidebarWindowIsolation,
                 (long)sidebarOriginalCols, (long)resizedSidebarCols, sidebarHiddenReleasesView]);
         MicaUITestRecord(report, &allPassed, unchangedSidebarSkipsRedraw,
             @"sidebar refresh skips redraw requests when row state is unchanged");
+        MicaUITestRecord(report, &allPassed, rssSidebarAndWarning,
+            [NSString stringWithFormat:@"visible sidebar samples Claude/Codex RSS, exposes the reading to VoiceOver, and posts a threshold alert (bytes=%llu direct=%@ index=%lu label=%@ alerts=%lu controller=%lu root=%d)",
+                (unsigned long long)rssObservedBytes, directRSSSamples, (unsigned long)fixtureIndexForRSS, rssAccessibility, (unsigned long)rssObservedAlerts,
+                (unsigned long)MicaControllers().count, MicaControllers().firstObject == delegate]);
+        MicaUITestRecord(report, &allPassed, sidebarArmsRSSSampling && hiddenSidebarDisarmsRSSSampling &&
+            openStatusMenuArmsRSSSampling && hiddenSidebarAndMenuDisarmRSSSampling,
+            [NSString stringWithFormat:@"RSS sampling timer follows sidebar and status-menu visibility (sidebar=%d hidden=%d menu=%d both-hidden=%d)",
+                sidebarArmsRSSSampling, hiddenSidebarDisarmsRSSSampling, openStatusMenuArmsRSSSampling, hiddenSidebarAndMenuDisarmRSSSampling]);
         MicaUITestRecord(report, &allPassed, allAgentStatesAccessible && previewTruncates && changedAgentMessageRedrawsOnce,
             [NSString stringWithFormat:@"sidebar exposes each agent state and truncated message, and redraws once for state/message changes (states=%d preview=%d state-redraw=%d message-redraw=%d)",
                 allAgentStatesAccessible, previewTruncates, changedAgentStateRedrawsOnce, changedAgentMessageRedrawsOnce]);
