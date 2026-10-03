@@ -12,6 +12,7 @@ This roadmap tracks open work only. Shipped features are summarized below so the
 - Agent notifications distinguish “needs input” from “finished”, use no sound, and can be muted per tab. Mica handles terminal notification sequences and clicking a notification returns to its window and tab.
 - The per-window agent sidebar shows project context, agent state and recent messages. The attention inbox collects agent events across windows and supports direct navigation to the waiting tab.
 - Project windows and ordinary tabs restore their names and folders after quit. Relaunch starts fresh PTY sessions; an optional setting resumes Claude Code and Codex sessions when their validated session IDs were captured. Arbitrary shell commands, other running processes and scrollback do not resume.
+- SSH connection profiles save a friendly name, OpenSSH destination and remote starting folder. They use the macOS `ssh` client and existing OpenSSH configuration/authentication, restore as new connections, and can be included in `.mica` project layouts. Profile records contain no credentials.
 - The focus timer is shared across windows, with labeled focus/break/paused states, Start/Pause/Resume controls, accessible actions, completion notifications and independent auto-start settings.
 - Scrollback stores only meaningful row prefixes within a fixed history limit. Search supports Unicode text; wrapped URLs work at retained physical widths. Full column-width reflow remains open.
 - The app includes system-following appearance, an opt-in global shortcut, denied-microphone Settings access, and per-window project windows hosted by one process.
@@ -23,13 +24,12 @@ This roadmap tracks open work only. Shipped features are summarized below so the
 | 1 | Speech capture and prediction overlay | Move live dictation out of the terminal status strip into a compact, non-blocking native overlay with room for multi-line transcript preview. | Medium |
 | 2 | Trustworthy command status | Keep the status strip useful during commands with concise states based on reliable hooks, and a neutral fallback when Mica cannot identify meaningful activity. | Medium |
 | 3 | Tool-specific status adapters | Add focused, tested status mappings for Claude Code, Codex and selected interactive tools such as lazygit; do not infer detailed activity from incidental screen words. | Medium |
-| 4 | SSH project profiles | Save host aliases and remote working folders, then open a PTY-backed SSH shell using the system OpenSSH configuration and authentication. See [implementation plan](PLAN-SSH-PROFILES.md). | Large |
-| 5 | Remote desktop handoff | For a saved Mac connection, optionally open an installed remote-desktop app such as RustDesk; keep graphical control separate from Mica's SSH terminal. | Small |
-| 6 | Retained-history column reflow | Reflow retained rows across width changes while preserving links, cell attributes, search and selection anchors within the per-session history cap. | Large |
-| 7 | More complete session recovery | Arbitrary shell commands, running processes and scrollback do not resume. Any broader recovery needs explicit process-safety and bounded-storage design. | Large |
-| 8 | Split panes | The layout, focus and resize model assumes one PTY grid per tab; define a bounded pane tree and resource accounting first. | Large |
-| 9 | Broader shell support | Startup hooks and completion currently target `/bin/zsh -l -i`; add shells only with startup-file preservation and PTY coverage. | Medium–large |
-| 10 | Release reliability | Keep install and update flows reproducible and separate development builds from installed releases. | Medium |
+| 4 | Remote desktop handoff | For a saved Mac connection, optionally open an installed remote-desktop app such as RustDesk; keep graphical control separate from Mica's SSH terminal. | Small |
+| 5 | Retained-history column reflow | Reflow retained rows across width changes while preserving links, cell attributes, search and selection anchors within the per-session history cap. | Large |
+| 6 | More complete session recovery | Arbitrary shell commands, running processes and scrollback do not resume. Any broader recovery needs explicit process-safety and bounded-storage design. | Large |
+| 7 | Split panes | The layout, focus and resize model assumes one PTY grid per tab; define a bounded pane tree and resource accounting first. | Large |
+| 8 | Broader shell support | Startup hooks and completion currently target `/bin/zsh -l -i`; add shells only with startup-file preservation and PTY coverage. | Medium–large |
+| 9 | Release reliability | Keep install and update flows reproducible and separate development builds from installed releases. | Medium |
 
 ## Deferred
 

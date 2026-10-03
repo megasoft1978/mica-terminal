@@ -2976,6 +2976,48 @@ static int MicaRunUISelfTest(void) {
             NSString *capturedArgs = [NSString stringWithContentsOfFile:capture encoding:NSUTF8StringEncoding error:nil];
             BOOL resumeOnRan = [capturedArgs isEqualToString:@"--resume session-1234\n"];
             for (NSValue *value in [resumeOn detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
+
+            NSString *sshProfileID = @"A514442E-F80A-4B4E-A83B-98A335BD1942";
+            NSDictionary *sshProfile = @{@"id":sshProfileID, @"name":@"Test Mac", @"destination":@"test-mac",
+                @"remoteDirectory":@"~/Projects/Mica"};
+            [resumeDefaults setObject:@{@"version":@1, @"profiles":@[sshProfile]} forKey:@"MicaSSHProfiles"];
+            NSString *sshStub = [stubDirectory stringByAppendingPathComponent:@"ssh"];
+            symlink(stub.fileSystemRepresentation, sshStub.fileSystemRepresentation);
+            NSDictionary *sshRestoreFixture = @{ @"version":@1, @"windows":@[@{ @"tabs":@[@{
+                @"name":@"Test Mac", @"cwd":safeTempFolder, @"sshProfileID":sshProfileID,
+                @"command":@"this must never be replayed"}]}]};
+            [[NSJSONSerialization dataWithJSONObject:sshRestoreFixture options:0 error:nil] writeToFile:statePath atomically:YES];
+            [NSFileManager.defaultManager removeItemAtPath:capture error:nil];
+            MicaAppDelegate *sshRestored = [MicaAppDelegate new];
+            sshRestored.tabs = [NSMutableArray array]; sshRestored.activeIndex = 0;
+            [sshRestored loadLaunchConfigurationFromArguments:@[@"mica"] bundleInfo:@{}];
+            for (int attempt = 0; attempt < 200 && ![NSFileManager.defaultManager fileExistsAtPath:capture]; attempt++) {
+                [sshRestored pollSessions:nil]; usleep(10000);
+            }
+            NSString *sshCapturedArgs = [NSString stringWithContentsOfFile:capture encoding:NSUTF8StringEncoding error:nil];
+            BOOL sshRestoredSafely = sshRestored.tabs.count == 1 &&
+                [sshRestored.activeTab.remoteProfile[@"id"] isEqualToString:sshProfileID] &&
+                [sshCapturedArgs containsString:@"-tt test-mac cd -- \"$HOME\"/'Projects/Mica'" ] &&
+                ![sshCapturedArgs containsString:@"this must never be replayed"];
+            for (NSValue *value in [sshRestored detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
+
+            NSString *sshLayoutPath = [stateDirectory stringByAppendingPathComponent:@"remote.mica"];
+            NSString *sshLayoutContents = [NSString stringWithFormat:@"# Mica layout v2\n# Mica project: Remote workspace\nRemote Mac\t@ssh-profile:%@\n", sshProfileID];
+            [sshLayoutContents writeToFile:sshLayoutPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            MicaAppDelegate *sshLayoutOwner = [MicaAppDelegate new];
+            sshLayoutOwner.tabs = [NSMutableArray array]; sshLayoutOwner.activeIndex = 0;
+            [sshLayoutOwner loadLaunchConfigurationFromArguments:@[@"mica", @"--layout", sshLayoutPath] bundleInfo:@{}];
+            [NSFileManager.defaultManager removeItemAtPath:capture error:nil];
+            for (int attempt = 0; attempt < 200 && ![NSFileManager.defaultManager fileExistsAtPath:capture]; attempt++) {
+                [sshLayoutOwner pollSessions:nil]; usleep(10000);
+            }
+            NSString *sshLayoutArgs = [NSString stringWithContentsOfFile:capture encoding:NSUTF8StringEncoding error:nil];
+            BOOL sshLayoutRestoresProfile = sshLayoutOwner.tabs.count == 1 &&
+                [sshLayoutOwner.activeTab.remoteProfile[@"id"] isEqualToString:sshProfileID] &&
+                [sshLayoutArgs containsString:@"-tt test-mac"] &&
+                [sshLayoutOwner.projectName isEqualToString:@"Remote workspace"];
+            for (NSValue *value in [sshLayoutOwner detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
+
             NSString *codexStub = [stubDirectory stringByAppendingPathComponent:@"codex"];
             symlink(stub.fileSystemRepresentation, codexStub.fileSystemRepresentation);
             NSDictionary *codexRestoreFixture = @{ @"version":@1, @"windows":@[@{@"tabs":@[@{
@@ -3008,7 +3050,7 @@ static int MicaRunUISelfTest(void) {
             [NSFileManager.defaultManager removeItemAtPath:stateDirectory error:nil];
             gMicaSessionStateURLOverride = nil;
             [MicaControllers() removeAllObjects]; [MicaControllers() addObjectsFromArray:savedControllers];
-            MicaUITestRecord(report, &allPassed, stateRoundTrips && restoredSession && restorePrefillsWithoutRunning && missingFolderFallsHome && corruptIgnored && oversizedIgnored && hostileIgnored && badEntryDropped && privateStatePermissions && resumeOffPrefilled && resumeOnRan && codexResumeRan && tamperedDropped,
+            MicaUITestRecord(report, &allPassed, stateRoundTrips && restoredSession && restorePrefillsWithoutRunning && missingFolderFallsHome && corruptIgnored && oversizedIgnored && hostileIgnored && badEntryDropped && privateStatePermissions && resumeOffPrefilled && resumeOnRan && sshRestoredSafely && sshLayoutRestoresProfile && codexResumeRan && tamperedDropped,
                 [NSString stringWithFormat:@"session state validates names/folders, ignores hostile metadata and uses private permissions (roundtrip=%d restore=%d corrupt=%d oversized=%d hostile=%d private=%d command=%d mode=%o/%o saved=%@ actual=%@ raw=%@)",
                     stateRoundTrips, restoredSession, corruptIgnored, oversizedIgnored, hostileIgnored, privateStatePermissions,
                     commandRestoredSafely, [stateAttributes[NSFilePosixPermissions] unsignedShortValue],
@@ -3658,6 +3700,46 @@ static int MicaRunUISelfTest(void) {
                          [NSString stringWithFormat:@"project settings persist edits and detect stale concurrent settings (%lu rows, conflict=%d)",
                           (unsigned long)savedSettingTabs.count, concurrentSettingsDetected]);
         [settingsOwner.window orderOut:nil];
+
+        NSString *sshProjectSuite = [NSString stringWithFormat:@"mica-ssh-layout-%d", getpid()];
+        NSUserDefaults *sshProjectDefaults = [[NSUserDefaults alloc] initWithSuiteName:sshProjectSuite];
+        [sshProjectDefaults removePersistentDomainForName:sshProjectSuite];
+        NSUserDefaults *savedDefaultsOverride = gMicaDefaultsOverride;
+        gMicaDefaultsOverride = sshProjectDefaults;
+        NSString *sshProjectID = @"5442F3CA-7DB8-48F5-8FC2-5275E499A66A";
+        NSDictionary *sshProjectProfile = @{@"id":sshProjectID, @"name":@"Remote Mac", @"destination":@"remote-mac",
+            @"remoteDirectory":@"~/Projects/Mica"};
+        [sshProjectDefaults setObject:@{@"version":@1, @"profiles":@[sshProjectProfile]} forKey:@"MicaSSHProfiles"];
+        NSString *sshProjectLayout = [projectLayoutRoot stringByAppendingPathComponent:@"ssh-profile.mica"];
+        [@"# Mica layout v1\n# Mica project: SSH project\nShell\t/tmp\t\n"
+            writeToFile:sshProjectLayout atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        MicaAppDelegate *sshProjectSettingsOwner = [MicaAppDelegate new];
+        sshProjectSettingsOwner.projectName = @"SSH project";
+        sshProjectSettingsOwner.projectLayoutPath = sshProjectLayout;
+        MicaUITestAttachWindow(sshProjectSettingsOwner);
+        MicaProjectSettingsController *sshProjectSettings = [[MicaProjectSettingsController alloc] initWithOwner:sshProjectSettingsOwner];
+        NSMenuItem *remoteMacItem = nil;
+        for (NSMenuItem *item in sshProjectSettings.addSSHProfileButton.itemArray)
+            if ([item.representedObject[@"id"] isEqualToString:sshProjectID]) { remoteMacItem = item; break; }
+        if (remoteMacItem) {
+            [sshProjectSettings.addSSHProfileButton selectItem:remoteMacItem];
+            [sshProjectSettings addSSHProfile:nil];
+        }
+        [sshProjectSettings.tableView.window makeFirstResponder:sshProjectSettings.tableView];
+        [sshProjectSettingsOwner.window beginSheet:sshProjectSettings.window completionHandler:nil];
+        [sshProjectSettings save:nil];
+        NSString *sshProjectLayoutText = [NSString stringWithContentsOfFile:sshProjectLayout encoding:NSUTF8StringEncoding error:nil];
+        NSDictionary *sshProjectConfig = MicaResolveLaunchConfiguration(@[@"mica", @"--layout", sshProjectLayout], @{}, @"/tmp");
+        NSDictionary *sshProjectTab = [sshProjectConfig[@"tabs"] lastObject];
+        BOOL sshProjectLayoutSaved = remoteMacItem != nil && sshProjectSettings.rows.count == 2 &&
+            [sshProjectLayoutText containsString:@"# Mica layout v2"] &&
+            [sshProjectLayoutText containsString:[NSString stringWithFormat:@"@ssh-profile:%@", sshProjectID]] &&
+            [sshProjectTab[@"sshProfileID"] isEqualToString:sshProjectID];
+        [sshProjectSettingsOwner.window orderOut:nil];
+        gMicaDefaultsOverride = savedDefaultsOverride;
+        [sshProjectDefaults removePersistentDomainForName:sshProjectSuite];
+        MicaUITestRecord(report, &allPassed, sshProjectLayoutSaved,
+            [NSString stringWithFormat:@"Project Settings writes a versioned profile reference and the layout resolves it by stable ID (ok=%d)", sshProjectLayoutSaved]);
 
         NSMutableArray *savedTimerControllers = [MicaControllers() mutableCopy];
         [MicaControllers() removeAllObjects];

@@ -876,6 +876,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (BOOL)layoutChangedOnDisk;
 @property(nonatomic, strong) NSTableView *tableView;
 @property(nonatomic, strong) NSMutableArray<NSMutableArray<NSString *> *> *rows;
+@property(nonatomic, strong) NSPopUpButton *addSSHProfileButton;
 - (instancetype)initWithOwner:(MicaAppDelegate *)owner;
 - (void)save:(id)sender;
 @end
@@ -888,6 +889,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)save:(id)sender;
 - (void)connectSelected:(id)sender;
 @end
+static NSArray<NSDictionary<NSString *, NSString *> *> *MicaNormalizedSSHProfiles(NSUserDefaults *defaults);
 
 // One process can host many project windows. Each window has its own MicaAppDelegate acting as a window
 // controller; the first one is also the NSApplication delegate. Sharing one process avoids repeating the
@@ -3511,6 +3513,15 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
             NSArray<NSString *> *parts = [line componentsSeparatedByString:@"\t"];
             if (parts.count < 2) return;
             NSString *name = parts[0];
+            if ([parts[1] hasPrefix:@"@ssh-profile:"]) {
+                NSString *profileID = [[NSUUID alloc] initWithUUIDString:[parts[1] substringFromIndex:@"@ssh-profile:".length]].UUIDString;
+                if (profileID) {
+                    [tabs addObject:@{@"name":name, @"cwd":cwd, @"command":@"", @"prefilled":@NO,
+                        @"sshProfileID":profileID}];
+                    if (tabs.count >= 64) *stop = YES;
+                }
+                return;
+            }
             NSString *tabCwd = parts[1].length ? parts[1] : cwd;
             NSMutableString *tabCommand = [NSMutableString string];
             for (NSUInteger i = 2; i < parts.count; i++) {
@@ -3561,7 +3572,16 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
         NSArray<NSString *> *parts = [line componentsSeparatedByString:@"\t"];
         if (parts.count < 2) return;
         NSMutableArray<NSString *> *row = [NSMutableArray arrayWithObjects:parts[0], parts[1], @"", nil];
-        if (parts.count > 2) row[2] = [[parts subarrayWithRange:NSMakeRange(2, parts.count - 2)] componentsJoinedByString:@"\t"];
+        if ([parts[1] hasPrefix:@"@ssh-profile:"]) {
+            NSString *profileID = [[NSUUID alloc] initWithUUIDString:[parts[1] substringFromIndex:@"@ssh-profile:".length]].UUIDString;
+            if (!profileID) return;
+            row[1] = @"SSH profile";
+            [row addObject:profileID];
+            for (NSDictionary *profile in MicaNormalizedSSHProfiles([owner micaDefaults]))
+                if ([profile[@"id"] isEqualToString:profileID]) { row[1] = [NSString stringWithFormat:@"SSH · %@", profile[@"name"]]; break; }
+        } else if (parts.count > 2) {
+            row[2] = [[parts subarrayWithRange:NSMakeRange(2, parts.count - 2)] componentsJoinedByString:@"\t"];
+        }
         [self.rows addObject:row];
     }];
 
@@ -3574,7 +3594,7 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
 
     NSTextField *nameLabel = [NSTextField labelWithString:@"Project name"];
     self.projectNameField = [NSTextField textFieldWithString:owner.projectName ?: @""];
-    NSTextField *tabsLabel = [NSTextField labelWithString:@"Startup tabs — changes take effect the next time this project opens"];
+    NSTextField *tabsLabel = [NSTextField labelWithString:@"Startup tabs — local folders or saved SSH profiles"];
     NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
     scroll.hasVerticalScroller = YES;
     scroll.borderType = NSBezelBorder;
@@ -3597,12 +3617,22 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     scroll.documentView = self.tableView;
     NSButton *addButton = [NSButton buttonWithTitle:@"Add Tab" target:self action:@selector(addTab:)];
     NSButton *removeButton = [NSButton buttonWithTitle:@"Remove Tab" target:self action:@selector(removeTab:)];
+    self.addSSHProfileButton = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:YES];
+    [self.addSSHProfileButton addItemWithTitle:@"Add SSH Profile…"];
+    [self.addSSHProfileButton.menu addItem:NSMenuItem.separatorItem];
+    for (NSDictionary *profile in MicaNormalizedSSHProfiles([owner micaDefaults])) {
+        NSMenuItem *item = [self.addSSHProfileButton.menu addItemWithTitle:profile[@"name"] action:nil keyEquivalent:@""];
+        item.representedObject = profile;
+    }
+    self.addSSHProfileButton.target = self;
+    self.addSSHProfileButton.action = @selector(addSSHProfile:);
+    self.addSSHProfileButton.enabled = MicaNormalizedSSHProfiles([owner micaDefaults]).count > 0;
     NSButton *cancelButton = [NSButton buttonWithTitle:@"Cancel" target:self action:@selector(cancel:)];
     NSButton *saveButton = [NSButton buttonWithTitle:@"Save" target:self action:@selector(save:)];
     saveButton.keyEquivalent = @"\r";
     cancelButton.keyEquivalent = @"\033";
 
-    for (NSView *view in @[nameLabel, self.projectNameField, tabsLabel, scroll, addButton,
+    for (NSView *view in @[nameLabel, self.projectNameField, tabsLabel, scroll, addButton, self.addSSHProfileButton,
                            removeButton, cancelButton, saveButton]) {
         view.translatesAutoresizingMaskIntoConstraints = NO;
         [content addSubview:view];
@@ -3623,6 +3653,8 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
         [addButton.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-18],
         [removeButton.leadingAnchor constraintEqualToAnchor:addButton.trailingAnchor constant:8],
         [removeButton.centerYAnchor constraintEqualToAnchor:addButton.centerYAnchor],
+        [self.addSSHProfileButton.leadingAnchor constraintEqualToAnchor:removeButton.trailingAnchor constant:8],
+        [self.addSSHProfileButton.centerYAnchor constraintEqualToAnchor:addButton.centerYAnchor],
         [saveButton.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-20],
         [saveButton.centerYAnchor constraintEqualToAnchor:addButton.centerYAnchor],
         [cancelButton.trailingAnchor constraintEqualToAnchor:saveButton.leadingAnchor constant:-8],
@@ -3643,10 +3675,25 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     if (field && row >= 0 && row < (NSInteger)self.rows.count)
         self.rows[(NSUInteger)row][field.unsignedIntegerValue] = [value isKindOfClass:NSString.class] ? value : @"";
 }
+- (BOOL)tableView:(NSTableView *)tableView shouldEditTableColumn:(NSTableColumn *)column row:(NSInteger)row {
+    (void)tableView;
+    if (row < 0 || row >= (NSInteger)self.rows.count) return NO;
+    return self.rows[(NSUInteger)row].count <= 3 || [column.identifier isEqualToString:@"name"];
+}
 - (void)addTab:(id)sender {
     (void)sender;
     NSString *folder = self.rows.lastObject.count > 1 ? self.rows.lastObject[1] : NSFileManager.defaultManager.currentDirectoryPath;
     [self.rows addObject:[NSMutableArray arrayWithObjects:@"Shell", folder, @"", nil]];
+    [self.tableView reloadData];
+    [self.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:self.rows.count - 1] byExtendingSelection:NO];
+    [self.tableView editColumn:0 row:(NSInteger)self.rows.count - 1 withEvent:nil select:YES];
+}
+- (void)addSSHProfile:(id)sender {
+    (void)sender;
+    NSDictionary *profile = self.addSSHProfileButton.selectedItem.representedObject;
+    if (![profile isKindOfClass:NSDictionary.class] || self.rows.count >= 64) return;
+    [self.rows addObject:[NSMutableArray arrayWithObjects:profile[@"name"],
+        [NSString stringWithFormat:@"SSH · %@", profile[@"name"]], @"", profile[@"id"], nil]];
     [self.tableView reloadData];
     [self.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:self.rows.count - 1] byExtendingSelection:NO];
     [self.tableView editColumn:0 row:(NSInteger)self.rows.count - 1 withEvent:nil select:YES];
@@ -3685,7 +3732,10 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
         [self showError:@"A project layout can contain at most 64 tabs."];
         return;
     }
-    NSMutableString *contents = [NSMutableString stringWithFormat:@"# Mica layout v1\n# Mica project: %@\n", name];
+    BOOL includesSSHProfile = NO;
+    for (NSArray *row in self.rows) if (row.count > 3 && [row[3] length]) { includesSSHProfile = YES; break; }
+    NSMutableString *contents = [NSMutableString stringWithFormat:@"# Mica layout v%@\n# Mica project: %@\n",
+        includesSSHProfile ? @"2" : @"1", name];
     [self.originalLayoutContents enumerateLinesUsingBlock:^(NSString *line, BOOL *stop) {
         (void)stop;
         if ([line hasPrefix:@"#"] && ![line hasPrefix:@"# Mica layout v"] &&
@@ -3697,7 +3747,8 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
         NSString *tabName = [row[0] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
         NSString *folder = [row[1] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
         NSString *command = row[2];
-        if (!tabName.length || !folder.length ||
+        NSString *sshProfileID = row.count > 3 ? row[3] : @"";
+        if (!tabName.length || (!sshProfileID.length && !folder.length) ||
             [tabName rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location != NSNotFound ||
             [folder rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location != NSNotFound ||
             [command rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location != NSNotFound ||
@@ -3706,6 +3757,18 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
             [command rangeOfString:@"\0"].location != NSNotFound) {
             [self showError:[NSString stringWithFormat:@"Tab %lu has an empty name or folder, or contains an unsupported tab/newline.", (unsigned long)(index + 1)]];
             return;
+        }
+        if (sshProfileID.length) {
+            NSUUID *profileUUID = [[NSUUID alloc] initWithUUIDString:sshProfileID];
+            NSDictionary *profile = nil;
+            for (NSDictionary *candidate in MicaNormalizedSSHProfiles([self.appDelegate micaDefaults]))
+                if ([candidate[@"id"] isEqualToString:profileUUID.UUIDString]) { profile = candidate; break; }
+            if (!profile) {
+                [self showError:[NSString stringWithFormat:@"The SSH profile for “%@” was removed. Add the profile again or remove this startup tab.", tabName]];
+                return;
+            }
+            [contents appendFormat:@"%@\t@ssh-profile:%@\n", tabName, profileUUID.UUIDString];
+            continue;
         }
         NSString *expandedFolder = folder.stringByExpandingTildeInPath;
         BOOL isDirectory = NO;
@@ -3749,19 +3812,8 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     if (!self) return nil;
     self.appDelegate = owner;
     self.rows = [NSMutableArray array];
-    id storedObject = [owner.micaDefaults objectForKey:@"MicaSSHProfiles"];
-    NSArray *stored = [storedObject isKindOfClass:NSDictionary.class] && [storedObject[@"version"] integerValue] == 1
-        ? ([storedObject[@"profiles"] isKindOfClass:NSArray.class] ? storedObject[@"profiles"] : @[])
-        : ([storedObject isKindOfClass:NSArray.class] ? storedObject : @[]);
-    NSMutableSet<NSString *> *identifiers = [NSMutableSet set];
-    for (id candidate in [stored isKindOfClass:NSArray.class] ? stored : @[]) {
-        NSDictionary *profile = MicaSSHProfileNormalize(candidate, NULL);
-        if (profile && ![identifiers containsObject:profile[@"id"]]) {
-            [self.rows addObject:[profile mutableCopy]];
-            [identifiers addObject:profile[@"id"]];
-        }
-        if (self.rows.count >= MicaSSHProfileMaximumCount) break;
-    }
+    for (NSDictionary *profile in MicaNormalizedSSHProfiles(owner.micaDefaults))
+        [self.rows addObject:[profile mutableCopy]];
 
     NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 760, 450)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
@@ -3914,6 +3966,24 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
     [alert beginSheetModalForWindow:self.window completionHandler:nil];
 }
 @end
+
+static NSArray<NSDictionary<NSString *, NSString *> *> *MicaNormalizedSSHProfiles(NSUserDefaults *defaults) {
+    id storedObject = [defaults objectForKey:@"MicaSSHProfiles"];
+    NSArray *stored = [storedObject isKindOfClass:NSDictionary.class] && [storedObject[@"version"] integerValue] == 1
+        ? ([storedObject[@"profiles"] isKindOfClass:NSArray.class] ? storedObject[@"profiles"] : @[])
+        : ([storedObject isKindOfClass:NSArray.class] ? storedObject : @[]);
+    NSMutableArray *profiles = [NSMutableArray array];
+    NSMutableSet<NSString *> *identifiers = [NSMutableSet set];
+    for (id candidate in stored) {
+        NSDictionary *profile = MicaSSHProfileNormalize(candidate, NULL);
+        if (profile && ![identifiers containsObject:profile[@"id"]]) {
+            [profiles addObject:profile];
+            [identifiers addObject:profile[@"id"]];
+        }
+        if (profiles.count >= MicaSSHProfileMaximumCount) break;
+    }
+    return profiles;
+}
 
 @implementation MicaPaletteSearchField
 - (void)keyDown:(NSEvent *)event {
@@ -5233,7 +5303,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     [self configurePomodoro];
     NSArray<NSDictionary *> *tabSpecs = configuration[@"tabs"];
     BOOL restoringSession = NO;
-    if (self.savedTabsForWindow.count) tabSpecs = self.savedTabsForWindow;
+    if (self.savedTabsForWindow.count) { tabSpecs = self.savedTabsForWindow; restoringSession = YES; }
     else if (!self.explicitLayoutLaunch && (!getenv("MICA_TEST_NO_STARTUP") || gMicaSessionStateURLOverride)) {
         NSArray *saved = [self readSessionState];
         if (saved.count) { tabSpecs = saved.firstObject[@"tabs"]; restoringSession = YES; }
@@ -5242,6 +5312,21 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         [configuration[@"layoutLoaded"] boolValue],
         (unsigned long)tabSpecs.count]);
     for (NSDictionary *spec in tabSpecs) {
+        if ([spec[@"sshProfileID"] isKindOfClass:NSString.class]) {
+            NSString *profileID = [[NSUUID alloc] initWithUUIDString:spec[@"sshProfileID"]].UUIDString;
+            NSDictionary *profile = nil;
+            for (NSDictionary *candidate in MicaNormalizedSSHProfiles([self micaDefaults]))
+                if ([candidate[@"id"] isEqualToString:profileID]) { profile = candidate; break; }
+            if (profile) {
+                NSUInteger before = self.tabs.count;
+                [self openSSHProfile:profile];
+                if (self.tabs.count == before + 1 && [spec[@"muteNotifications"] isKindOfClass:NSNumber.class])
+                    self.activeTab.muteNotifications = [spec[@"muteNotifications"] boolValue];
+            } else {
+                MicaDiagnosticsLog(@"ssh", @"saved SSH profile is missing; skipping restored connection");
+            }
+            continue;
+        }
         NSString *command = [spec[@"command"] length] ? spec[@"command"] : nil;
         NSString *resumeCommand = restoringSession ? MicaResumeCommand(spec[@"agentKind"], spec[@"agentSessionID"]) : nil;
         BOOL resumeEnabled = [[self micaDefaults] boolForKey:@"MicaResumeAgentsOnRestore"];
@@ -5312,6 +5397,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     if (![json isKindOfClass:NSDictionary.class] || ![json[@"windows"] isKindOfClass:NSArray.class]) return @[];
     NSArray *windows = json[@"windows"];
     if (windows.count > 32) return @[];
+    NSMutableSet<NSString *> *availableSSHProfileIDs = [NSMutableSet set];
+    for (NSDictionary *profile in MicaNormalizedSSHProfiles([self micaDefaults]))
+        [availableSSHProfileIDs addObject:profile[@"id"]];
     NSMutableArray<NSDictionary *> *validWindows = [NSMutableArray array];
     for (id window in windows) {
         if (![window isKindOfClass:NSDictionary.class] || ![window[@"tabs"] isKindOfClass:NSArray.class] ||
@@ -5345,6 +5433,16 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
                 [[cwd pathComponents] containsObject:@".."]) continue;
             if (validTabs.count < 64) {
                 NSMutableDictionary *cleanTab = [tab mutableCopy];
+                id profileID = tab[@"sshProfileID"];
+                NSUUID *profileUUID = [profileID isKindOfClass:NSString.class]
+                    ? [[NSUUID alloc] initWithUUIDString:profileID] : nil;
+                NSString *canonicalProfileID = profileUUID.UUIDString;
+                if (canonicalProfileID && [availableSSHProfileIDs containsObject:canonicalProfileID]) {
+                    cleanTab[@"sshProfileID"] = canonicalProfileID;
+                    [cleanTab removeObjectForKey:@"command"];
+                } else {
+                    [cleanTab removeObjectForKey:@"sshProfileID"];
+                }
                 NSString *resumeCommand = MicaResumeCommand(tab[@"agentKind"], tab[@"agentSessionID"]);
                 [cleanTab removeObjectForKey:@"agentKind"];
                 [cleanTab removeObjectForKey:@"agentSessionID"];
@@ -5386,7 +5484,10 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
             }
             NSMutableDictionary *savedTab = [@{@"name":name, @"cwd":cwd,
                 @"muteNotifications":@(tab.muteNotifications)} mutableCopy];
-            if (tab.command.length && tab.command.length <= 4096) savedTab[@"command"] = tab.command;
+            if (tab.remoteProfile && [[NSUUID alloc] initWithUUIDString:tab.remoteProfile[@"id"]])
+                savedTab[@"sshProfileID"] = tab.remoteProfile[@"id"];
+            else if (tab.command.length && tab.command.length <= 4096)
+                savedTab[@"command"] = tab.command;
             if (MicaResumeCommand(tab.agentKind, tab.agentSessionID)) {
                 savedTab[@"agentKind"] = tab.agentKind;
                 savedTab[@"agentSessionID"] = tab.agentSessionID;
