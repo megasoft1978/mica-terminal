@@ -149,8 +149,32 @@ int main(int argc, const char *argv[]) {
         [owner.terminalView cacheDisplayInRect:owner.terminalView.bounds toBitmapImageRep:vocabBitmap];
         NSData *vocabPNG = [vocabBitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
         if (!vocabPNG || ![vocabPNG writeToFile:[directory stringByAppendingPathComponent:@"vocabulary-correction-demo.png"] atomically:YES]) return 1;
+
+        // Capture the shipped SSH profile manager with fictional destinations. No SSH connection is started.
+        NSString *suiteName = [NSString stringWithFormat:@"mica-demo-ssh-%d", getpid()];
+        NSUserDefaults *demoDefaults = [[NSUserDefaults alloc] initWithSuiteName:suiteName];
+        gMicaDefaultsOverride = demoDefaults;
+        [demoDefaults setObject:@{ @"version": @1, @"profiles": @[
+            @{ @"id": @"86C213DD-CE1A-4F58-A6A0-25033E4C48AF", @"name": @"Mac Studio", @"destination": @"studio.local", @"remoteDirectory": @"~/Projects" },
+            @{ @"id": @"A09E195A-D7C9-4DF1-9019-E11633198ED2", @"name": @"Linux · VPN", @"destination": @"devbox", @"remoteDirectory": @"/home/mica/work" }
+        ] } forKey:@"MicaSSHProfiles"];
+        MicaSSHProfilesController *profilesController = [[MicaSSHProfilesController alloc] initWithOwner:owner];
+        [profilesController.window makeKeyAndOrderFront:nil];
+        [profilesController.window.contentView layoutSubtreeIfNeeded];
+        for (int attempt = 0; attempt < 5; attempt++) PollDemo(owner);
+        [profilesController.window displayIfNeeded];
+        NSView *profilesView = profilesController.window.contentView;
+        NSRect profileDetailsRect = NSMakeRect(0, NSMaxY(profilesView.bounds) - 140,
+            NSWidth(profilesView.bounds), 140);
+        NSBitmapImageRep *profilesBitmap = [profilesView bitmapImageRepForCachingDisplayInRect:profileDetailsRect];
+        [profilesView cacheDisplayInRect:profileDetailsRect toBitmapImageRep:profilesBitmap];
+        NSData *profilesPNG = [profilesBitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+        if (!profilesPNG || ![profilesPNG writeToFile:[directory stringByAppendingPathComponent:@"ssh-profiles-demo.png"] atomically:YES]) return 1;
+        [profilesController.window orderOut:nil];
+        [demoDefaults removePersistentDomainForName:suiteName];
+        gMicaDefaultsOverride = nil;
         for (MicaTab *tab in owner.tabs) { mica_session_destroy(tab.session); tab.session = NULL; }
-        printf("Captured 160 current-UI frames with local PTY output.\n");
+        printf("Captured current-UI frames with local PTY output and fictional SSH profiles.\n");
     }
     return 0;
 }

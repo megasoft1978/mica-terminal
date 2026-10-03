@@ -11,15 +11,15 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.12"><img src="https://img.shields.io/badge/release-0.1.0--alpha.12-blue" alt="Release 0.1.0 alpha 12"></a>
+  <a href="https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.13"><img src="https://img.shields.io/badge/release-0.1.0--alpha.13-blue" alt="Release 0.1.0 alpha 13"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B%20%C2%B7%20Apple%20silicon-555" alt="macOS 14 or later, Apple silicon">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
 </p>
 
 <p align="center">
   <a href="https://megasoft1978.github.io/mica-terminal/">Website</a> ·
-  <a href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.12/Mica.zip"><strong>Download</strong></a> ·
-  <a href="https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.12">Release notes</a> ·
+  <a href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.13/Mica.zip"><strong>Download</strong></a> ·
+  <a href="https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.13">Release notes</a> ·
   <a href="LICENSE">MIT license</a>
 </p>
 
@@ -33,13 +33,13 @@
 <p align="center"><sub>The real Mica view, rendered from a sample project.</sub></p>
 
 <details>
-<summary>Watch the animated demo (22 seconds)</summary>
+<summary>Watch the animated demo (27-second MP4)</summary>
 
 <p align="center">
-  <img src="docs/assets/mica-demo.gif" alt="Mica shows prompt navigation, a fake transcript corrected with project vocabulary without microphone input, timer states and dark and light themes" width="900">
+  <img src="docs/assets/mica-demo.gif" alt="Mica shows terminal features and saved SSH profiles for a Mac Studio and a Linux VPN host; sample destinations are fictional and no connection is made" width="900">
 </p>
 
-A fresh offscreen capture of the current native Mica view. The GIF shows Quick Select, the Command Palette, prompt navigation and vocabulary correction from a fake transcript (no microphone); the linked MP4 also shows local commands, timer states, scrollback search and theme changes. It does not invoke a coding agent. The memory readout belongs to the capture process. Close this section to hide the animation, or [watch the MP4 with playback controls](https://megasoft1978.github.io/mica-terminal/#demo).
+A fresh offscreen capture of the current native Mica view. It shows local commands, timer states, Quick Select, the Command Palette, prompt navigation, vocabulary correction from a fake transcript (no microphone), and the saved SSH profile manager. The Mac Studio and Linux VPN destinations are fictional; no SSH connection is made. It does not invoke a coding agent. The memory readout belongs to the capture process. Close this section to hide the animation, or [watch the MP4 with playback controls](https://megasoft1978.github.io/mica-terminal/#demo).
 
 </details>
 
@@ -71,8 +71,8 @@ iTerm2 plus Wispr Flow is about 770 MB before you add a timer. Dictation adds a 
 
 ## Install
 
-1. [Download Mica.zip](https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.12/Mica.zip) (Apple silicon, macOS 14 or later), extract it, and move Mica to Applications.
-2. Alpha builds may change quickly. Check the release page for signing status and checksums when the alpha 12 package is published.
+1. [Download Mica.zip](https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.13/Mica.zip) (Apple silicon, macOS 14 or later), extract it, and move Mica to Applications.
+2. This alpha is Developer ID signed and notarized. Verify either package with the [published SHA-256 manifest](https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.13/SHA256SUMS.txt).
 3. Mica asks for the microphone only when you start dictation.
 
 ### Build from source
@@ -85,11 +85,9 @@ cd mica-terminal
 make app && open build/Mica.app
 ```
 
-### Dictation, live
+### Dictation preview
 
-<p align="center"><img src="docs/assets/crop-dictation-dark.png" alt="The status bar while dictating: microphone level, elapsed time and the last few words you said" width="620"></p>
-
-The microphone starts recording the moment you hold <kbd>⌥</kbd>, so nothing you say is lost while the model loads. The strip shows a live level, the time, and the last few words as they are recognized. If macOS blocks microphone access, choose **Open Microphone Settings** in the strip to enable it.
+Live dictation appears in a reserved area above the terminal, with a multiline transcript preview and clear insert or cancel hints. The terminal stays visible and resizes for the preview; speech-to-text controls no longer compete with command status in the bottom strip. If macOS blocks microphone access, Mica offers a direct link to Microphone settings.
 
 ## Privacy and questions
 
@@ -137,9 +135,11 @@ When `/Applications/Mica.app` is installed, project launchers created from a sou
 
 ## SSH connections
 
-Create or edit profiles from **Session → SSH Connections…**. Set the destination to an OpenSSH host alias, `user@host`, hostname or IP address. Put authentication choices, identity files, jump hosts, ports and VPN-specific proxy commands in `~/.ssh/config`; Mica uses the normal `ssh` client and does not save passwords or private keys. A remote starting folder is entered as a POSIX path (`~/…` starts from the remote user's home) and opened in an interactive login shell. New or changed host keys continue to use OpenSSH's normal confirmation and `known_hosts` behavior.
+Create or edit profiles from **Session → SSH Connections…**. Give each connection a name, destination, and optional remote starting folder. Set the destination to an OpenSSH host alias, `user@host`, hostname or IP address. Put authentication choices, identity files, jump hosts, ports and VPN-specific proxy commands in `~/.ssh/config`; Mica uses the normal `ssh` client and does not save passwords or private keys. A remote starting folder is entered as a POSIX path (`~/…` starts from the remote user's home) and opened in an interactive login shell. New or changed host keys continue to use OpenSSH's normal confirmation and `known_hosts` behavior. Profiles can be restored as fresh connections or included in a project launcher.
 
-For a Mac on the same home network, enable **System Settings → General → Sharing → Remote Login** on the remote Mac. Connecting from outside the home network requires a reachable route such as a VPN/overlay, reachable IPv6, or an eligible public IP service. Mica does not turn a VPN on or change router settings.
+<p align="center"><img src="docs/assets/ssh-profiles-demo.png" alt="Fictional Mac Studio and Linux VPN SSH profiles, with each machine's remote starting folder." width="780"></p>
+
+For a Mac on the same home network, enable **System Settings → General → Sharing → Remote Login** on the remote Mac. Linux machines use their normal SSH server. Connecting from outside the home network requires a reachable route such as a VPN/overlay, reachable IPv6, or an eligible public IP service; Starlink's default IPv4 service uses CGNAT, so inbound IPv4 usually needs an overlay VPN or another reachable route. Mica does not turn a VPN on or change router settings.
 
 ## Under the hood
 
