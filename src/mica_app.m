@@ -28,6 +28,7 @@
 
 static const CGFloat kHeaderHeight = 28.0;
 static const CGFloat kStatusHeight = 32.0;
+static const CGFloat kDictationPreviewHeight = 104.0;
 static const CGFloat kTerminalPaddingX = 10.0;   // breathing room between the window edge and the first column
 static const CGFloat kTrafficLightInset = 78.0;  // tab strip starts after the window buttons in the merged title bar
 static const NSTimeInterval kAgentActivityQuietInterval = 2.5;
@@ -346,12 +347,8 @@ static NSString *MicaAgentNameForText(NSString *text) {
     return nil;
 }
 
-static const NSUInteger kDictationVisibleWords = 8;
-// One type scale for the dictation strip: label and hints match the status bar (11.5), the live words are one step up.
-static const CGFloat kDictationLabelFontSize = 11.5;
-static const CGFloat kDictationWordsFontSize = 13;
 
-// The last few words of a running transcript, so the status bar shows progress without filling up.
+// Keep the newest words in the reserved live transcript preview.
 static NSString *MicaLastWords(NSString *text, NSUInteger count) {
     NSArray<NSString *> *words = [text componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     NSMutableArray<NSString *> *kept = [NSMutableArray array];
@@ -547,12 +544,12 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (NSArray<NSDictionary *> *)quickSelectCandidates;
 - (NSRect)cellRectAtRow:(NSInteger)row col:(NSInteger)col;
 - (NSColor *)colorForVTermColor:(VTermColor)color isForeground:(BOOL)isForeground;
-- (NSRect)dictationStatusRect;
+- (NSRect)dictationPreviewRect;
 - (NSRect)microphoneSettingsButtonRect;
 - (NSRect)terminalHitRect;
 - (CGFloat)tabsLeadingInset;
 - (BOOL)windowIsActive;
-- (void)drawDictationStatusBar:(MicaVoiceController *)voice inRect:(NSRect)status;
+- (void)drawDictationPreview:(MicaVoiceController *)voice inRect:(NSRect)preview;
 - (void)openHyperlinkID:(uint32_t)hyperlinkID forTab:(MicaTab *)tab;
 - (void)cancelLeftOptionTracking;
 @end
@@ -1060,27 +1057,6 @@ static NSString *MicaTruncatedText(NSString *text, CGFloat width, NSDictionary *
     return [[text substringToIndex:end] stringByAppendingString:ellipsis];
 }
 
-// Keeps the END of the text (most recent words) and puts the ellipsis at the start.
-static NSString *MicaHeadTruncatedText(NSString *text, CGFloat width, NSDictionary *attributes) {
-    if (!text.length || width <= 0) return @"";
-    if ([text sizeWithAttributes:attributes].width <= width) return text;
-    NSMutableArray<NSNumber *> *starts = [NSMutableArray array];
-    [text enumerateSubstringsInRange:NSMakeRange(0, text.length)
-                             options:NSStringEnumerationByComposedCharacterSequences
-                          usingBlock:^(__unused NSString *substring, NSRange range,
-                                       __unused NSRange enclosing, __unused BOOL *stop) {
-        [starts addObject:@(range.location)];
-    }];
-    NSUInteger low = 0, high = starts.count;
-    while (low < high) {
-        NSUInteger middle = low + (high - low) / 2;
-        NSString *candidate = [@"…" stringByAppendingString:[text substringFromIndex:starts[middle].unsignedIntegerValue]];
-        if ([candidate sizeWithAttributes:attributes].width <= width) high = middle; else low = middle + 1;
-    }
-    if (low >= starts.count) return @"";
-    return [@"…" stringByAppendingString:[text substringFromIndex:starts[low].unsignedIntegerValue]];
-}
-
 static NSURL *MicaSafeHyperlinkURL(NSString *rawURL) {
     if (!rawURL.length || rawURL.length > 2048 ||
         [rawURL rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound ||
@@ -1566,8 +1542,9 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
 }
 
 - (NSRect)terminalRect {
+    CGFloat previewHeight = self.owner.voiceController.state == MicaVoiceControllerStateIdle ? 0 : kDictationPreviewHeight;
     return NSMakeRect(kTerminalPaddingX, kStatusHeight, MAX(0, self.bounds.size.width - 2 * kTerminalPaddingX),
-                      MAX(0, self.bounds.size.height - kHeaderHeight - kStatusHeight));
+                      MAX(0, self.bounds.size.height - kHeaderHeight - kStatusHeight - previewHeight));
 }
 
 // The full-width band the terminal occupies, padding included, for hit-testing drops and clicks.
@@ -1578,8 +1555,9 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
 }
 
 - (NSRect)terminalHitRect {
+    NSRect terminal = [self terminalRect];
     return NSMakeRect(0, kStatusHeight, self.bounds.size.width,
-                      MAX(0, self.bounds.size.height - kHeaderHeight - kStatusHeight));
+                      MAX(0, NSMaxY(terminal) - kStatusHeight));
 }
 
 // Room reserved at the left of the tab strip for the traffic lights (none in full screen).
@@ -1588,8 +1566,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
 }
 
 - (NSRect)pomodoroControlRect {
-    if (self.owner.voiceController.state != MicaVoiceControllerStateIdle ||
-        ![[self.owner micaDefaults] boolForKey:@"MicaShowStatusTimer"] ||
+    if (![[self.owner micaDefaults] boolForKey:@"MicaShowStatusTimer"] ||
         self.owner.pomodoro.phase == MICA_POMODORO_IDLE) return NSZeroRect;
     CGFloat x = 12;
     MicaUIMode mode = self.owner.uiMode;
@@ -1644,10 +1621,11 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     [menu popUpMenuPositioningItem:nil atLocation:location inView:self];
 }
 
-- (NSRect)dictationStatusRect {
+- (NSRect)dictationPreviewRect {
     if (!self.owner.voiceController || self.owner.voiceController.state == MicaVoiceControllerStateIdle)
         return NSZeroRect;
-    return NSMakeRect(0, 0, self.bounds.size.width, kStatusHeight);
+    NSRect terminal = [self terminalRect];
+    return NSMakeRect(0, NSMaxY(terminal), self.bounds.size.width, kDictationPreviewHeight);
 }
 
 - (NSRect)microphoneSettingsButtonRect {
@@ -1655,7 +1633,8 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     BOOL denied = voice.state == MicaVoiceControllerStateFailed &&
         ([voice.statusText containsString:@"Microphone access was denied"] ||
          [voice.statusText containsString:@"Microphone access is off"]);
-    return denied ? NSMakeRect(MAX(0, self.bounds.size.width - 190), 0, 178, kStatusHeight) : NSZeroRect;
+    NSRect preview = [self dictationPreviewRect];
+    return denied ? NSMakeRect(MAX(0, self.bounds.size.width - 190), NSMinY(preview) + 12, 178, 24) : NSZeroRect;
 }
 
 - (void)updateGridSize {
@@ -2066,12 +2045,6 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     [separator lineToPoint:NSMakePoint(NSMaxX(status), NSMaxY(status) - 0.5)];
     [separator stroke];
 
-    MicaVoiceController *voice = self.owner.voiceController;
-    if (voice && voice.state != MicaVoiceControllerStateIdle) {
-        [self drawDictationStatusBar:voice inRect:status];
-        return;
-    }
-
     MicaUIMode mode = self.owner.uiMode;
     int viewOffset = tab.session ? mica_session_view_offset(tab.session) : 0;
     BOOL scrolled = viewOffset > 0;
@@ -2285,38 +2258,43 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     }
 }
 
-- (void)drawDictationStatusBar:(MicaVoiceController *)voice inRect:(NSRect)status {
+- (void)drawDictationPreview:(MicaVoiceController *)voice inRect:(NSRect)preview {
     MicaVoiceControllerState state = voice.state;
     NSColor *accent = state == MicaVoiceControllerStateFailed ? NSColor.systemRedColor : NSColor.controlAccentColor;
-    NSString *statusText = voice.statusText ?: @"";
+    NSString *heading = voice.statusText ?: @"";
     if (state == MicaVoiceControllerStateListening) {
         NSUInteger seconds = (NSUInteger)MAX(0, voice.elapsedSeconds);
-        statusText = self.owner.dictationToggleMode ? @"Listening · press ⌥ to stop" :
+        heading = self.owner.dictationToggleMode ? @"Listening · press ⌥ to stop" :
             [NSString stringWithFormat:@"Listening · %02lu:%02lu", (unsigned long)(seconds / 60), (unsigned long)(seconds % 60)];
     } else if (state == MicaVoiceControllerStatePreparing) {
-        statusText = @"Preparing speech…";
+        heading = @"Preparing speech…";
     } else if (state == MicaVoiceControllerStateTranscribing) {
-        statusText = @"Finishing transcript…";
+        heading = @"Finishing transcript…";
     } else if (state == MicaVoiceControllerStateFailed) {
-        statusText = @"Dictation failed · Esc to dismiss";
+        heading = @"Dictation failed";
     }
-
+    [NSColor.controlBackgroundColor setFill]; NSRectFill(preview);
+    [MicaSeparatorColor() setStroke];
+    NSBezierPath *edge = [NSBezierPath bezierPath];
+    [edge moveToPoint:NSMakePoint(0, NSMinY(preview) + 0.5)];
+    [edge lineToPoint:NSMakePoint(NSMaxX(preview), NSMinY(preview) + 0.5)];
+    [edge moveToPoint:NSMakePoint(0, NSMaxY(preview) - 0.5)];
+    [edge lineToPoint:NSMakePoint(NSMaxX(preview), NSMaxY(preview) - 0.5)]; [edge stroke];
     NSDictionary *statusAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:kDictationLabelFontSize weight:NSFontWeightSemibold],
+        NSFontAttributeName: [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold],
         NSForegroundColorAttributeName: state == MicaVoiceControllerStateFailed
             ? NSColor.systemRedColor : NSColor.labelColor
     };
-    CGFloat centerY = NSMidY(status);
+    CGFloat titleY = NSMaxY(preview) - 26;
     BOOL meter = state == MicaVoiceControllerStateListening ||
         (state == MicaVoiceControllerStatePreparing && voice.isCapturing);
     if (meter) {
-        // Live microphone level: shows at once that Mica hears you, even while the model is still loading.
         static const CGFloat weights[5] = { 0.55, 0.85, 1.0, 0.8, 0.5 };
         CGFloat level = voice.audioLevel;
         for (NSInteger bar = 0; bar < 5; bar++) {
             CGFloat wobble = 0.85 + 0.15 * sin(NSProcessInfo.processInfo.systemUptime * 9.0 + bar * 1.7);
             CGFloat barHeight = 3 + level * 15 * weights[bar] * wobble;
-            NSRect wave = NSMakeRect(12 + bar * 4.5, centerY - barHeight / 2.0, 2.5, barHeight);
+            NSRect wave = NSMakeRect(16 + bar * 4.5, titleY + 3, 2.5, barHeight);
             [[accent colorWithAlphaComponent:state == MicaVoiceControllerStateListening ? 1.0 : 0.6] setFill];
             [[NSBezierPath bezierPathWithRoundedRect:wave xRadius:1.25 yRadius:1.25] fill];
         }
@@ -2325,19 +2303,15 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         NSBezierPath *arc = [NSBezierPath bezierPath];
         arc.lineWidth = 2;
         arc.lineCapStyle = NSLineCapStyleRound;
-        [arc appendBezierPathWithArcWithCenter:NSMakePoint(18, centerY) radius:6
+        [arc appendBezierPathWithArcWithCenter:NSMakePoint(26, titleY + 8) radius:6
             startAngle:start endAngle:start + 260];
         [accent setStroke];
         [arc stroke];
     } else {
-        NSBezierPath *micDot = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(15, centerY - 3, 6, 6)];
+        NSBezierPath *micDot = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(23, titleY + 5, 6, 6)];
         [accent setFill];
         [micDot fill];
     }
-    [statusText drawAtPoint:NSMakePoint(38,
-        MicaCenteredTextBaseline(statusAttrs[NSFontAttributeName], status.size.height))
-        withAttributes:statusAttrs];
-
     NSString *text;
     if (state == MicaVoiceControllerStatePreparing) {
         text = voice.statusText.length ? voice.statusText : @"Getting the speech model ready…";
@@ -2347,51 +2321,44 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     } else if (state == MicaVoiceControllerStateFailed) {
         text = voice.statusText ?: @"Press Escape to dismiss";
     } else if (voice.transcript.length) {
-        text = MicaLastWords(voice.transcript, kDictationVisibleWords);
+        text = MicaLastWords(voice.transcript, 20);
     } else {
         text = state == MicaVoiceControllerStateListening ? @"Listening. Your words appear in a few seconds" : @"";
     }
-    BOOL hasWords = state != MicaVoiceControllerStatePreparing && state != MicaVoiceControllerStateFailed &&
-        voice.transcript.length > 0;
     NSMutableParagraphStyle *tailStyle = [NSMutableParagraphStyle new];
-    tailStyle.lineBreakMode = NSLineBreakByTruncatingHead;
+    tailStyle.lineBreakMode = NSLineBreakByTruncatingTail;
     NSDictionary *transcriptAttrs = @{
-        NSFontAttributeName: hasWords ? [NSFont systemFontOfSize:kDictationWordsFontSize weight:NSFontWeightMedium]
-                                      : [NSFont systemFontOfSize:kDictationLabelFontSize],
-        NSForegroundColorAttributeName: hasWords ? NSColor.labelColor : MicaSecondaryLabelColor(1.0),
+        NSFontAttributeName: [NSFont systemFontOfSize:13 weight:NSFontWeightMedium],
+        NSForegroundColorAttributeName: state == MicaVoiceControllerStateFailed ? NSColor.secondaryLabelColor : NSColor.labelColor,
         NSParagraphStyleAttributeName: tailStyle
     };
-    // Keep a column free on the right for key hints (room for more controls later).
+    [heading drawAtPoint:NSMakePoint(38, titleY) withAttributes:statusAttrs];
     NSString *keyHint = state == MicaVoiceControllerStateListening ?
-        (self.owner.dictationToggleMode ? @"Esc to cancel" : @"Release ⌥ to insert   Esc to cancel") : @"";
+        (self.owner.dictationToggleMode ? @"Esc to cancel" : @"Release ⌥ to insert · Esc to cancel") :
+        (state == MicaVoiceControllerStateFailed ? @"Esc to dismiss" : @"Esc to cancel");
     NSDictionary *hintAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:kDictationLabelFontSize - 0.5],
+        NSFontAttributeName: [NSFont systemFontOfSize:10.5],
         NSForegroundColorAttributeName: NSColor.tertiaryLabelColor
     };
-    CGFloat hintWidth = keyHint.length ? [keyHint sizeWithAttributes:hintAttrs].width : 0;
-    CGFloat statusWidth = [statusText sizeWithAttributes:statusAttrs].width;
-    CGFloat transcriptX = 38 + statusWidth + 20;
-    CGFloat rightReserve = hintWidth ? hintWidth + 24 : 12;
     NSRect settingsButton = [self microphoneSettingsButtonRect];
-    if (!NSIsEmptyRect(settingsButton)) rightReserve = status.size.width - NSMinX(settingsButton) + 8;
-    if (NSIsEmptyRect(settingsButton) && status.size.width - transcriptX - rightReserve < 160) {
-        rightReserve = 12;
-        hintWidth = 0;
+    CGFloat right = !NSIsEmptyRect(settingsButton) ? NSMinX(settingsButton) - 10 : preview.size.width - 16;
+    NSRect transcriptRect = NSMakeRect(16, NSMinY(preview) + 22, MAX(0, right - 16), 50);
+    if ((state == MicaVoiceControllerStateListening || state == MicaVoiceControllerStateTranscribing) && voice.transcript.length) {
+        for (NSUInteger wordCount = 20; wordCount > 1; wordCount--) {
+            text = MicaLastWords(voice.transcript, wordCount);
+            NSRect measured = [text boundingRectWithSize:transcriptRect.size
+                options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading attributes:transcriptAttrs];
+            if (measured.size.height <= transcriptRect.size.height) break;
+        }
     }
-    if (hintWidth) {
-        NSRect hintRect = NSMakeRect(status.size.width - hintWidth - 14, NSMinY(status), hintWidth, status.size.height);
-        self.dictationHintTextRect = hintRect;
-        MicaDrawCenteredLine(keyHint, hintRect, hintAttrs, NSTextAlignmentRight);
-    } else self.dictationHintTextRect = NSZeroRect;
-    NSRect transcriptRect = NSMakeRect(transcriptX, NSMinY(status),
-        MAX(0, status.size.width - transcriptX - rightReserve), status.size.height);
-    self.dictationLabelTextRect = NSMakeRect(38, NSMinY(status),
-        MAX(0, MIN(statusWidth, status.size.width - 38)), status.size.height);
+    self.dictationLabelTextRect = NSMakeRect(38, titleY, MAX(0, right - 38), 16);
     self.dictationWordsTextRect = transcriptRect;
-    MicaDrawCenteredLine(MicaHeadTruncatedText(text, transcriptRect.size.width, transcriptAttrs),
-                         transcriptRect, transcriptAttrs, NSTextAlignmentLeft);
+    [text drawInRect:transcriptRect withAttributes:transcriptAttrs];
+    NSRect hintRect = NSMakeRect(16, NSMinY(preview) + 5, MAX(0, right - 16), 14);
+    self.dictationHintTextRect = hintRect;
+    [keyHint drawInRect:hintRect withAttributes:hintAttrs];
     if (!NSIsEmptyRect(settingsButton)) {
-        NSRect button = NSInsetRect(settingsButton, 4, 5);
+        NSRect button = settingsButton;
         [[NSColor.controlAccentColor colorWithAlphaComponent:0.14] setFill];
         [[NSBezierPath bezierPathWithRoundedRect:button xRadius:6 yRadius:6] fill];
         NSDictionary *buttonAttrs = @{
@@ -2401,10 +2368,9 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         MicaDrawCenteredLine(@"Open Microphone Settings", button, buttonAttrs, NSTextAlignmentCenter);
     }
 
-    BOOL showsActivity = state == MicaVoiceControllerStatePreparing ||
-        state == MicaVoiceControllerStateTranscribing;
+    BOOL showsActivity = state == MicaVoiceControllerStatePreparing || state == MicaVoiceControllerStateTranscribing;
     if (voice.hasProgress || showsActivity) {
-        NSRect track = NSMakeRect(0, 0, status.size.width, 2);
+        NSRect track = NSMakeRect(0, NSMinY(preview), preview.size.width, 2);
         [[accent colorWithAlphaComponent:0.16] setFill];
         NSRectFill(track);
         NSRect fill = track;
@@ -2779,6 +2745,9 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     }
     NSRect status = NSMakeRect(0, 0, self.bounds.size.width, kStatusHeight);
     if (NSIntersectsRect(status, dirtyRect)) [self drawStatusBarForTab:tab];
+    NSRect dictationPreview = [self dictationPreviewRect];
+    if (!NSIsEmptyRect(dictationPreview) && NSIntersectsRect(dictationPreview, dirtyRect))
+        [self drawDictationPreview:self.owner.voiceController inRect:dictationPreview];
     if (self.quickSelectActive) {
         NSDictionary *attrs = @{ NSFontAttributeName: [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightBold],
             NSForegroundColorAttributeName: NSColor.whiteColor };
@@ -3025,7 +2994,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         [self.owner togglePomodoroPause:nil];
         return;
     }
-    NSRect dictationStatus = [self dictationStatusRect];
+    NSRect dictationStatus = [self dictationPreviewRect];
     NSRect microphoneSettings = [self microphoneSettingsButtonRect];
     if (!NSIsEmptyRect(microphoneSettings) && NSPointInRect(point, microphoneSettings)) {
         [NSWorkspace.sharedWorkspace openURL:MicaMicrophoneSettingsURL()];
@@ -5584,18 +5553,19 @@ static BOOL MicaValidBranchName(NSString *name) {
 }
 
 - (void)voiceControllerDidUpdate:(MicaVoiceController *)controller {
-    // Progress ticks repaint only the status strip; a state change may alter layout.
+    // State transitions reserve or release the preview band and resize the PTY grid.
     NSInteger state = (NSInteger)controller.state;
     if (state != self.lastVoiceState) {
         self.lastVoiceState = state;
+        [self resizeActiveSession];
         [self.terminalView setNeedsDisplay:YES];
-        // The dictation strip is drawn text, so tell VoiceOver when its state changes.
+        // The preview is drawn in the terminal view, so announce state changes to VoiceOver.
         if (controller.statusText.length)
             NSAccessibilityPostNotificationWithUserInfo(self.terminalView, NSAccessibilityAnnouncementRequestedNotification,
                 @{ NSAccessibilityAnnouncementKey: controller.statusText,
                    NSAccessibilityPriorityKey: @(NSAccessibilityPriorityMedium) });
     } else {
-        [self.terminalView setNeedsDisplayInRect:[self.terminalView dictationStatusRect]];
+        [self.terminalView setNeedsDisplayInRect:[self.terminalView dictationPreviewRect]];
     }
 }
 
@@ -6200,7 +6170,7 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     if (voice.state == MicaVoiceControllerStateListening && voice.transcript.length == 0 &&
         now - self.lastVoiceAnimationAt >= 0.10) {
         self.lastVoiceAnimationAt = now;
-        [self.terminalView setNeedsDisplayInRect:[self.terminalView dictationStatusRect]];
+        [self.terminalView setNeedsDisplayInRect:[self.terminalView dictationPreviewRect]];
     }
     NSTimeInterval pollStartedAt = now;
     if (self.lastPollTimerTickAt > 0 && now - self.lastPollTimerTickAt >= 0.150 &&

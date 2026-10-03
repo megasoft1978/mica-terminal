@@ -3208,16 +3208,19 @@ static int MicaRunUISelfTest(void) {
             [previewController setValue:@"Change the Codex tab widths"
                                   forKey:@"confirmedTranscript"];
             [previewController setValue:@(4.0) forKey:@"elapsedSeconds"];
+            NSInteger rowsBeforeDictationPreview = mica_session_rows(delegate.activeTab.session);
             delegate.voiceController = previewController;
+            [delegate resizeActiveSession];
             [delegate.terminalView setNeedsDisplay:YES];
             [delegate.terminalView displayIfNeeded];
-            NSRect voicePanel = [delegate.terminalView dictationStatusRect];
+            NSRect voicePanel = [delegate.terminalView dictationPreviewRect];
             NSRect terminalArea = [delegate.terminalView terminalRect];
             MicaUITestRecord(report, &allPassed,
-                !NSIsEmptyRect(voicePanel) && NSEqualRects(voicePanel,
-                    NSMakeRect(0, 0, delegate.terminalView.bounds.size.width, kStatusHeight)) &&
-                !NSIntersectsRect(voicePanel, terminalArea),
-                @"live dictation uses the bottom status strip without covering terminal cells or cursor");
+                !NSIsEmptyRect(voicePanel) && voicePanel.size.height == kDictationPreviewHeight &&
+                NSMaxY(voicePanel) <= delegate.terminalView.bounds.size.height - kHeaderHeight &&
+                !NSIntersectsRect(voicePanel, terminalArea) &&
+                mica_session_rows(delegate.activeTab.session) < rowsBeforeDictationPreview,
+                @"live dictation gets a reserved multiline preview above the terminal and reduces PTY rows without covering output");
             NSDictionary *layoutHintAttrs = @{NSFontAttributeName:[NSFont systemFontOfSize:11.5]};
             NSDictionary *layoutContextAttrs = @{NSFontAttributeName:[NSFont systemFontOfSize:11.5]};
             CGFloat minFolderContext = 18 + [@"Ready · " sizeWithAttributes:layoutContextAttrs].width +
@@ -3243,21 +3246,19 @@ static int MicaRunUISelfTest(void) {
             }
             MicaUITestRecord(report, &allPassed, narrowRectsDoNotOverlap,
                 @"status timer, folder context, hints and memory rectangles never overlap at 600 px or 800 px");
-            NSMutableParagraphStyle *tailStyle = [[NSMutableParagraphStyle alloc] init];
-            tailStyle.lineBreakMode = NSLineBreakByTruncatingHead;
-            NSDictionary *tailAttrs = @{ NSFontAttributeName: [NSFont systemFontOfSize:10.5],
-                NSParagraphStyleAttributeName: tailStyle };
             NSMutableArray<NSString *> *fortyTranscriptWords = [NSMutableArray array];
             for (NSUInteger wordIndex = 0; wordIndex < 40; wordIndex++)
                 [fortyTranscriptWords addObject:@[@"recent", @"words", @"current", @"phrase"][wordIndex % 4]];
             NSString *longLiveTranscript = [fortyTranscriptWords componentsJoinedByString:@" "];
             [previewController setValue:longLiveTranscript forKey:@"transcript"];
-            NSRect transcriptRect = NSMakeRect(205, 0,
-                MAX(0, delegate.terminalView.bounds.size.width - 217), kStatusHeight);
+            [delegate.terminalView setNeedsDisplay:YES]; [delegate.terminalView displayIfNeeded];
+            NSRect transcriptRect = delegate.terminalView.dictationWordsTextRect;
+            NSRect statusRect = NSMakeRect(0, 0, delegate.terminalView.bounds.size.width, kStatusHeight);
             MicaUITestRecord(report, &allPassed,
-                [previewController.transcript sizeWithAttributes:tailAttrs].width > transcriptRect.size.width &&
-                    transcriptRect.size.height == kStatusHeight,
-                @"a long live transcript stays on one status line and truncates from the start to keep recent words visible");
+                transcriptRect.size.height > statusRect.size.height &&
+                    !NSIntersectsRect(transcriptRect, statusRect) &&
+                    [MicaLastWords(longLiveTranscript, 20) containsString:@"phrase"],
+                @"a long live transcript wraps across the reserved preview while the status strip stays separate");
             BOOL dictationRectsSafe = YES;
             NSArray<NSNumber *> *dictationWidths = @[@480, @600, @800, @1600];
             NSArray<NSNumber *> *dictationStatesForLayout = @[@(MicaVoiceControllerStatePreparing),
@@ -3287,10 +3288,7 @@ static int MicaRunUISelfTest(void) {
                     NSRect labelRect = dictationLayoutView.dictationLabelTextRect;
                     NSRect wordsRect = dictationLayoutView.dictationWordsTextRect;
                     NSRect hintRect = dictationLayoutView.dictationHintTextRect;
-                    NSDictionary *visibleAttrs = @{NSFontAttributeName:sampleWords.length
-                        ? [NSFont systemFontOfSize:kDictationWordsFontSize weight:NSFontWeightMedium]
-                        : [NSFont systemFontOfSize:kDictationLabelFontSize]};
-                    NSString *visibleText = MicaHeadTruncatedText(sampleWords, wordsRect.size.width, visibleAttrs);
+                    NSString *visibleText = MicaLastWords(sampleWords, 20);
                     NSRange lastSpace = [sampleWords rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet
                         options:NSBackwardsSearch];
                     NSString *lastWord = lastSpace.location == NSNotFound ? sampleWords :
@@ -3298,7 +3296,7 @@ static int MicaRunUISelfTest(void) {
                     BOOL shouldShowLastWord = [stateValue integerValue] == MicaVoiceControllerStateListening && sampleWords.length;
                     dictationRectsSafe = dictationRectsSafe && !NSIntersectsRect(labelRect, wordsRect) &&
                         (NSIsEmptyRect(hintRect) || (!NSIntersectsRect(labelRect, hintRect) && !NSIntersectsRect(wordsRect, hintRect))) &&
-                        NSMinX(wordsRect) >= NSMaxX(labelRect) && NSMaxX(wordsRect) <= width.doubleValue &&
+                        NSMaxX(wordsRect) <= width.doubleValue &&
                         (!shouldShowLastWord || [visibleText hasSuffix:lastWord]);
                 }
             }
@@ -3306,23 +3304,24 @@ static int MicaRunUISelfTest(void) {
             delegate.dictationToggleMode = NO;
             [delegate setLightTheme:NO];
             MicaUITestRecord(report, &allPassed, dictationRectsSafe,
-                @"dictation label, 0/3/40-word transcript and hint stay separate with the last word visible at 480/600/800/1600 px in both themes");
+                @"dictation preview wraps up to 20 recent words across separate heading, transcript and hint rows at 480/600/800/1600 px in both themes");
             [previewController setValue:@(MicaVoiceControllerStateFailed) forKey:@"state"];
             [previewController setValue:@"I didn’t catch any speech. Hold left Option and speak a little longer."
                                   forKey:@"statusText"];
             [delegate.terminalView setNeedsDisplay:YES];
             [delegate.terminalView displayIfNeeded];
-            NSRect voiceStatusText = NSMakeRect(38, 0, 155, kStatusHeight);
-            NSRect voiceDetailText = NSMakeRect(205, 0, MAX(0, voicePanel.size.width - 217), kStatusHeight);
+            NSRect voiceStatusText = delegate.terminalView.dictationLabelTextRect;
+            NSRect voiceDetailText = delegate.terminalView.dictationWordsTextRect;
             MicaUITestRecord(report, &allPassed,
                 !NSIntersectsRect(voiceStatusText, voiceDetailText) &&
                     previewController.statusText.length > 0,
-                @"dictation failure keeps its short heading and recovery detail in separate status-bar columns");
+                @"dictation failure keeps its heading and recovery detail on separate preview rows");
             [previewController setValue:@"Microphone access was denied. Enable Mica in System Settings → Privacy & Security → Microphone."
                                   forKey:@"statusText"];
             NSRect micSettingsButton = [delegate.terminalView microphoneSettingsButtonRect];
             MicaUITestRecord(report, &allPassed,
                 !NSIsEmptyRect(micSettingsButton) && micSettingsButton.size.width >= 160 &&
+                    NSIntersectsRect(micSettingsButton, voicePanel) &&
                     NSMaxX(micSettingsButton) <= delegate.terminalView.bounds.size.width &&
                     [MicaMicrophoneSettingsURL().absoluteString containsString:@"Privacy_Microphone"],
                 @"a denied microphone shows a visible System Settings action with the documented privacy URL");
@@ -3426,10 +3425,16 @@ static int MicaRunUISelfTest(void) {
                     inkPixels = MAX(inkPixels, orientationPixels);
                     colorPixels = MAX(colorPixels, orientationColorPixels);
                 }
-                MicaUITestRecord(report, &allPassed, emojiFound && inkPixels > 5 && colorPixels > 5,
+            MicaUITestRecord(report, &allPassed, emojiFound && inkPixels > 5 && colorPixels > 5,
                                  [NSString stringWithFormat:@"emoji cell paints ink and color pixels (%lu ink, %lu color)",
                                   (unsigned long)inkPixels, (unsigned long)colorPixels]);
             }
+            [previewController setValue:@(MicaVoiceControllerStateIdle) forKey:@"state"];
+            [delegate resizeActiveSession];
+            [delegate.terminalView setNeedsDisplay:YES];
+            NSInteger rowsAfterDictationPreview = mica_session_rows(delegate.activeTab.session);
+            MicaUITestRecord(report, &allPassed, rowsAfterDictationPreview == rowsBeforeDictationPreview,
+                @"ending dictation releases the reserved band and restores the prior PTY row count");
         }
 
         char optionDirectory[] = "/tmp/mica-option-picker-XXXXXX";
