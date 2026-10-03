@@ -12,7 +12,6 @@ This feature does not create a VPN, implement SSH, store private keys, alter SSH
 2. Each saved profile can be opened in a new Mica tab. Mica opens a PTY-backed `ssh -tt` session and requests an interactive remote login shell in the chosen folder. The profile name appears in the tab; the active remote directory is reported by the remote shell when supported, with a useful profile-name fallback.
 3. Profiles are available from the Session menu and restored project layouts can reference a profile by stable ID. Restore opens a fresh connection, never resurrects an old network process or terminal contents.
 4. Failed connections remain visible in the PTY as OpenSSH diagnostics, with ordinary Retry/reconnect behavior left to the user. No background probes or automatic retries.
-5. A separate optional action may open a saved host in RustDesk when installed. RustDesk stays an external graphical-control app; its credentials, configuration and trust prompts remain there.
 
 ## Scope and data model
 
@@ -31,7 +30,6 @@ This feature does not create a VPN, implement SSH, store private keys, alter SSH
 
 - SSH config parsing/editing, identity/key generation, password storage, VPN control, tunnels/port-forward UI, SFTP/file browsing, remote installation, server-side Mica helpers, and built-in remote desktop.
 - Tailscale-specific APIs. Standard `ssh` works with Tailscale IPs/MagicDNS and configured ProxyCommand where applicable; Mica should not require or control the Tailscale app.
-- RustDesk authentication or silent connection setup. First validate documented macOS invocation behavior and keep any handoff optional.
 
 ## Security and reliability
 
@@ -49,9 +47,7 @@ This feature does not create a VPN, implement SSH, store private keys, alter SSH
 2. **`feat: manage SSH connection profiles`** — native AppKit profile manager, validation/errors/accessibility, versioned preferences, Session-menu entry points. Test CRUD, malformed settings data, validation, window/menu routing and multiple windows.
 3. **`feat: open SSH profiles in terminal tabs`** — PTY launch through OpenSSH, remote working directory behavior, command/status/tab labels, close/quit cleanup. Use a local fake `ssh` executable in the PTY harness to verify argv/quoting and interaction; tests must never contact an SSH server.
 4. **`feat: restore SSH project tabs`** — versioned `.mica` profile references, backwards compatibility and bounded restoration. Add local fixture layouts and launcher/restore tests.
-5. **`feat: add optional RustDesk handoff`** (only if macOS launch invocation proves reliable) — open the installed app for a selected saved destination with explicit user action; no credentials in arguments and no dependency when RustDesk is absent.
-
-Keep each numbered item a separate reviewable commit. Do not combine a RustDesk handoff with SSH session management.
+Keep each numbered item a separate reviewable commit.
 
 ## Acceptance criteria
 
@@ -62,7 +58,6 @@ Keep each numbered item a separate reviewable commit. Do not combine a RustDesk 
 - Saved profiles and layouts survive relaunch; a failed/offline host does not hang Mica or trigger automatic repeated connections.
 - Existing local project tabs, Claude Code, Codex, arbitrary commands and interactive shell workflows remain unchanged.
 - Build and full test suite run; PTY tests use only local fixtures. Because `src/mica_app.m` is touched, follow repository instructions to run `make sanitize` and `make stress` as well.
-- RustDesk handoff is not shipped until it is verified on macOS without embedding a password or silently weakening its security prompts.
 
 ## Research references
 
@@ -72,4 +67,3 @@ Keep each numbered item a separate reviewable commit. Do not combine a RustDesk 
 - Apple OpenSSH/Keychain notes (`UseKeychain`, `AddKeysToAgent`): <https://developer.apple.com/library/archive/technotes/tn2449/_index.html>
 - Tailscale SSH: normal OpenSSH remains usable; `tailscale ssh` availability differs on sandboxed macOS builds: <https://tailscale.com/kb/1193/tailscale-ssh> and <https://tailscale.com/docs/reference/tailscale-cli?tab=macos>
 - Starlink IP policies: default IPv4 uses CGNAT and blocks inbound IPv4; public IPv4 availability depends on service plan: <https://starlink.com/lv/support/article/1192f3ef-2a17-31d9-261a-a59d215629f4>
-- RustDesk supported clients and setup: <https://rustdesk.com/docs/en/client/>. CLI connection behavior has community reports, but the standard client page does not establish a stable, documented macOS connection-handoff contract; keep it deferred pending an on-device check.

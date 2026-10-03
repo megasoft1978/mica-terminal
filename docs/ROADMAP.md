@@ -24,12 +24,11 @@ This roadmap tracks open work only. Shipped features are summarized below so the
 | 1 | Speech capture and prediction overlay | Move live dictation out of the terminal status strip into a compact, non-blocking native overlay with room for multi-line transcript preview. | Medium |
 | 2 | Trustworthy command status | Keep the status strip useful during commands with concise states based on reliable hooks, and a neutral fallback when Mica cannot identify meaningful activity. | Medium |
 | 3 | Tool-specific status adapters | Add focused, tested status mappings for Claude Code, Codex and selected interactive tools such as lazygit; do not infer detailed activity from incidental screen words. | Medium |
-| 4 | Remote desktop handoff | For a saved Mac connection, optionally open an installed remote-desktop app such as RustDesk; keep graphical control separate from Mica's SSH terminal. | Small |
-| 5 | Retained-history column reflow | Reflow retained rows across width changes while preserving links, cell attributes, search and selection anchors within the per-session history cap. | Large |
-| 6 | More complete session recovery | Arbitrary shell commands, running processes and scrollback do not resume. Any broader recovery needs explicit process-safety and bounded-storage design. | Large |
-| 7 | Split panes | The layout, focus and resize model assumes one PTY grid per tab; define a bounded pane tree and resource accounting first. | Large |
-| 8 | Broader shell support | Startup hooks and completion currently target `/bin/zsh -l -i`; add shells only with startup-file preservation and PTY coverage. | Medium–large |
-| 9 | Release reliability | Keep install and update flows reproducible and separate development builds from installed releases. | Medium |
+| 4 | Retained-history column reflow | Reflow retained rows across width changes while preserving links, cell attributes, search and selection anchors within the per-session history cap. | Large |
+| 5 | More complete session recovery | Arbitrary shell commands, running processes and scrollback do not resume. Any broader recovery needs explicit process-safety and bounded-storage design. | Large |
+| 6 | Split panes | The layout, focus and resize model assumes one PTY grid per tab; define a bounded pane tree and resource accounting first. | Large |
+| 7 | Broader shell support | Startup hooks and completion currently target `/bin/zsh -l -i`; add shells only with startup-file preservation and PTY coverage. | Medium–large |
+| 8 | Release reliability | Keep install and update flows reproducible and separate development builds from installed releases. | Medium |
 
 ## Deferred
 
