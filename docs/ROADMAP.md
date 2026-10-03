@@ -23,7 +23,7 @@ This roadmap tracks open work only. Shipped features are summarized below so the
 | 1 | Speech capture and prediction overlay | Move live dictation out of the terminal status strip into a compact, non-blocking native overlay with room for multi-line transcript preview. | Medium |
 | 2 | Trustworthy command status | Keep the status strip useful during commands with concise states based on reliable hooks, and a neutral fallback when Mica cannot identify meaningful activity. | Medium |
 | 3 | Tool-specific status adapters | Add focused, tested status mappings for Claude Code, Codex and selected interactive tools such as lazygit; do not infer detailed activity from incidental screen words. | Medium |
-| 4 | SSH project profiles | Save host aliases and remote working folders, then open a PTY-backed SSH shell using the system OpenSSH configuration and authentication. | Large |
+| 4 | SSH project profiles | Save host aliases and remote working folders, then open a PTY-backed SSH shell using the system OpenSSH configuration and authentication. See [implementation plan](PLAN-SSH-PROFILES.md). | Large |
 | 5 | Remote desktop handoff | For a saved Mac connection, optionally open an installed remote-desktop app such as RustDesk; keep graphical control separate from Mica's SSH terminal. | Small |
 | 6 | Retained-history column reflow | Reflow retained rows across width changes while preserving links, cell attributes, search and selection anchors within the per-session history cap. | Large |
 | 7 | More complete session recovery | Arbitrary shell commands, running processes and scrollback do not resume. Any broader recovery needs explicit process-safety and bounded-storage design. | Large |
