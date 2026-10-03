@@ -2712,9 +2712,7 @@ static int MicaRunUISelfTest(void) {
                              @"Command-zero resets the font size to the default");
             [delegate openPreferences:nil];
             NSWindow *preferences = delegate.preferencesWindow;
-            NSPopUpButton *themePopUp = nil;
-            for (NSView *view in preferences.contentView.subviews)
-                if ([view isKindOfClass:NSPopUpButton.class] && !themePopUp) themePopUp = (NSPopUpButton *)view;
+            NSPopUpButton *themePopUp = (NSPopUpButton *)[preferences.contentView viewWithTag:102];
             BOOL preferencesOffer = preferences != nil && themePopUp.numberOfItems == 3 &&
                 [[themePopUp itemTitleAtIndex:2] isEqualToString:@"System"];
             [themePopUp selectItemAtIndex:1];
@@ -2733,7 +2731,10 @@ static int MicaRunUISelfTest(void) {
             [delegate prefThemeChanged:themePopUp];
             MicaUITestRecord(report, &allPassed, preferencesOffer && lightApplied && systemLightApplied && systemDarkApplied &&
                 [delegate.window.appearance.name isEqualToString:NSAppearanceNameDarkAqua],
-                @"Theme offers Dark, Light and System; System follows both appearance changes live");
+                [NSString stringWithFormat:@"Theme offers Dark, Light and System; follows appearance changes (offers=%d light=%d system-light=%d system-dark=%d window-dark=%d app=%@ effective=%@)",
+                    preferencesOffer, lightApplied, systemLightApplied, systemDarkApplied,
+                    [delegate.window.appearance.name isEqualToString:NSAppearanceNameDarkAqua],
+                    NSApp.appearance.name, NSApp.effectiveAppearance.name]);
             NSString *suiteName = [NSString stringWithFormat:@"mica-theme-relaunch-%d", getpid()];
             NSUserDefaults *isolatedDefaults = [[NSUserDefaults alloc] initWithSuiteName:suiteName];
             [isolatedDefaults removePersistentDomainForName:suiteName];
