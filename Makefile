@@ -66,6 +66,7 @@ all: app
 app: $(APP_FONTS) $(APP_LAUNCHER_SCRIPT) $(APP_ICON_TOOL) $(APP_HOOK_HELPER) $(APP_BIN) $(APP_ICON) $(PROJECT_ICON_TOOL) $(VOICE_BINARY) $(APP_VOICE_HELPER) $(APP_THIRD_PARTY_NOTICES)
 	@if [ "$(SIGN_ID)" != "-" ]; then \
 		codesign --force --options runtime --timestamp$(SIGN_TIMESTAMP) --entitlements Mica.entitlements --sign "$(SIGN_ID)" $(APP_VOICE_HELPER) && \
+		codesign --force --options runtime --timestamp$(SIGN_TIMESTAMP) --sign "$(SIGN_ID)" $(APP_HOOK_HELPER) && \
 		codesign --force --options runtime --timestamp$(SIGN_TIMESTAMP) --sign "$(SIGN_ID)" $(APP_ICON_TOOL) && \
 		codesign --force --options runtime --timestamp$(SIGN_TIMESTAMP) --entitlements Mica.entitlements --sign "$(SIGN_ID)" $(APP) && \
 		codesign --verify --deep --strict $(APP); \
@@ -324,10 +325,10 @@ sanitize: $(BUILD)/test-vterm-history-san $(BUILD)/test-session-san $(BUILD)/tes
 	$(BUILD)/test-agent-detect-san
 
 # Renders the website/README product images from the real terminal view (fictional project, sample output only).
-$(BUILD)/render-marketing: src/mica_agent_state.m src/mica_agent_state.h src/mica_resume.m src/mica_resume.h $(VTERM_STATIC) tools/render_marketing.m src/mica_app.m src/mica_agent_rss.m src/mica_status_context.m src/mica_vocabulary.m src/mica_vocabulary.h src/mica_voice_controller.m src/mica_diagnostics.m src/mica_hook_server.m src/mica_hook_server.h src/mica_hook_install.m src/mica_hook_install.h $(HOOK) $(CORE) $(POMODORO) include/mica.h
+$(BUILD)/render-marketing: src/mica_agent_detect.c src/mica_agent_state.m src/mica_agent_state.h src/mica_resume.m src/mica_resume.h src/mica_ssh_profile.m src/mica_ssh_profile.h $(VTERM_STATIC) tools/render_marketing.m src/mica_app.m src/mica_agent_rss.m src/mica_status_context.m src/mica_vocabulary.m src/mica_vocabulary.h src/mica_voice_controller.m src/mica_diagnostics.m src/mica_hook_server.m src/mica_hook_server.h src/mica_hook_install.m src/mica_hook_install.h $(HOOK) $(CORE) $(POMODORO) include/mica.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(OBJC_WARNINGS) -fobjc-arc $(CPPFLAGS) \
-		-framework Cocoa -framework Carbon -framework AVFoundation -framework UserNotifications $(CORE_FRAMEWORK) $(CORE) $(POMODORO) src/mica_diagnostics.m src/mica_vocabulary.m src/mica_voice_controller.m src/mica_attention.m src/mica_resume.m src/mica_agent_rss.m src/mica_status_context.m tools/render_marketing.m src/mica_hook_server.m src/mica_hook_install.m $(HOOK) $(VTERM_STATIC) -o $@
+		-framework Cocoa -framework Carbon -framework AVFoundation -framework UserNotifications $(CORE_FRAMEWORK) $(CORE) src/mica_agent_detect.c $(POMODORO) src/mica_diagnostics.m src/mica_vocabulary.m src/mica_voice_controller.m src/mica_attention.m src/mica_resume.m src/mica_agent_rss.m src/mica_status_context.m src/mica_ssh_profile.m tools/render_marketing.m src/mica_hook_server.m src/mica_hook_install.m $(HOOK) $(VTERM_STATIC) -o $@
 
 $(BUILD)/render-ui-audit: src/mica_agent_state.m src/mica_agent_state.h src/mica_resume.m src/mica_resume.h $(VTERM_STATIC) tools/render_ui_audit.m src/mica_status_item.m src/mica_status_item.h src/mica_app.m src/mica_agent_rss.m src/mica_status_context.m src/mica_vocabulary.m src/mica_vocabulary.h src/mica_voice_controller.m src/mica_diagnostics.m src/mica_hook_server.m src/mica_hook_server.h src/mica_hook_install.m src/mica_hook_install.h $(HOOK) $(CORE) $(POMODORO) include/mica.h
 	@mkdir -p $(BUILD)
@@ -338,10 +339,10 @@ $(BUILD)/render-ui-audit: src/mica_agent_state.m src/mica_agent_state.h src/mica
 ui-audit: $(BUILD)/render-ui-audit
 	$(BUILD)/render-ui-audit $(BUILD)/ui-audit
 
-$(BUILD)/render-demo: src/mica_agent_state.m src/mica_agent_state.h src/mica_resume.m src/mica_resume.h $(VTERM_STATIC) tools/render_demo.m src/mica_status_item.m src/mica_status_item.h src/mica_app.m src/mica_agent_rss.m src/mica_status_context.m src/mica_vocabulary.m src/mica_vocabulary.h src/mica_voice_controller.m src/mica_diagnostics.m src/mica_hook_server.m src/mica_hook_server.h src/mica_hook_install.m src/mica_hook_install.h $(HOOK) $(CORE) $(POMODORO) include/mica.h
+$(BUILD)/render-demo: src/mica_agent_detect.c src/mica_agent_state.m src/mica_agent_state.h src/mica_resume.m src/mica_resume.h src/mica_ssh_profile.m src/mica_ssh_profile.h $(VTERM_STATIC) tools/render_demo.m src/mica_status_item.m src/mica_status_item.h src/mica_app.m src/mica_agent_rss.m src/mica_status_context.m src/mica_vocabulary.m src/mica_vocabulary.h src/mica_voice_controller.m src/mica_diagnostics.m src/mica_hook_server.m src/mica_hook_server.h src/mica_hook_install.m src/mica_hook_install.h $(HOOK) $(CORE) $(POMODORO) include/mica.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(OBJC_WARNINGS) -fobjc-arc $(CPPFLAGS) \
-		-framework Cocoa -framework Carbon -framework AVFoundation -framework UserNotifications $(CORE_FRAMEWORK) $(CORE) $(POMODORO) src/mica_diagnostics.m src/mica_vocabulary.m src/mica_voice_controller.m src/mica_attention.m src/mica_resume.m src/mica_status_item.m src/mica_hook_server.m src/mica_hook_install.m src/mica_agent_state.m src/mica_agent_rss.m src/mica_status_context.m tools/render_demo.m $(HOOK) $(VTERM_STATIC) -o $@
+		-framework Cocoa -framework Carbon -framework AVFoundation -framework UserNotifications $(CORE_FRAMEWORK) $(CORE) src/mica_agent_detect.c $(POMODORO) src/mica_diagnostics.m src/mica_vocabulary.m src/mica_voice_controller.m src/mica_attention.m src/mica_resume.m src/mica_status_item.m src/mica_hook_server.m src/mica_hook_install.m src/mica_agent_state.m src/mica_agent_rss.m src/mica_status_context.m src/mica_ssh_profile.m tools/render_demo.m $(HOOK) $(VTERM_STATIC) -o $@
 
 screenshots: $(BUILD)/render-marketing
 	$(BUILD)/render-marketing docs/assets
