@@ -12,6 +12,7 @@
 #import "mica_attention.h"
 #import "mica_resume.h"
 #import "mica_agent_rss.h"
+#import "mica_status_context.h"
 #import <UserNotifications/UserNotifications.h>
 #import <Carbon/Carbon.h>
 
@@ -2124,35 +2125,25 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         context = @"Choose a tab";
     } else if (mode == MicaUIModeScroll) {
         context = @"Use arrows or j/k to scroll";
-    } else if (tab.currentCommand.length &&
-               [self activityStateForTab:tab] == MicaTabActivityStateWaiting) {
-        NSString *tool = MicaAgentNameForTab(tab) ?: tab.currentCommand.lastPathComponent;
-        context = [NSString stringWithFormat:@"Needs your input · %@", tool];
-        contextColor = NSColor.systemOrangeColor;
-    } else if (tab.currentCommand.length) {
+    } else if (tab.currentCommand.length || MicaAgentNameForTab(tab)) {
         NSString *agent = MicaAgentNameForTab(tab);
-        if (agent) {
-            MicaTabActivityState agentState = [self activityStateForTab:tab];
-            NSString *activity = agentState == MicaTabActivityStateIdle
-                ? @"Ready" : (tab.agentActivityDetail.length
-                    ? tab.agentActivityDetail : (tab.agentActivity.length ? tab.agentActivity : @"Starting"));
-            context = [NSString stringWithFormat:@"%@ · %@", agent, activity];
-            contextColor = agentState == MicaTabActivityStateRunning
-                ? [NSColor.systemGreenColor blendedColorWithFraction:0.40 ofColor:NSColor.labelColor]
-                : MicaSecondaryLabelColor(0.85);
-        } else if ([self activityStateForTab:tab] == MicaTabActivityStateIdle) {
-            NSString *commandName = tab.currentCommand.lastPathComponent.length
-                ? tab.currentCommand.lastPathComponent : tab.currentCommand;
-            context = [NSString stringWithFormat:@"%@ · idle", commandName];
-            contextColor = MicaSecondaryLabelColor(0.85);
-        } else {
-            NSTimeInterval elapsed = MAX(0, NSProcessInfo.processInfo.systemUptime - tab.commandStartedAt);
-            NSUInteger seconds = (NSUInteger)elapsed;
-            NSString *commandName = tab.currentCommand.lastPathComponent.length ? tab.currentCommand.lastPathComponent : tab.currentCommand;
-            context = [NSString stringWithFormat:@"Running %@ · %lu:%02lu", commandName,
-                (unsigned long)(seconds / 60), (unsigned long)(seconds % 60)];
-            contextColor = [NSColor.systemGreenColor blendedColorWithFraction:0.40 ofColor:NSColor.labelColor];
-        }
+        MicaTabActivityState tabState = [self activityStateForTab:tab];
+        MicaStatusActivity statusActivity = tabState == MicaTabActivityStateWaiting ? MicaStatusActivityWaiting :
+            tabState == MicaTabActivityStateNeedsAttention ? MicaStatusActivityNeedsAttention :
+            tabState == MicaTabActivityStateComplete ? MicaStatusActivityFinished :
+            tabState == MicaTabActivityStateRunning ? MicaStatusActivityRunning : MicaStatusActivityIdle;
+        if (!agent && tab.currentCommand.length && statusActivity == MicaStatusActivityIdle &&
+            !(tab.session && mica_session_alt_screen(tab.session))) statusActivity = MicaStatusActivityRunning;
+        NSString *commandName = tab.currentCommand.lastPathComponent.length ? tab.currentCommand.lastPathComponent : tab.currentCommand;
+        context = MicaStatusContextForCommand(commandName, agent, MicaAgentStateForTab(tab),
+            tab.agentActivity, statusActivity, tab.receivedAgentHook, tab.completedCommand, tab.completionStatus);
+        contextColor = statusActivity == MicaStatusActivityWaiting ? NSColor.systemOrangeColor :
+            statusActivity == MicaStatusActivityNeedsAttention ? NSColor.systemRedColor :
+            (statusActivity == MicaStatusActivityFinished ?
+                (tab.completionStatus == 0 ? NSColor.systemGreenColor : NSColor.systemRedColor) :
+            (statusActivity == MicaStatusActivityRunning ?
+                [NSColor.systemGreenColor blendedColorWithFraction:0.40 ofColor:NSColor.labelColor] :
+                MicaSecondaryLabelColor(0.85)));
     } else if (tab.completedCommand) {
         NSString *result = tab.completionStatus == 0 ? @"finished successfully" :
             [NSString stringWithFormat:@"exited with status %d", tab.completionStatus];
