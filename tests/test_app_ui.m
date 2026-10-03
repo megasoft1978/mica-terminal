@@ -637,6 +637,7 @@ static int MicaRunUISelfTest(void) {
         NSMenuItem *quitMenuItem = [[NSApp.mainMenu itemWithTitle:@"Mica"].submenu
             itemWithTitle:@"Quit Mica"];
         NSMenuItem *newShellMenuItem = [sessionMenu itemWithTitle:@"New Shell Tab"];
+        NSMenuItem *sshProfilesMenuItem = [sessionMenu itemWithTitle:@"SSH Connections…"];
         NSMenuItem *tabPickerMenuItem = [sessionMenu itemWithTitle:@"Choose Tab…"];
         NSMenuItem *scrollbackMenuItem = [sessionMenu itemWithTitle:@"Browse Scrollback"];
         NSMenuItem *selectOutputMenuItem = [[NSApp.mainMenu itemWithTitle:@"Edit"].submenu
@@ -665,6 +666,7 @@ static int MicaRunUISelfTest(void) {
             menuBarTimerPreference.state == NSControlStateValueOff;
         MicaUITestRecord(report, &allPassed,
                          newShellMenuItem.target == delegate &&
+                         sshProfilesMenuItem.target == delegate &&
                          [newShellMenuItem.keyEquivalent isEqualToString:@"t"] &&
                          (newShellMenuItem.keyEquivalentModifierMask & NSEventModifierFlagCommand) != 0 &&
                          [sessionMenu itemWithTitle:@"Dictate…"] == nil &&
@@ -702,6 +704,44 @@ static int MicaRunUISelfTest(void) {
                          [sessionMenu itemWithTitle:@"New Claude Code Tab"] == nil &&
                          [sessionMenu itemWithTitle:@"New Codex Tab"] == nil,
                          @"smoke: shipped menu actions exist and are enabled when applicable; unavailable dictation undo is disabled");
+
+        NSString *sshProfileSuite = [NSString stringWithFormat:@"mica-ssh-profiles-%d", getpid()];
+        NSUserDefaults *sshProfileDefaults = [[NSUserDefaults alloc] initWithSuiteName:sshProfileSuite];
+        [sshProfileDefaults removePersistentDomainForName:sshProfileSuite];
+        NSUserDefaults *priorDefaultsOverride = gMicaDefaultsOverride;
+        gMicaDefaultsOverride = sshProfileDefaults;
+        [delegate openSSHProfiles:nil];
+        MicaSSHProfilesController *sshManager = delegate.sshProfilesController;
+        NSTableColumn *sshNameColumn = [sshManager.tableView tableColumnWithIdentifier:@"name"];
+        NSTableColumn *sshDestinationColumn = [sshManager.tableView tableColumnWithIdentifier:@"destination"];
+        NSTableColumn *sshDirectoryColumn = [sshManager.tableView tableColumnWithIdentifier:@"remoteDirectory"];
+        [sshManager addProfile:nil];
+        [sshManager.tableView.window makeFirstResponder:sshManager.tableView];
+        [sshManager tableView:sshManager.tableView setObjectValue:@"M1 Mac Mini"
+            forTableColumn:sshNameColumn row:0];
+        [sshManager tableView:sshManager.tableView setObjectValue:@"mini"
+            forTableColumn:sshDestinationColumn row:0];
+        [sshManager tableView:sshManager.tableView setObjectValue:@"~/Projects/Mica"
+            forTableColumn:sshDirectoryColumn row:0];
+        [sshManager save:nil];
+        NSDictionary *sshStored = [sshProfileDefaults dictionaryForKey:@"MicaSSHProfiles"];
+        NSDictionary *sshSavedProfile = [sshStored[@"profiles"] firstObject];
+        BOOL sshProfileSaved = [sshStored[@"version"] integerValue] == 1 &&
+            [sshSavedProfile[@"name"] isEqualToString:@"M1 Mac Mini"] &&
+            [sshSavedProfile[@"destination"] isEqualToString:@"mini"] &&
+            [sshSavedProfile[@"remoteDirectory"] isEqualToString:@"~/Projects/Mica"] &&
+            [sshSavedProfile[@"id"] isKindOfClass:NSString.class];
+        [delegate openSSHProfiles:nil];
+        MicaSSHProfilesController *reopenedSSHManager = delegate.sshProfilesController;
+        BOOL sshProfileReopened = reopenedSSHManager.rows.count == 1 &&
+            [reopenedSSHManager.rows[0][@"destination"] isEqualToString:@"mini"] &&
+            reopenedSSHManager.tableView.numberOfColumns == 3;
+        [reopenedSSHManager cancel:nil];
+        gMicaDefaultsOverride = priorDefaultsOverride;
+        [sshProfileDefaults removePersistentDomainForName:sshProfileSuite];
+        MicaUITestRecord(report, &allPassed, sshProfileSaved && sshProfileReopened,
+            [NSString stringWithFormat:@"SSH profile manager saves and restores bounded, versioned profile records (saved=%d reopened=%d)",
+                sshProfileSaved, sshProfileReopened]);
 
         MicaAppDelegate *landmarkUIDelegate = [[MicaAppDelegate alloc] init];
         landmarkUIDelegate.tabs = [NSMutableArray array];

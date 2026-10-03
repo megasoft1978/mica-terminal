@@ -67,6 +67,7 @@ iTerm2 plus Wispr Flow is about 770 MB before you add a timer. Dictation adds a 
 - Dictation can use Hold or Toggle for left <kbd>⌥</kbd> in Settings. **Edit → Undo Last Dictation** restores the raw transcript after a correction, or removes the inserted transcript, while you have not typed since.
 - **A focus timer that follows you.** One timer shared by every Mica window. The status strip clearly labels **FOCUS**, **BREAK**, or **PAUSED · FOCUS/BREAK**, keeps the countdown in view, and gives you a labeled **Start**, **Pause**, or **Resume** control. Focus and break use separate colors and a progress ring. When a phase ends, macOS tells you whether to pause work or return to focus. End a phase from the **Focus** menu or VoiceOver actions; completed sessions remain in the menu and accessibility label.
 - **Still a real terminal.** Choose how much scrollback to keep (650 lines by default, up to 20,000 with its memory cost shown in Settings), search Unicode output and keep your reading position while retained history receives new output, Command-click links, drag tabs, choose a cursor and a dark, light or system-following theme. If a program over SSH asks to set your clipboard, Mica asks you first.
+- **Saved SSH connections.** Use Session → SSH Connections… to save a friendly name, OpenSSH host or `~/.ssh/config` alias, and optional remote starting folder. Mica opens it as an interactive terminal tab through macOS OpenSSH; keys, agent, host-key checks, jump hosts and VPN routing stay in your existing SSH setup. Mica stores no SSH credentials. On a Mac you want to reach, enable System Settings → General → Sharing → Remote Login and limit access to the users who need it.
 
 ## Install
 
@@ -133,6 +134,12 @@ python3 scripts/install-desktop-apps.py --new-instance \
 Edit a project’s tabs later with **Project → Project Settings…**. A `.mica` layout file can define named tabs, folders and optional commands.
 
 When `/Applications/Mica.app` is installed, project launchers created from a source checkout use that installed copy. This keeps macOS folder permissions tied to the stable app while `make app` rebuilds the development copy. To update existing launchers to use the installed app, run `make install-desktop-apps` once.
+
+## SSH connections
+
+Create or edit profiles from **Session → SSH Connections…**. Set the destination to an OpenSSH host alias, `user@host`, hostname or IP address. Put authentication choices, identity files, jump hosts, ports and VPN-specific proxy commands in `~/.ssh/config`; Mica uses the normal `ssh` client and does not save passwords or private keys. A remote starting folder is entered as a POSIX path (`~/…` starts from the remote user's home) and opened in an interactive login shell. New or changed host keys continue to use OpenSSH's normal confirmation and `known_hosts` behavior.
+
+For a Mac on the same home network, enable **System Settings → General → Sharing → Remote Login** on the remote Mac. Connecting from outside the home network requires a reachable route such as a VPN/overlay, reachable IPv6, or an eligible public IP service. Mica does not turn a VPN on or change router settings.
 
 ## Under the hood
 

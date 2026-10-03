@@ -13,6 +13,7 @@
 #import "mica_resume.h"
 #import "mica_agent_rss.h"
 #import "mica_status_context.h"
+#import "mica_ssh_profile.h"
 #import <UserNotifications/UserNotifications.h>
 #import <Carbon/Carbon.h>
 
@@ -285,6 +286,7 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 @property(nonatomic, assign) uint64_t identifier;
 @property(nonatomic, copy) NSString *cwd;
 @property(nonatomic, copy) NSString *command;
+@property(nonatomic, copy) NSDictionary<NSString *, NSString *> *remoteProfile;
 @property(nonatomic, copy) NSString *terminalTitle;
 @property(nonatomic, copy) NSString *currentCommand;
 @property(nonatomic, copy) NSString *agentActivity;
@@ -569,6 +571,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic) BOOL explicitLayoutLaunch;
 @property(nonatomic, copy) NSArray<NSDictionary *> *savedTabsForWindow;
 @property(nonatomic, strong) id projectSettingsController;
+@property(nonatomic, strong) id sshProfilesController;
 @property(nonatomic, strong) NSTimer *pollTimer;
 @property(nonatomic, weak) MicaTab *dispatchPollTab;
 @property(nonatomic, assign) NSTimeInterval lastSlowPollLogAt;
@@ -678,6 +681,9 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)openDiagnosticLogs:(id)sender;
 - (void)showKeyboardShortcuts:(id)sender;
 - (void)openProjectSettings:(id)sender;
+- (void)openSSHProfiles:(id)sender;
+- (void)connectSSHProfile:(id)sender;
+- (void)openSSHProfile:(NSDictionary<NSString *, NSString *> *)profile;
 - (void)startPomodoro:(id)sender;
 - (void)takePomodoroBreak:(id)sender;
 - (void)prefStatusTimerChanged:(NSButton *)sender;
@@ -872,6 +878,15 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, strong) NSMutableArray<NSMutableArray<NSString *> *> *rows;
 - (instancetype)initWithOwner:(MicaAppDelegate *)owner;
 - (void)save:(id)sender;
+@end
+
+@interface MicaSSHProfilesController : NSWindowController <NSTableViewDataSource, NSTableViewDelegate>
+@property(nonatomic, weak) MicaAppDelegate *appDelegate;
+@property(nonatomic, strong) NSTableView *tableView;
+@property(nonatomic, strong) NSMutableArray<NSMutableDictionary<NSString *, NSString *> *> *rows;
+- (instancetype)initWithOwner:(MicaAppDelegate *)owner;
+- (void)save:(id)sender;
+- (void)connectSelected:(id)sender;
 @end
 
 // One process can host many project windows. Each window has its own MicaAppDelegate acting as a window
@@ -2119,12 +2134,21 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     }
 
     NSString *folderName = tab.cwd.length ? tab.cwd : @"/";
-    NSString *context = [NSString stringWithFormat:@"Ready · Folder: %@", folderName];
+    NSString *context = tab.remoteProfile
+        ? [NSString stringWithFormat:@"SSH · %@ · %@", tab.remoteProfile[@"name"],
+           [tab.remoteProfile[@"remoteDirectory"] length] ? tab.remoteProfile[@"remoteDirectory"] : @"Remote home"]
+        : [NSString stringWithFormat:@"Ready · Folder: %@", folderName];
     NSColor *contextColor = MicaSecondaryLabelColor(0.76);
     if (mode == MicaUIModeTab) {
         context = @"Choose a tab";
     } else if (mode == MicaUIModeScroll) {
         context = @"Use arrows or j/k to scroll";
+    } else if (tab.remoteProfile && tab.currentCommand.length) {
+        context = [NSString stringWithFormat:@"SSH · %@ · Connecting", tab.remoteProfile[@"name"]];
+        contextColor = [NSColor.systemGreenColor blendedColorWithFraction:0.40 ofColor:NSColor.labelColor];
+    } else if (tab.remoteProfile && tab.tracksCompletion && tab.completedCommand) {
+        context = [NSString stringWithFormat:@"SSH · %@ · Disconnected", tab.remoteProfile[@"name"]];
+        contextColor = tab.completionStatus == 0 ? MicaSecondaryLabelColor(0.85) : NSColor.systemRedColor;
     } else if (tab.currentCommand.length || MicaAgentNameForTab(tab)) {
         NSString *agent = MicaAgentNameForTab(tab);
         MicaTabActivityState tabState = [self activityStateForTab:tab];
@@ -3719,6 +3743,178 @@ static NSDictionary *MicaResolveLaunchConfiguration(NSArray<NSString *> *args, N
 }
 @end
 
+@implementation MicaSSHProfilesController
+- (instancetype)initWithOwner:(MicaAppDelegate *)owner {
+    self = [super initWithWindow:nil];
+    if (!self) return nil;
+    self.appDelegate = owner;
+    self.rows = [NSMutableArray array];
+    id storedObject = [owner.micaDefaults objectForKey:@"MicaSSHProfiles"];
+    NSArray *stored = [storedObject isKindOfClass:NSDictionary.class] && [storedObject[@"version"] integerValue] == 1
+        ? ([storedObject[@"profiles"] isKindOfClass:NSArray.class] ? storedObject[@"profiles"] : @[])
+        : ([storedObject isKindOfClass:NSArray.class] ? storedObject : @[]);
+    NSMutableSet<NSString *> *identifiers = [NSMutableSet set];
+    for (id candidate in [stored isKindOfClass:NSArray.class] ? stored : @[]) {
+        NSDictionary *profile = MicaSSHProfileNormalize(candidate, NULL);
+        if (profile && ![identifiers containsObject:profile[@"id"]]) {
+            [self.rows addObject:[profile mutableCopy]];
+            [identifiers addObject:profile[@"id"]];
+        }
+        if (self.rows.count >= MicaSSHProfileMaximumCount) break;
+    }
+
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 760, 450)
+        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
+    window.title = @"SSH Connections";
+    window.releasedWhenClosed = NO;
+    self.window = window;
+    NSView *content = window.contentView;
+
+    NSTextField *description = [NSTextField labelWithString:
+        @"Profiles use macOS OpenSSH and your existing ~/.ssh/config, keys, agent, and VPN. Mica does not store credentials."];
+    description.maximumNumberOfLines = 2;
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+    scroll.hasVerticalScroller = YES;
+    scroll.borderType = NSBezelBorder;
+    self.tableView = [[NSTableView alloc] initWithFrame:NSZeroRect];
+    self.tableView.usesAlternatingRowBackgroundColors = YES;
+    self.tableView.columnAutoresizingStyle = NSTableViewLastColumnOnlyAutoresizingStyle;
+    self.tableView.dataSource = self;
+    self.tableView.delegate = self;
+    NSArray<NSString *> *titles = @[@"Name", @"SSH destination", @"Remote starting folder (optional)"];
+    NSArray<NSString *> *identifiersForColumn = @[@"name", @"destination", @"remoteDirectory"];
+    NSArray<NSNumber *> *widths = @[@160, @220, @340];
+    for (NSUInteger index = 0; index < identifiersForColumn.count; index++) {
+        NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:identifiersForColumn[index]];
+        column.title = titles[index];
+        column.width = widths[index].doubleValue;
+        column.editable = YES;
+        [self.tableView addTableColumn:column];
+    }
+    scroll.documentView = self.tableView;
+    NSButton *addButton = [NSButton buttonWithTitle:@"Add Profile" target:self action:@selector(addProfile:)];
+    NSButton *removeButton = [NSButton buttonWithTitle:@"Remove" target:self action:@selector(removeProfile:)];
+    NSButton *cancelButton = [NSButton buttonWithTitle:@"Cancel" target:self action:@selector(cancel:)];
+    NSButton *saveButton = [NSButton buttonWithTitle:@"Save" target:self action:@selector(save:)];
+    NSButton *connectButton = [NSButton buttonWithTitle:@"Connect" target:self action:@selector(connectSelected:)];
+    saveButton.keyEquivalent = @"\r";
+    cancelButton.keyEquivalent = @"\033";
+    for (NSView *view in @[description, scroll, addButton, removeButton, cancelButton, saveButton, connectButton]) {
+        view.translatesAutoresizingMaskIntoConstraints = NO;
+        [content addSubview:view];
+    }
+    [NSLayoutConstraint activateConstraints:@[
+        [description.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:20],
+        [description.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-20],
+        [description.topAnchor constraintEqualToAnchor:content.topAnchor constant:18],
+        [scroll.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:20],
+        [scroll.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-20],
+        [scroll.topAnchor constraintEqualToAnchor:description.bottomAnchor constant:12],
+        [scroll.bottomAnchor constraintEqualToAnchor:addButton.topAnchor constant:-12],
+        [addButton.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:20],
+        [addButton.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-16],
+        [removeButton.leadingAnchor constraintEqualToAnchor:addButton.trailingAnchor constant:8],
+        [removeButton.centerYAnchor constraintEqualToAnchor:addButton.centerYAnchor],
+        [connectButton.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-20],
+        [connectButton.centerYAnchor constraintEqualToAnchor:addButton.centerYAnchor],
+        [saveButton.trailingAnchor constraintEqualToAnchor:connectButton.leadingAnchor constant:-8],
+        [saveButton.centerYAnchor constraintEqualToAnchor:addButton.centerYAnchor],
+        [cancelButton.trailingAnchor constraintEqualToAnchor:saveButton.leadingAnchor constant:-8],
+        [cancelButton.centerYAnchor constraintEqualToAnchor:addButton.centerYAnchor],
+    ]];
+    [self.tableView reloadData];
+    return self;
+}
+- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView { (void)tableView; return (NSInteger)self.rows.count; }
+- (id)tableView:(NSTableView *)tableView objectValueForTableColumn:(NSTableColumn *)column row:(NSInteger)row {
+    (void)tableView;
+    return self.rows[(NSUInteger)row][column.identifier] ?: @"";
+}
+- (void)tableView:(NSTableView *)tableView setObjectValue:(id)value forTableColumn:(NSTableColumn *)column row:(NSInteger)row {
+    (void)tableView;
+    if (row >= 0 && row < (NSInteger)self.rows.count)
+        self.rows[(NSUInteger)row][column.identifier] = [value isKindOfClass:NSString.class] ? value : @"";
+}
+- (void)addProfile:(id)sender {
+    (void)sender;
+    if (self.rows.count >= MicaSSHProfileMaximumCount) {
+        [self showError:@"Mica supports up to 64 SSH profiles."];
+        return;
+    }
+    [self.rows addObject:[@{@"id":NSUUID.UUID.UUIDString, @"name":@"New Connection",
+        @"destination":@"", @"remoteDirectory":@""} mutableCopy]];
+    [self.tableView reloadData];
+    NSInteger row = (NSInteger)self.rows.count - 1;
+    [self.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
+    [self.tableView editColumn:0 row:row withEvent:nil select:YES];
+}
+- (void)removeProfile:(id)sender {
+    (void)sender;
+    NSInteger row = self.tableView.selectedRow;
+    if (row < 0 || row >= (NSInteger)self.rows.count) return;
+    [self.rows removeObjectAtIndex:(NSUInteger)row];
+    [self.tableView reloadData];
+}
+- (void)cancel:(id)sender {
+    (void)sender;
+    [self.appDelegate.window endSheet:self.window returnCode:NSModalResponseCancel];
+    [self.window orderOut:nil];
+}
+- (NSArray<NSDictionary<NSString *, NSString *> *> *)validatedProfiles {
+    [self.tableView.window makeFirstResponder:self.tableView];
+    if (self.rows.count > MicaSSHProfileMaximumCount) {
+        [self showError:@"Mica supports up to 64 SSH profiles."];
+        return nil;
+    }
+    NSMutableArray *profiles = [NSMutableArray array];
+    NSMutableSet *ids = [NSMutableSet set], *names = [NSMutableSet set];
+    for (NSUInteger index = 0; index < self.rows.count; index++) {
+        NSError *error = nil;
+        NSDictionary *profile = MicaSSHProfileNormalize(self.rows[index], &error);
+        NSString *foldedName = [profile[@"name"] lowercaseString];
+        if (!profile || [ids containsObject:profile[@"id"]] || [names containsObject:foldedName]) {
+            NSString *message = profile ? @"Profile names and identifiers must be unique." : error.localizedDescription;
+            [self showError:[NSString stringWithFormat:@"Profile %lu: %@", (unsigned long)(index + 1), message ?: @"Invalid profile."]];
+            return nil;
+        }
+        [ids addObject:profile[@"id"]];
+        [names addObject:foldedName];
+        [profiles addObject:profile];
+    }
+    return profiles;
+}
+- (void)save:(id)sender {
+    (void)sender;
+    NSArray *profiles = [self validatedProfiles];
+    if (!profiles) return;
+    [self.appDelegate.micaDefaults setObject:@{@"version":@1, @"profiles":profiles} forKey:@"MicaSSHProfiles"];
+    [self.appDelegate.window endSheet:self.window returnCode:NSModalResponseOK];
+    [self.window orderOut:nil];
+}
+- (void)connectSelected:(id)sender {
+    (void)sender;
+    NSInteger selected = self.tableView.selectedRow;
+    if (selected < 0 || selected >= (NSInteger)self.rows.count) {
+        [self showError:@"Select an SSH profile to connect."];
+        return;
+    }
+    NSArray *profiles = [self validatedProfiles];
+    if (!profiles) return;
+    NSDictionary *profile = profiles[(NSUInteger)selected];
+    [self.appDelegate.micaDefaults setObject:@{@"version":@1, @"profiles":profiles} forKey:@"MicaSSHProfiles"];
+    [self.appDelegate.window endSheet:self.window returnCode:NSModalResponseOK];
+    [self.window orderOut:nil];
+    [self.appDelegate openSSHProfile:profile];
+}
+- (void)showError:(NSString *)message {
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = @"SSH profiles could not be saved";
+    alert.informativeText = message;
+    [alert addButtonWithTitle:@"OK"];
+    [alert beginSheetModalForWindow:self.window completionHandler:nil];
+}
+@end
+
 @implementation MicaPaletteSearchField
 - (void)keyDown:(NSEvent *)event {
     NSString *key = event.charactersIgnoringModifiers;
@@ -4806,6 +5002,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSMenu *sessionMenu = [[NSMenu alloc] initWithTitle:@"Session"];
     AddMenuItem(sessionMenu, @"New Shell Tab", @selector(newShell:), @"t", NSEventModifierFlagCommand).target = self;
     AddMenuItem(sessionMenu, @"New Worktree Tab…", @selector(newWorktreeTab:), @"", 0).target = self;
+    AddMenuItem(sessionMenu, @"SSH Connections…", @selector(openSSHProfiles:), @"", 0).target = self;
     AddMenuItem(sessionMenu, @"Choose Tab…", @selector(toggleTabPicker), @"", 0).target = self;
     AddMenuItem(sessionMenu, @"Jump to Next Waiting Tab", @selector(jumpToNextWaitingTab:), @"j",
                 NSEventModifierFlagCommand | NSEventModifierFlagShift).target = self;
@@ -4985,6 +5182,39 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         (void)returnCode;
         self.projectSettingsController = nil;
     }];
+}
+
+- (void)openSSHProfiles:(id)sender {
+    (void)sender;
+    MicaSSHProfilesController *controller = [[MicaSSHProfilesController alloc] initWithOwner:self];
+    self.sshProfilesController = controller;
+    [self.window beginSheet:controller.window completionHandler:^(NSModalResponse returnCode) {
+        (void)returnCode;
+        self.sshProfilesController = nil;
+    }];
+}
+
+- (void)openSSHProfile:(NSDictionary<NSString *,NSString *> *)profile {
+    NSDictionary *normalized = MicaSSHProfileNormalize(profile, NULL);
+    NSString *command = normalized ? MicaSSHProfileCommand(normalized) : nil;
+    if (!command.length) return;
+    NSString *tabName = normalized[@"name"];
+    NSUInteger tabsBefore = self.tabs.count;
+    [self newTabWithName:tabName command:command];
+    if (self.tabs.count != tabsBefore + 1) return;
+    MicaTab *tab = self.activeTab;
+    tab.remoteProfile = normalized;
+    tab.gitBranch = nil;
+    tab.gitBranchLookupPath = tab.cwd;
+    tab.vocabularyFileTerms = @[];
+    tab.gitVocabularyTerms = @[];
+    tab.recentVisibleText = @"";
+}
+
+- (void)connectSSHProfile:(id)sender {
+    if (![sender isKindOfClass:NSMenuItem.class]) return;
+    id profile = [(NSMenuItem *)sender representedObject];
+    if ([profile isKindOfClass:NSDictionary.class]) [self openSSHProfile:profile];
 }
 
 - (void)loadLaunchConfiguration {
@@ -5241,7 +5471,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
             NSString *branch=MicaGitBranchForDirectory(tabPath);
             dispatch_async(dispatch_get_main_queue(), ^{
                 MicaTab *strongTab=branchTab; MicaAppDelegate *strongSelf=branchSelf;
-                if (strongTab && strongSelf && [strongSelf.tabs containsObject:strongTab] && [strongTab.cwd isEqualToString:tabPath]) {
+                if (strongTab && strongSelf && !strongTab.remoteProfile && [strongSelf.tabs containsObject:strongTab] && [strongTab.cwd isEqualToString:tabPath]) {
                     strongTab.gitBranch=branch;
                     [strongSelf.terminalView setNeedsDisplayInRect:NSMakeRect(0,0,strongSelf.terminalView.bounds.size.width,kStatusHeight)];
                     [strongSelf.windowContentView.sidebarView refreshRows];
@@ -5254,7 +5484,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         NSArray *terms=MicaVocabularyTermsFromGitFiles(tabPath);
         dispatch_async(dispatch_get_main_queue(), ^{
             MicaTab *strongTab=weakTab; MicaAppDelegate *strongSelf=weakSelf;
-            if (strongTab && strongSelf && [strongSelf.tabs containsObject:strongTab] && [strongTab.cwd isEqualToString:tabPath]) strongTab.gitVocabularyTerms=terms;
+            if (strongTab && strongSelf && !strongTab.remoteProfile && [strongSelf.tabs containsObject:strongTab] && [strongTab.cwd isEqualToString:tabPath]) strongTab.gitVocabularyTerms=terms;
         });
     });
 }
