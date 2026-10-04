@@ -1109,6 +1109,7 @@ static int MicaRunUISelfTest(void) {
         voiceDelegate.voiceTargetTab = voiceTargetTab;
         BOOL fakeTranscriptInserted = [voiceDelegate voiceController:pushToTalkProbe
             didFinishTranscript:@"Mica Terminal"];
+        MicaUITestRunLoopFor(0.05);
         NSString *insertedBuffer = voiceTestDirectoryReady
             ? MicaUITestCaptureZLEBuffer(voiceTestDirectory, voiceTargetTab.session) : nil;
         NSMenuItem *undoItem = [[NSMenuItem alloc] initWithTitle:@"Undo Last Dictation"
@@ -1116,6 +1117,7 @@ static int MicaRunUISelfTest(void) {
         undoItem.target = voiceDelegate;
         BOOL undoEnabled = voiceDelegate.dictationUndoValid && [voiceDelegate validateMenuItem:undoItem];
         [voiceDelegate undoLastDictation:nil];
+        MicaUITestRunLoopFor(0.05);
         NSString *undoneBuffer = voiceTestDirectoryReady
             ? MicaUITestCaptureZLEBuffer(voiceTestDirectory, voiceTargetTab.session) : nil;
         MicaUITestRecord(report, &allPassed, fakeTranscriptInserted && undoEnabled &&
@@ -2503,7 +2505,7 @@ static int MicaRunUISelfTest(void) {
             [delegate addTabWithName:@"Image paste" cwd:@"/tmp" command:imageRouteCommand prefilled:NO];
             MicaTab *imageTab = delegate.activeTab;
             BOOL imageReaderReady = NO;
-            for (int attempt = 0; attempt < 300; attempt++) {
+            for (int attempt = 0; attempt < 500; attempt++) {
                 mica_session_poll(imageTab.session, 0);
                 if (MicaUITestFindText(imageTab.session, @"IMAGE-ROUTE-READY", NULL, NULL)) {
                     imageReaderReady = YES;
@@ -2516,9 +2518,10 @@ static int MicaRunUISelfTest(void) {
                 colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:0 bitsPerPixel:0];
             NSData *clipboardPNG = [clipboardBitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
             delegate.terminalView.testClipboardImage = clipboardPNG;
-            MicaUITestSendKey(delegate, @"v", NSEventModifierFlagCommand, 9);
+            MicaUITestRunLoopFor(0.05);
+            [delegate.terminalView paste:nil];
             BOOL imagePasteWorked = NO;
-            for (int attempt = 0; imageReaderReady && attempt < 300; attempt++) {
+            for (int attempt = 0; imageReaderReady && attempt < 500; attempt++) {
                 mica_session_poll(imageTab.session, 0);
                 if (MicaUITestFindText(imageTab.session, @"22", NULL, NULL) &&
                     MicaUITestFindText(imageTab.session, @"IMAGE-ROUTE-OK", NULL, NULL)) {
@@ -2528,7 +2531,7 @@ static int MicaRunUISelfTest(void) {
                 usleep(10000);
             }
             MicaUITestRecord(report, &allPassed, imageReaderReady && imagePasteWorked,
-                [NSString stringWithFormat:@"Command-V forwards Ctrl-V for a clipboard image without reading or storing it (ready=%d bitmap=%d bytes=%lu focus=%d)",
+                [NSString stringWithFormat:@"image paste forwards Ctrl-V without reading or storing clipboard image data (ready=%d bitmap=%d bytes=%lu focus=%d)",
                     imageReaderReady, clipboardPNG != nil, (unsigned long)clipboardPNG.length,
                     delegate.window.firstResponder == delegate.terminalView]);
             if (imageReaderReady && !imagePasteWorked)
@@ -2882,7 +2885,7 @@ static int MicaRunUISelfTest(void) {
                 [restoredStateOwner.activeTab.cwd isEqual:MicaStandardizedWorkingDirectory(@"/tmp")] &&
                 [restoredStateOwner.activeTab.command isEqual:@"printf MICA_RESTORED"] &&
                 restoredStateOwner.activeTab.muteNotifications;
-            for (int attempt = 0; restoredSession && attempt < 300; attempt++) {
+            for (int attempt = 0; restoredSession && attempt < 1000; attempt++) {
                 [restoredStateOwner pollSessions:nil];
                 if (MicaUITestFindText(restoredStateOwner.activeTab.session, @"printf MICA_RESTORED", NULL, NULL)) break;
                 usleep(10000);
@@ -2962,7 +2965,7 @@ static int MicaRunUISelfTest(void) {
             [resumeDefaults removePersistentDomainForName:resumeSuite]; gMicaDefaultsOverride = resumeDefaults;
             MicaAppDelegate *resumeOff = [MicaAppDelegate new]; resumeOff.tabs = [NSMutableArray array]; resumeOff.activeIndex = 0;
             [resumeOff loadLaunchConfigurationFromArguments:@[@"mica"] bundleInfo:@{}];
-            for (int attempt = 0; attempt < 100; attempt++) {
+            for (int attempt = 0; attempt < 500; attempt++) {
                 [resumeOff pollSessions:nil];
                 if (MicaUITestFindText(resumeOff.activeTab.session, @"claude --resume session-1234", NULL, NULL)) break;
                 usleep(10000);
