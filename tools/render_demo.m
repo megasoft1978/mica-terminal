@@ -62,6 +62,14 @@ static BOOL SaveTimerMenuPreview(MicaAppDelegate *owner, NSString *directory) {
     NSMutableArray<NSString *> *rows = [NSMutableArray array];
     for (NSMenuItem *item in [owner menuBarTimerMenu].itemArray)
         if (!item.isSeparatorItem && item.title.length) [rows addObject:item.title];
+    if (rows.count && indicatorTitle.length) {
+        NSRange timeRange = [indicatorTitle rangeOfString:@"[0-9]" options:NSRegularExpressionSearch];
+        if (timeRange.location != NSNotFound) {
+            NSString *visibleTime = [indicatorTitle substringFromIndex:timeRange.location];
+            if ([rows[0] hasPrefix:@"Focus "]) rows[0] = [@"Focus " stringByAppendingString:visibleTime];
+            else if ([rows[0] hasPrefix:@"Break "]) rows[0] = [@"Break " stringByAppendingString:visibleTime];
+        }
+    }
     MicaTimerMenuPreview *preview = [[MicaTimerMenuPreview alloc] initWithFrame:NSMakeRect(0, 0, 720, 320)];
     preview.indicatorTitle = indicatorTitle; preview.rows = rows;
     NSBitmapImageRep *image = [preview bitmapImageRepForCachingDisplayInRect:preview.bounds];
