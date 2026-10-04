@@ -35,8 +35,8 @@ jobs:
       - name: Check tag matches version
         run: |
           v=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)
-          base="${GITHUB_REF_NAME%%-*}"
-          [ "v$v" = "$base" ] || { echo "tag ${GITHUB_REF_NAME} does not start from Info.plist version $v"; exit 1; }
+          expected="v$v"
+          [ "$GITHUB_REF_NAME" = "$expected" ] || { echo "tag ${GITHUB_REF_NAME} does not match Info.plist version $v"; exit 1; }
       - name: Require signed-release credentials
         env:
           CERT_P12: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
