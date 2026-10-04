@@ -111,6 +111,23 @@ def discover_launchers(launcher_dir: Path, layout_dir: Path) -> list[dict]:
             "layout_name": layout_name,
             "launch_script": str(launch_script.resolve()),
         })
+    for launcher in sorted(launcher_dir.glob("*.mica")):
+        try:
+            layout_path = launcher.resolve(strict=True)
+            layout_path.relative_to(layout_dir.resolve())
+        except (OSError, ValueError):
+            continue
+        if not layout_path.is_file():
+            continue
+        projects.append({
+            "app_name": launcher.name,
+            "display_name": launcher.stem,
+            "bundle_identifier": None,
+            "layout_name": layout_path.stem,
+            "layout_path": str(layout_path),
+            "app_path": str(launcher),
+            "launch_script": None,
+        })
     if not projects:
         raise RuntimeError(
             f"no Desktop Mica launchers with matching .mica layouts were found in {launcher_dir}"
@@ -119,42 +136,122 @@ def discover_launchers(launcher_dir: Path, layout_dir: Path) -> list[dict]:
 
 
 def load_projects(manifest: Path, launcher_dir: Path, layout_dir: Path, output_dir: Path) -> list[dict]:
+    output_dir = output_dir.expanduser().resolve()
+    layout_dir = layout_dir.expanduser().resolve()
     if manifest.is_file():
         records = json.loads(manifest.read_text(encoding="utf-8"))
         if not isinstance(records, list) or not records:
             raise RuntimeError(f"invalid or empty desktop app manifest: {manifest}")
         projects = records
+        known_launchers = {item.get("app_name") for item in records if isinstance(item, dict)}
+        # Recover project launchers created by older installer versions that were not written
+        # to the manifest. The private MicaProjectLayoutName marker prevents touching other apps.
+        for app in sorted(launcher_dir.glob("*.app")):
+            if app.name in known_launchers:
+                continue
+            plist_path = app / "Contents/Info.plist"
+            if not plist_path.is_file():
+                continue
+            info = read_plist(plist_path)
+            layout_name = info.get("MicaProjectLayoutName")
+            if (not isinstance(layout_name, str) or
+                    not re.fullmatch(r"[A-Za-z0-9_-]+", layout_name) or
+                    not (layout_dir / f"{layout_name}.mica").is_file()):
+                continue
+            projects.append({
+                "app_name": app.name,
+                "display_name": info.get("MicaProjectName") or info.get("CFBundleDisplayName") or app.stem,
+                "bundle_identifier": info.get("CFBundleIdentifier"),
+                "layout_name": layout_name,
+                "launch_script": info.get("MicaProjectLaunchScript"),
+            })
     else:
         projects = discover_launchers(launcher_dir, layout_dir)
     app_paths: set[str] = set()
+    active_projects = []
     for project in projects:
         app_name = project.get("app_name")
         layout_name = project.get("layout_name")
-        if (not isinstance(app_name, str) or not app_name.endswith(".app")
-                or Path(app_name).name != app_name or app_name in {".", ".."}):
-            raise RuntimeError(f"invalid app name in desktop manifest: {app_name!r}")
-        lexical_target = output_dir / app_name
-        if lexical_target.is_symlink():
-            raise RuntimeError(f"refusing to replace a symlink as a Mica launcher: {lexical_target}")
+        if (not isinstance(app_name, str) or Path(app_name).name != app_name
+                or app_name in {".", ".."} or not app_name.endswith((".app", ".mica"))):
+            raise RuntimeError(f"invalid launcher name in desktop manifest: {app_name!r}")
+        legacy_name = app_name if app_name.endswith(".app") else None
+        layout_name_file = Path(app_name).stem + ".mica"
+        lexical_target = output_dir / layout_name_file
+        if legacy_name:
+            project["legacy_app_path"] = str(output_dir / legacy_name)
+        project["app_name"] = layout_name_file
         if not isinstance(layout_name, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", layout_name):
             raise RuntimeError(f"invalid layout name for {app_name}: {layout_name!r}")
         layout_path = layout_dir / f"{layout_name}.mica"
         if not layout_path.is_file():
-            raise RuntimeError(f"missing Mica layout for {app_name}: {layout_path}")
+            legacy_path = output_dir / app_name
+            if legacy_path.exists() or legacy_path.is_symlink():
+                raise RuntimeError(f"missing Mica layout for existing launcher {app_name}: {layout_path}")
+            print(f"warning: skipping stale manifest entry {app_name}; layout is missing: {layout_path}", file=sys.stderr)
+            continue
         project["layout_path"] = str(layout_path.resolve())
-        project["app_path"] = str((output_dir / app_name).resolve())
-        if Path(project["app_path"]).parent != output_dir.resolve():
-            raise RuntimeError(f"project app path escapes output directory: {app_name!r}")
-        if project["app_path"] in app_paths:
-            raise RuntimeError(f"duplicate project app target: {app_name!r}")
-        app_paths.add(project["app_path"])
+        project["app_path"] = str(lexical_target)
+        if lexical_target.parent != output_dir.resolve():
+            raise RuntimeError(f"project launcher path escapes output directory: {app_name!r}")
+        if str(lexical_target) in app_paths:
+            raise RuntimeError(f"duplicate project launcher target: {layout_name_file!r}")
+        app_paths.add(str(lexical_target))
         project.setdefault("display_name", Path(app_name).stem)
         if (not isinstance(project["display_name"], str) or
                 any(char in project["display_name"] for char in "\0\r\n")):
             raise RuntimeError(f"invalid project display name for {app_name}")
         project.setdefault("bundle_identifier", None)
         project.setdefault("launch_script", None)
-    return projects
+        active_projects.append(project)
+    return active_projects
+
+
+def install_layout_launcher(project: dict, backup_dir: Path) -> None:
+    """Install a Finder-openable .mica symlink to the canonical private layout."""
+    target = Path(project["app_path"])
+    layout = Path(project["layout_path"]).resolve(strict=True)
+    if target.parent.resolve() != target.parent or not target.name.endswith(".mica"):
+        raise RuntimeError(f"invalid Mica layout launcher path: {target}")
+    if not layout.is_file() or layout.suffix.lower() != ".mica":
+        raise RuntimeError(f"missing Mica layout file: {layout}")
+
+    legacy_path = Path(project["legacy_app_path"]) if project.get("legacy_app_path") else None
+    legacy_info = {}
+    if legacy_path and os.path.lexists(legacy_path):
+        if legacy_path.is_symlink() or not legacy_path.is_dir():
+            raise RuntimeError(f"refusing to migrate unexpected legacy launcher: {legacy_path}")
+        info_path = legacy_path / "Contents/Info.plist"
+        legacy_info = read_plist(info_path) if info_path.is_file() else {}
+        if legacy_info.get("MicaProjectLayoutName") != project["layout_name"]:
+            raise RuntimeError(f"legacy app does not match its Mica layout: {legacy_path}")
+
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    legacy_backup = backup_dir / legacy_path.name if legacy_path else None
+    if legacy_backup and os.path.lexists(legacy_path) and (legacy_backup.exists() or legacy_backup.is_symlink()):
+        raise RuntimeError(f"refusing to overwrite existing launcher backup: {legacy_backup}")
+
+    if target.is_symlink() and target.resolve() == layout:
+        pass
+    elif os.path.lexists(target):
+        backup = backup_dir / target.name
+        if backup.exists() or backup.is_symlink():
+            raise RuntimeError(f"refusing to overwrite existing launcher backup: {backup}")
+        os.replace(target, backup)
+
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    if os.path.lexists(temporary):
+        raise RuntimeError(f"temporary launcher path already exists: {temporary}")
+    os.symlink(layout, temporary)
+    try:
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+    if legacy_path and os.path.lexists(legacy_path):
+        assert legacy_backup is not None
+        shutil.copytree(legacy_path, legacy_backup, symlinks=True)
+        shutil.rmtree(legacy_path)
 
 
 def normalized_identifier(project: dict, used: set[str]) -> str:
@@ -322,6 +419,26 @@ def register_app_bundle(path: Path) -> None:
             print(f"warning: Launch Services could not refresh {path}: {result.stderr.strip()}", file=sys.stderr)
 
 
+def validate_layout_migrations(projects: list[dict]) -> None:
+    """Check every legacy launcher before the installer changes any Desktop entries."""
+    for project in projects:
+        target = Path(project["app_path"])
+        if target.name != project["app_name"] or not target.name.endswith(".mica"):
+            raise RuntimeError(f"invalid Mica layout launcher path: {target}")
+        if target.is_symlink() and target.resolve() == Path(project["layout_path"]).resolve():
+            pass
+        legacy_raw = project.get("legacy_app_path")
+        if not legacy_raw or not os.path.lexists(legacy_raw):
+            continue
+        legacy = Path(legacy_raw)
+        if legacy.is_symlink() or not legacy.is_dir():
+            raise RuntimeError(f"refusing to migrate unexpected legacy launcher: {legacy}")
+        info_path = legacy / "Contents/Info.plist"
+        info = read_plist(info_path) if info_path.is_file() else {}
+        if info.get("MicaProjectLayoutName") != project["layout_name"]:
+            raise RuntimeError(f"legacy app does not match its Mica layout: {legacy}")
+
+
 def create_instance_record(name: str, cwd: Path, command: str, layout_dir: Path, output_dir: Path) -> dict:
     display_name = name.strip()
     if not display_name or any(ord(char) < 0x20 or ord(char) == 0x7f or char in "/\\" for char in display_name):
@@ -342,13 +459,10 @@ def create_instance_record(name: str, cwd: Path, command: str, layout_dir: Path,
     layout_dir = layout_dir.resolve()
     output_dir = output_dir.resolve()
     layout_path = layout_dir / f"{slug}.mica"
-    app_name = f"{slug}.app"
+    app_name = f"{slug}.mica"
     app_path = output_dir / app_name
-    if app_path.is_symlink() or os.path.lexists(app_path):
-        raise FileExistsError(f"Mica app already exists or is a symlink: {app_path}")
-    resolved_app_path = app_path.resolve()
-    if resolved_app_path.parent != output_dir:
-        raise ValueError(f"project app path escapes output directory: {app_path}")
+    if os.path.lexists(app_path):
+        raise FileExistsError(f"Mica layout launcher already exists: {app_path}")
     if layout_path.exists():
         raise FileExistsError(f"Mica layout already exists: {layout_path}")
 
@@ -368,7 +482,7 @@ def create_instance_record(name: str, cwd: Path, command: str, layout_dir: Path,
         "bundle_identifier": None,
         "layout_name": slug,
         "layout_path": str(layout_path.resolve()),
-        "app_path": str(resolved_app_path),
+        "app_path": str(app_path),
         "launch_script": None,
     }
 
@@ -403,27 +517,25 @@ def create_instance_from_prompts(
         if not isinstance(existing, list) or any(not isinstance(item, dict) for item in existing):
             raise ValueError(f"invalid desktop app manifest: {manifest}")
     project = create_instance_record(name, project_dir, command, layouts, output)
-    bundle_installed = False
+    launcher_installed = False
     try:
         for item in existing:
-            if item.get("app_name") == project["app_name"] or item.get("layout_name") == project["layout_name"]:
+            old_name = item.get("app_name")
+            if (old_name == project["app_name"] or
+                    (isinstance(old_name, str) and Path(old_name).stem == project["layout_name"]) or
+                    item.get("layout_name") == project["layout_name"]):
                 raise FileExistsError(f"Mica instance already exists: {project['display_name']}")
-        used_ids = {
-            item["bundle_identifier"] for item in existing
-            if isinstance(item, dict) and isinstance(item.get("bundle_identifier"), str)
-        }
-        install_bundle(project, base_app, used_ids, Path(tempfile.gettempdir()), project_icon_tool)
-        bundle_installed = True
+        install_layout_launcher(project, Path(tempfile.gettempdir()))
+        launcher_installed = True
         all_projects = [*existing, project]
         write_json_atomic(manifest, all_projects)
     except Exception:
-        # Once the bundle is installed, keep its layout alongside it if the
-        # manifest write fails; that pair remains launchable and recoverable.
-        if not bundle_installed:
+        # Once installed, keep the layout and Desktop symlink together if the manifest write fails.
+        if not launcher_installed:
             Path(project["layout_path"]).unlink(missing_ok=True)
         raise
     if register:
-        register_app_bundle(Path(project["app_path"]))
+        register_app_bundle(base_app)
     return project
 
 
@@ -436,12 +548,12 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--backups", type=Path, default=DEFAULT_BACKUPS)
     parser.add_argument("--project-icon-tool", type=Path, default=DEFAULT_PROJECT_ICON_TOOL)
-    parser.add_argument("--new-instance", action="store_true", help="create a project layout and Desktop app interactively")
+    parser.add_argument("--new-instance", action="store_true", help="create a project layout and Desktop .mica launcher")
     parser.add_argument("--name", help="with --new-instance: project name (skips the prompts)")
     parser.add_argument("--folder", help="with --new-instance: project folder (skips the prompts)")
     parser.add_argument("--command", help="with --new-instance: optional startup command (skips the prompts)")
     parser.add_argument("--no-register", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--install", action="store_true", help="install lightweight launchers and migrate matched shell scripts")
+    parser.add_argument("--install", action="store_true", help="install .mica Desktop launchers and migrate matched shell scripts")
     args = parser.parse_args()
 
     try:
@@ -465,25 +577,19 @@ def main() -> int:
             return 0
         projects = load_projects(manifest, launchers, layouts, output)
         backup_dir = args.backups.expanduser().resolve() / datetime.now().strftime("%Y%m%d-%H%M%S")
-        used_ids: set[str] = set()
         if args.install:
+            validate_layout_migrations(projects)
             # Save the complete launch map first so a partial install can resume safely.
             write_json_atomic(manifest, projects)
+        if args.install:
+            register_app_bundle(base_app)
         for project in projects:
-            existing = Path(project["app_path"])
-            if existing.is_dir() and (existing / "Contents/Info.plist").is_file():
-                info = read_plist(existing / "Contents/Info.plist")
-                if info.get("MicaProjectLayoutName") == project["layout_name"]:
-                    project["bundle_identifier"] = project.get("bundle_identifier") or info.get("CFBundleIdentifier")
-                    project["launch_script"] = project.get("launch_script") or info.get("MicaProjectLaunchScript")
             if args.install:
-                install_bundle(project, base_app, used_ids, backup_dir, project_icon_tool)
-                register_app_bundle(Path(project["app_path"]))
+                install_layout_launcher(project, backup_dir)
                 migrate_launch_script(project, backup_dir, True, base_app)
-                print(f"installed {project['app_name']} [{project['bundle_identifier']}] -> {project['layout_name']}.mica")
+                print(f"installed {project['app_name']} -> {project['layout_name']}.mica")
             else:
-                identifier = project.get("bundle_identifier") or normalized_identifier(project, used_ids)
-                print(f"would install {project['app_name']} [{identifier}] -> {project['layout_name']}.mica")
+                print(f"would install {project['app_name']} -> {project['layout_name']}.mica")
                 migrate_launch_script(project, backup_dir, False, base_app)
         if args.install:
             write_json_atomic(manifest, projects)

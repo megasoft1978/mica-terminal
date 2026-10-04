@@ -480,6 +480,60 @@ static int MicaRunUISelfTest(void) {
             [MicaProjectMark(@"Fieldnote") isEqualToString:@"FI"];
         MicaUITestRecord(report, &allPassed, projectMarksAreDistinct,
                          @"project names produce compact marks for the Dock icon");
+        char projectLabelTemplate[] = "/tmp/mica-project-label-XXXXXX";
+        char *projectLabelPath = mkdtemp(projectLabelTemplate);
+        NSString *projectLabelRoot = projectLabelPath ? [NSString stringWithUTF8String:projectLabelPath] : nil;
+        NSString *projectRepo = [projectLabelRoot stringByAppendingPathComponent:@"Mica Repo"];
+        NSString *projectNested = [projectRepo stringByAppendingPathComponent:@"src/deep"];
+        NSString *plainWorkspace = [projectLabelRoot stringByAppendingPathComponent:@"Loose Workspace"];
+        BOOL projectLabelFixtures = projectLabelRoot.length &&
+            [NSFileManager.defaultManager createDirectoryAtPath:[projectRepo stringByAppendingPathComponent:@".git"]
+                withIntermediateDirectories:YES attributes:nil error:nil] &&
+            [NSFileManager.defaultManager createDirectoryAtPath:projectNested
+                withIntermediateDirectories:YES attributes:nil error:nil] &&
+            [NSFileManager.defaultManager createDirectoryAtPath:plainWorkspace
+                withIntermediateDirectories:YES attributes:nil error:nil];
+        MicaAppDelegate *projectLabelOwner = [MicaAppDelegate new];
+        MicaTab *projectLabelTab = [MicaTab new];
+        projectLabelTab.name = @"Codex";
+        projectLabelTab.cwd = projectNested;
+        projectLabelTab.projectRoot = projectRepo;
+        projectLabelOwner.projectName = nil;
+        BOOL gitRootLabel = projectLabelFixtures &&
+            [[projectLabelOwner projectDisplayNameForTab:projectLabelTab] isEqualToString:projectRepo.lastPathComponent] &&
+            [MicaGitRootForDirectory(projectNested) isEqualToString:projectRepo] &&
+            [[projectLabelOwner windowTitleForTab:projectLabelTab]
+                isEqualToString:[NSString stringWithFormat:@"%@ — Codex", projectRepo.lastPathComponent]];
+        projectLabelOwner.projectName = @"Configured Project";
+        BOOL configuredLabelWins = [[projectLabelOwner projectDisplayNameForTab:projectLabelTab]
+            isEqualToString:@"Configured Project"];
+        projectLabelOwner.projectName = nil;
+        projectLabelTab.remoteProfile = @{ @"name": @"M1 Mac Mini" };
+        BOOL sshLabel = [[projectLabelOwner projectDisplayNameForTab:projectLabelTab] isEqualToString:@"M1 Mac Mini"];
+        projectLabelTab.remoteProfile = nil;
+        projectLabelTab.projectRoot = nil;
+        projectLabelTab.cwd = plainWorkspace;
+        BOOL folderLabel = [[projectLabelOwner projectDisplayNameForTab:projectLabelTab]
+            isEqualToString:plainWorkspace.lastPathComponent];
+        projectLabelTab.cwd = NSHomeDirectory();
+        BOOL homeStaysGeneric = [projectLabelOwner projectDisplayNameForTab:projectLabelTab] == nil;
+        projectLabelTab.cwd = projectNested;
+        projectLabelTab.projectRoot = projectRepo;
+        projectLabelOwner.tabs = [NSMutableArray arrayWithObject:projectLabelTab];
+        projectLabelOwner.activeIndex = 0;
+        MicaTerminalView *projectLabelView = [[MicaTerminalView alloc] initWithFrame:NSMakeRect(0, 0, 900, 320)];
+        projectLabelView.owner = projectLabelOwner;
+        NSRect projectBadgeRect = [projectLabelView projectBadgeRect];
+        NSString *projectBadgeTip = [projectLabelView view:projectLabelView stringForToolTip:0
+            point:NSMakePoint(NSMidX(projectBadgeRect), NSMidY(projectBadgeRect)) userData:NULL];
+        BOOL badgeIsVisibleAndReadable = projectBadgeRect.size.width >= 100 &&
+            [projectBadgeTip isEqualToString:projectRepo.lastPathComponent];
+        MicaUITestRecord(report, &allPassed,
+            projectLabelFixtures && gitRootLabel && configuredLabelWins && sshLabel && folderLabel &&
+            homeStaysGeneric && badgeIsVisibleAndReadable,
+            [NSString stringWithFormat:@"project identity labels prefer settings, then Git root or folder, show an SSH name, and expose the full badge tooltip (git=%d configured=%d ssh=%d folder=%d home=%d badge=%@)",
+                gitRootLabel, configuredLabelWins, sshLabel, folderLabel, homeStaysGeneric, projectBadgeTip ?: @"(missing)"]);
+        if (projectLabelRoot) [NSFileManager.defaultManager removeItemAtPath:projectLabelRoot error:nil];
         BOOL hyperlinkSchemesAreRestricted = MicaSafeHyperlinkURL(@"https://example.test/path") != nil &&
             MicaSafeHyperlinkURL(@"http://example.test") != nil &&
             MicaSafeHyperlinkURL(@"javascript:alert(1)") == nil &&
@@ -1102,6 +1156,33 @@ static int MicaRunUISelfTest(void) {
             [NSString stringWithFormat:@"toggle dictation starts on first Option tap, stops on the next, and Esc cancels (start=%d stop=%d cancel=%d)",
                 toggleStarted, toggleStopped, toggleCancelled]);
         voiceDelegate.dictationToggleMode = NO;
+        NSRect micButton = [voiceDelegate.terminalView dictationButtonRect];
+        NSString *micStartTip = [voiceDelegate.terminalView view:voiceDelegate.terminalView
+            stringForToolTip:0 point:NSMakePoint(NSMidX(micButton), NSMidY(micButton)) userData:NULL];
+        MicaUITestSendMouse(voiceDelegate, NSEventTypeLeftMouseDown,
+            NSMakePoint(NSMidX(micButton), NSMidY(micButton)), 0);
+        BOOL mouseDictationStarted = pushToTalkProbe.pushToTalkStarts == 4 &&
+            pushToTalkProbe.state == MicaVoiceControllerStateListening;
+        MicaUITestSendMouse(voiceDelegate, NSEventTypeLeftMouseDown,
+            NSMakePoint(NSMidX(micButton), NSMidY(micButton)), 0);
+        BOOL mouseDictationFinished = pushToTalkProbe.pushToTalkFinishes == 3 &&
+            pushToTalkProbe.state == MicaVoiceControllerStateIdle;
+        voiceDelegate.dictationToggleMode = YES;
+        MicaUITestSendMouse(voiceDelegate, NSEventTypeLeftMouseDown,
+            NSMakePoint(NSMidX(micButton), NSMidY(micButton)), 0);
+        BOOL mouseDictationToggleModeStarted = pushToTalkProbe.pushToTalkStarts == 5 &&
+            pushToTalkProbe.state == MicaVoiceControllerStateListening;
+        MicaUITestSendMouse(voiceDelegate, NSEventTypeLeftMouseDown,
+            NSMakePoint(NSMidX(micButton), NSMidY(micButton)), 0);
+        BOOL mouseDictationToggleModeFinished = pushToTalkProbe.pushToTalkFinishes == 4 &&
+            pushToTalkProbe.state == MicaVoiceControllerStateIdle;
+        voiceDelegate.dictationToggleMode = NO;
+        MicaUITestRecord(report, &allPassed, mouseDictationStarted && mouseDictationFinished &&
+            mouseDictationToggleModeStarted && mouseDictationToggleModeFinished &&
+            [micStartTip isEqualToString:@"Start speech to text"],
+            [NSString stringWithFormat:@"status-bar microphone click starts and finishes dictation in Hold and Toggle settings and exposes a tooltip (hold=%d/%d toggle=%d/%d tooltip=%@)",
+                mouseDictationStarted, mouseDictationFinished, mouseDictationToggleModeStarted,
+                mouseDictationToggleModeFinished, micStartTip]);
 
         id savedVocabularyPreference = [[voiceDelegate micaDefaults] objectForKey:@"MicaDictationVocabularyEnabled"];
         [[voiceDelegate micaDefaults] setBool:YES forKey:@"MicaDictationVocabularyEnabled"];
@@ -1341,6 +1422,35 @@ static int MicaRunUISelfTest(void) {
                 mica_session_current_command(voiceTargetTab.session),
                 (unsigned long long)mica_session_command_completion_count(voiceTargetTab.session),
                 MicaUITestScreenTail(voiceTargetTab.session)]);
+
+        NSString *readyBuffer = voiceTestDirectoryReady
+            ? MicaUITestCaptureZLEBuffer(voiceTestDirectory, voiceTargetTab.session) : nil;
+        [NSFileManager.defaultManager removeItemAtPath:targetExecutionPath error:nil];
+        voiceTargetTab.agentKind = @"codex";
+        voiceTargetTab.receivedAgentHook = YES;
+        voiceTargetTab.agentState = @"done";
+        voiceDelegate.voiceTargetTab = voiceTargetTab;
+        BOOL agentPromptReady = MicaAgentPromptReadyForDictation(voiceTargetTab);
+        voiceTargetTab.agentState = @"waitingPermission";
+        BOOL permissionPromptDoesNotAutoSubmit = !MicaAgentPromptReadyForDictation(voiceTargetTab);
+        voiceTargetTab.agentState = @"done";
+        if (voiceTestDirectoryReady && [readyBuffer isEqualToString:@"" ] && agentPromptReady)
+            [voiceDelegate voiceController:rawVoiceController didFinishTranscript:@"mica_test_raw_transcript"];
+        for (int attempt = 0; voiceTestDirectoryReady && attempt < 300 &&
+             ![NSFileManager.defaultManager fileExistsAtPath:targetExecutionPath]; attempt++) {
+            mica_session_poll(voiceTargetTab.session, 0);
+            MicaUITestRunLoopFor(0.01);
+        }
+        BOOL submittedAtAgentPrompt = voiceTestDirectoryReady && agentPromptReady &&
+            permissionPromptDoesNotAutoSubmit &&
+            [NSFileManager.defaultManager fileExistsAtPath:targetExecutionPath];
+        MicaUITestRecord(report, &allPassed, submittedAtAgentPrompt,
+            [NSString stringWithFormat:@"dictation submits with Return at a ready Codex prompt and leaves approval prompts untouched (ready=%d permission-safe=%d submitted=%d buffer=%@)",
+                agentPromptReady, permissionPromptDoesNotAutoSubmit,
+                [NSFileManager.defaultManager fileExistsAtPath:targetExecutionPath], readyBuffer ?: @"<missing>"]);
+        voiceTargetTab.agentKind = nil;
+        voiceTargetTab.receivedAgentHook = NO;
+        voiceTargetTab.agentState = nil;
 
         MicaVoiceController *undeliveredProbe = rawHelperReady
             ? [[MicaVoiceController alloc] initWithHelperURL:[NSURL fileURLWithPath:
@@ -1776,6 +1886,27 @@ static int MicaRunUISelfTest(void) {
             [agentDetail containsString:@"Explored src directory"],
             [NSString stringWithFormat:@"agent progress reads the active phase and keeps a recent action for the tooltip (phase=%@ detail=%@)",
                 agentActivity, agentDetail]);
+        NSString *savedAgentTitleFixtureKind = fixtureTab.agentKind;
+        NSString *savedAgentTitleFixtureState = fixtureTab.agentState;
+        BOOL savedAgentTitleReceivedHook = fixtureTab.receivedAgentHook;
+        fixtureTab.agentKind = @"claude";
+        fixtureTab.receivedAgentHook = YES;
+        fixtureTab.agentState = @"working";
+        NSString *workingTabTitle = [delegate.terminalView displayLabelForTab:fixtureTab];
+        fixtureTab.agentState = @"waitingInput";
+        NSString *waitingTabTitle = [delegate.terminalView displayLabelForTab:fixtureTab];
+        NSRect agentTabRect = [delegate.terminalView tabRectAtIndex:(NSUInteger)[delegate.tabs indexOfObjectIdenticalTo:fixtureTab]];
+        NSString *agentTabTip = [delegate.terminalView view:delegate.terminalView
+            stringForToolTip:0 point:NSMakePoint(NSMidX(agentTabRect), NSMidY(agentTabRect)) userData:NULL];
+        BOOL agentTabTitlesShowState = [workingTabTitle isEqualToString:@"Claude · Work"] &&
+            [waitingTabTitle isEqualToString:@"Claude · Input"] &&
+            [agentTabTip containsString:@"Claude Code status: Needs input"];
+        fixtureTab.agentKind = savedAgentTitleFixtureKind;
+        fixtureTab.agentState = savedAgentTitleFixtureState;
+        fixtureTab.receivedAgentHook = savedAgentTitleReceivedHook;
+        MicaUITestRecord(report, &allPassed, agentTabTitlesShowState,
+            [NSString stringWithFormat:@"agent tab titles show compact Claude state and the tooltip gives the full state (work=%@ input=%@ tip=%@)",
+                workingTabTitle, waitingTabTitle, agentTabTip]);
         MicaSession *quietAgentProbe = mica_session_create("/tmp",
             "printf 'Claude Code ready\\n'; sleep 2", 6, 80);
         BOOL quietAgentPromptFound = NO;
@@ -2977,7 +3108,7 @@ static int MicaRunUISelfTest(void) {
             [resumeDefaults setBool:YES forKey:@"MicaResumeAgentsOnRestore"];
             MicaAppDelegate *resumeOn = [MicaAppDelegate new]; resumeOn.tabs = [NSMutableArray array]; resumeOn.activeIndex = 0;
             [resumeOn loadLaunchConfigurationFromArguments:@[@"mica"] bundleInfo:@{}];
-            for (int attempt = 0; attempt < 500 && ![NSFileManager.defaultManager fileExistsAtPath:capture]; attempt++) {
+            for (int attempt = 0; attempt < 1500 && ![NSFileManager.defaultManager fileExistsAtPath:capture]; attempt++) {
                 [resumeOn pollSessions:nil]; usleep(10000);
             }
             NSString *capturedArgs = [NSString stringWithContentsOfFile:capture encoding:NSUTF8StringEncoding error:nil];
@@ -3120,12 +3251,17 @@ static int MicaRunUISelfTest(void) {
             [@"x" writeToFile:outside atomically:YES encoding:NSUTF8StringEncoding error:nil];
             NSString *escapeLink = [layoutsRoot stringByAppendingPathComponent:@"escape.mica"];
             [fileManager createSymbolicLinkAtPath:escapeLink withDestinationPath:outside error:nil];
+            NSString *desktopLink = [layoutsRoot stringByAppendingPathComponent:@"Desktop Project.mica"];
+            [fileManager createSymbolicLinkAtPath:desktopLink withDestinationPath:goodLayout error:nil];
             NSString *(^enc)(NSString *) = ^NSString *(NSString *v) {
                 return [v stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet]; };
             NSArray<NSString *> *good = MicaArgumentsForOpenURL(
                 [NSURL URLWithString:[NSString stringWithFormat:@"mica://open?layout=%@&name=%@", enc(goodLayout), enc(@"Alpha Project")]], layoutsRoot);
             BOOL urlsValidated = good.count == 5 && [good[1] isEqualToString:@"--layout"] && [good[3] isEqualToString:@"--project-name"] &&
                 [good[4] isEqualToString:@"Alpha Project"] &&
+                [MicaArgumentsForLayoutFileURL([NSURL fileURLWithPath:desktopLink], layoutsRoot)[2] isEqualToString:goodLayout] &&
+                MicaArgumentsForLayoutFileURL([NSURL fileURLWithPath:outside], layoutsRoot) == nil &&
+                MicaArgumentsForLayoutFileURL([NSURL URLWithString:@"https://example.test/a.mica"], layoutsRoot) == nil &&
                 MicaArgumentsForOpenURL([NSURL URLWithString:[NSString stringWithFormat:@"mica://open?layout=%@", enc(outside)]], layoutsRoot) == nil &&
                 MicaArgumentsForOpenURL([NSURL URLWithString:[NSString stringWithFormat:@"mica://open?layout=%@", enc(escapeLink)]], layoutsRoot) == nil &&
                 MicaArgumentsForOpenURL([NSURL URLWithString:[NSString stringWithFormat:@"mica://open?layout=%@/../x.mica", enc(layoutsRoot)]], layoutsRoot) == nil &&
@@ -3133,7 +3269,7 @@ static int MicaRunUISelfTest(void) {
                 MicaArgumentsForOpenURL([NSURL URLWithString:@"mica://run?layout=/etc/passwd"], layoutsRoot) == nil &&
                 MicaArgumentsForOpenURL([NSURL URLWithString:@"mica://open"], layoutsRoot) == nil;
             MicaUITestRecord(report, &allPassed, urlsValidated,
-                @"mica:// URLs open only layouts from the layouts folder, and refuse other paths, symlinks and schemes");
+                @"Mica file opens and mica:// URLs accept trusted layouts, including Desktop symlinks, and reject outside paths");
 
             // Several project windows in one process: separate controllers, one menu bar that follows the key window,
             // duplicates focus the existing window, and closing one leaves the others running.
@@ -3167,6 +3303,19 @@ static int MicaRunUISelfTest(void) {
             BOOL menuAtA = newTabItem.target == windowA;
             [windowB takeMenuOwnership];
             BOOL menuAtB = newTabItem.target == windowB;
+            NSMenu *projectDockMenu = [windowA applicationDockMenu:NSApp];
+            BOOL dockMenuListsBothProjects = projectDockMenu.itemArray.count == 2;
+            BOOL dockMenuTargetsCorrectWindows = NO, dockMenuTitlesIdentifyProjects = NO;
+            for (NSMenuItem *item in projectDockMenu.itemArray) {
+                if (item.target == windowA && item.action == @selector(showDockWindowFromMenu:))
+                    dockMenuTargetsCorrectWindows = [item.title isEqualToString:[windowA windowTitleForTab:windowA.activeTab]];
+                if (item.target == windowB && item.action == @selector(showDockWindowFromMenu:))
+                    dockMenuTitlesIdentifyProjects = [item.title isEqualToString:[windowB windowTitleForTab:windowB.activeTab]];
+            }
+            MicaUITestRecord(report, &allPassed,
+                dockMenuListsBothProjects && dockMenuTargetsCorrectWindows && dockMenuTitlesIdentifyProjects,
+                [NSString stringWithFormat:@"the Dock menu lists each project window with its project and tab title (count=%lu A=%d B=%d)",
+                    (unsigned long)projectDockMenu.itemArray.count, dockMenuTargetsCorrectWindows, dockMenuTitlesIdentifyProjects]);
             [windowA openProjectWindowWithArguments:@[@"mica", @"--layout", goodLayout]];   // already open: no third window
             BOOL noDuplicate = MicaControllers().count == 2;
             [windowB addTabWithName:@"Click Target" cwd:NSTemporaryDirectory() command:nil prefilled:NO];
@@ -3330,6 +3479,8 @@ static int MicaRunUISelfTest(void) {
                     !NSIntersectsRect(layout.contextRect, layout.hintsRect) &&
                     !NSIntersectsRect(layout.contextRect, layout.memoryRect) &&
                     !NSIntersectsRect(layout.hintsRect, layout.memoryRect) &&
+                    !NSIntersectsRect(layout.dictationRect, layout.memoryRect) &&
+                    !NSIntersectsRect(layout.dictationRect, layout.hintsRect) &&
                     layout.contextRect.size.width >= minFolderContext - 18;
             }
             MicaUITestRecord(report, &allPassed, narrowRectsDoNotOverlap,
@@ -3342,11 +3493,24 @@ static int MicaRunUISelfTest(void) {
             [delegate.terminalView setNeedsDisplay:YES]; [delegate.terminalView displayIfNeeded];
             NSRect transcriptRect = delegate.terminalView.dictationWordsTextRect;
             NSRect statusRect = NSMakeRect(0, 0, delegate.terminalView.bounds.size.width, kStatusHeight);
+            NSDictionary *previewTranscriptAttrs = @{
+                NSFontAttributeName: [NSFont systemFontOfSize:13 weight:NSFontWeightMedium],
+                NSForegroundColorAttributeName: NSColor.labelColor
+            };
+            NSString *fittedLongTranscript = MicaLastWordsFittingSize(longLiveTranscript,
+                transcriptRect.size, previewTranscriptAttrs);
             MicaUITestRecord(report, &allPassed,
                 transcriptRect.size.height > statusRect.size.height &&
                     !NSIntersectsRect(transcriptRect, statusRect) &&
-                    [MicaLastWords(longLiveTranscript, 20) containsString:@"phrase"],
+                    [fittedLongTranscript hasSuffix:@"phrase"],
                 @"a long live transcript wraps across the reserved preview while the status strip stays separate");
+            NSMutableArray<NSString *> *thirtyShortWords = [NSMutableArray array];
+            for (NSUInteger wordIndex = 0; wordIndex < 30; wordIndex++) [thirtyShortWords addObject:@"ok"];
+            NSString *moreThanTwentyWords = MicaLastWordsFittingSize(
+                [thirtyShortWords componentsJoinedByString:@" "], NSMakeSize(1500, 50), previewTranscriptAttrs);
+            MicaUITestRecord(report, &allPassed,
+                [moreThanTwentyWords componentsSeparatedByString:@" "].count == 30,
+                @"dictation preview shows all complete words that fit, without a fixed 20-word cap");
             BOOL dictationRectsSafe = YES;
             NSArray<NSNumber *> *dictationWidths = @[@480, @600, @800, @1600];
             NSArray<NSNumber *> *dictationStatesForLayout = @[@(MicaVoiceControllerStatePreparing),
@@ -3376,7 +3540,8 @@ static int MicaRunUISelfTest(void) {
                     NSRect labelRect = dictationLayoutView.dictationLabelTextRect;
                     NSRect wordsRect = dictationLayoutView.dictationWordsTextRect;
                     NSRect hintRect = dictationLayoutView.dictationHintTextRect;
-                    NSString *visibleText = MicaLastWords(sampleWords, 20);
+                    NSString *visibleText = MicaLastWordsFittingSize(sampleWords,
+                        wordsRect.size, previewTranscriptAttrs);
                     NSRange lastSpace = [sampleWords rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet
                         options:NSBackwardsSearch];
                     NSString *lastWord = lastSpace.location == NSNotFound ? sampleWords :
@@ -3392,7 +3557,7 @@ static int MicaRunUISelfTest(void) {
             delegate.dictationToggleMode = NO;
             [delegate setLightTheme:NO];
             MicaUITestRecord(report, &allPassed, dictationRectsSafe,
-                @"dictation preview wraps up to 20 recent words across separate heading, transcript and hint rows at 480/600/800/1600 px in both themes");
+                @"dictation preview wraps complete recent words to the available width at 480/600/800/1600 px in both themes");
             [previewController setValue:@(MicaVoiceControllerStateFailed) forKey:@"state"];
             [previewController setValue:@"I didn’t catch any speech. Hold left Option and speak a little longer."
                                   forKey:@"statusText"];
@@ -3413,6 +3578,10 @@ static int MicaRunUISelfTest(void) {
                     NSMaxX(micSettingsButton) <= delegate.terminalView.bounds.size.width &&
                     [MicaMicrophoneSettingsURL().absoluteString containsString:@"Privacy_Microphone"],
                 @"a denied microphone shows a visible System Settings action with the documented privacy URL");
+            NSString *smokeProjectName = delegate.projectName;
+            delegate.projectName = @"Mica Demo";
+            [delegate.terminalView setNeedsDisplay:YES];
+            [delegate.terminalView displayIfNeeded];
             NSBitmapImageRep *bitmap = [delegate.terminalView bitmapImageRepForCachingDisplayInRect:delegate.terminalView.bounds];
             if (bitmap) [delegate.terminalView cacheDisplayInRect:delegate.terminalView.bounds toBitmapImageRep:bitmap];
             BOOL bitmapReady = bitmap != nil;
@@ -3421,6 +3590,10 @@ static int MicaRunUISelfTest(void) {
             BOOL imageSaved = png && [png writeToFile:imagePath atomically:YES];
             MicaUITestRecord(report, &allPassed, bitmapReady && imageSaved,
                              [NSString stringWithFormat:@"offscreen AppKit render saved to %@", imagePath]);
+            delegate.projectName = smokeProjectName;
+            [delegate updateWindowTitle];
+            [delegate.terminalView setNeedsDisplay:YES];
+            [delegate.terminalView displayIfNeeded];
 
             NSString *lightPath = NSProcessInfo.processInfo.environment[@"MICA_UI_SMOKE_LIGHT_IMAGE"];
             if (lightPath.length) {

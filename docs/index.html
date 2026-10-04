@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#f3f5f8" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0b0f14" media="(prefers-color-scheme: dark)">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; media-src 'self'; font-src 'self'; style-src 'sha256-bD3HGNgGvd7mwf4jBoC4XPYKhzTev381f9ZtyZGX/pk='; script-src 'sha256-QPO5Gm5I1ke72haQy1ZC59+ZJrentkJwf+5o0zdaik4=' 'sha256-obQLhE2id96/7pWU+OVxA2Il4k1t4IAuXtnh2TzQdyE='; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; media-src 'self'; font-src 'self'; style-src 'sha256-bD3HGNgGvd7mwf4jBoC4XPYKhzTev381f9ZtyZGX/pk='; script-src 'sha256-iUYeWoXRRX+DrIVa4NcILSYwuvb18vq7YMzO3Dr2gYQ=' 'sha256-obQLhE2id96/7pWU+OVxA2Il4k1t4IAuXtnh2TzQdyE='; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
   <title>Mica — terminal, voice typing and focus timer in one light Mac app</title>
   <meta name="description" content="Mica puts a terminal, saved SSH profiles, on-device voice typing and a focus timer in one native Mac app that idles around 55–60 MB.">
@@ -19,9 +19,9 @@
   <meta property="og:description" content="One native Mac app for your terminal, saved Mac and Linux SSH profiles, on-device dictation and a focus timer. About 55–60 MB idle.">
   <meta property="og:url" content="https://megasoft1978.github.io/mica-terminal/">
   <meta property="og:image" content="https://megasoft1978.github.io/mica-terminal/assets/mica-dark.png">
-  <meta property="og:image:alt" content="Mica window with project tabs, terminal output and a live memory readout.">
+  <meta property="og:image:alt" content="Mica window with the active project name in its top-right badge, project tabs, terminal output and a live memory readout.">
   <meta name="twitter:card" content="summary_large_image">
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Mica","applicationCategory":"DeveloperApplication","operatingSystem":"macOS 14 or later","softwareVersion":"0.1.0-alpha.14","license":"https://opensource.org/licenses/MIT","isAccessibleForFree":true,"downloadUrl":"https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.14/Mica.zip","fileSize":"10.6MB","description":"A native Mac terminal with saved SSH profiles, on-device dictation, command context and a focus timer that idles around 55-60 MB.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"sameAs":["https://github.com/megasoft1978/mica-terminal"]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Mica","applicationCategory":"DeveloperApplication","operatingSystem":"macOS 14 or later","softwareVersion":"0.1.0-alpha.16","license":"https://opensource.org/licenses/MIT","isAccessibleForFree":true,"downloadUrl":"https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/Mica.zip","fileSize":"10.6MB","description":"A native Mac terminal with saved SSH profiles, on-device dictation, project identity, command context and a focus timer that idles around 55-60 MB.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"sameAs":["https://github.com/megasoft1978/mica-terminal"]}</script>
   <style>
     @font-face { font-family: "JetBrains Mono"; src: url(fonts/JetBrainsMono-Regular.woff2) format("woff2"); font-weight: 400; font-display: swap; }
     @font-face { font-family: "JetBrains Mono"; src: url(fonts/JetBrainsMono-Bold.woff2) format("woff2"); font-weight: 700; font-display: swap; }
@@ -181,7 +181,7 @@
         <a class="hide-small" href="#compare">Compare</a>
         <a class="hide-small" href="#install">Install</a>
         <a href="https://github.com/megasoft1978/mica-terminal">GitHub</a>
-        <a class="dl" href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.14/Mica.zip">Download</a>
+        <a class="dl" href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/Mica.zip">Download</a>
       </nav>
     </header>
   </div>
@@ -191,10 +191,10 @@
       <h1>Three tools in one light Mac app.</h1>
       <p class="lede">Mica is a terminal, on-device voice typing and a focus timer built into one native app that idles around 55–60 MB. Every project gets its own window, and coding agents run right inside it.</p>
       <div class="actions">
-        <a class="button primary" href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.14/Mica.zip">Download for Mac</a>
+        <a class="button primary" href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/Mica.zip">Download for Mac</a>
         <a class="button secondary" href="https://github.com/megasoft1978/mica-terminal">View source on GitHub</a>
       </div>
-      <p class="fine">Version 0.1.0 alpha 14 · 10.6 MB · Apple silicon, macOS 14 or later · Free and open source · <a href="#install">Install notes</a></p>
+      <p class="fine">Version 0.1.0 alpha 16 · 10.6 MB · Apple silicon, macOS 14 or later · Free and open source · <a href="#install">Install notes</a></p>
 
       <div class="stage">
         <div class="sheet"></div><div class="sheet two"></div><div class="sheet three"></div>
@@ -208,14 +208,14 @@
         <button type="button" id="theme-dark" aria-pressed="true">Dark</button>
         <button type="button" id="theme-light" aria-pressed="false">Light</button>
       </div>
-      <p class="caption">These real Mica views show prompt navigation in dark appearance and a fake corrected transcript in light appearance. No microphone is used. Switch themes any time with <kbd>⌥⌘L</kbd>.</p>
+      <p class="caption">These real Mica views show the active project name in the top-right badge, prompt navigation in dark appearance, and a fake corrected transcript in light appearance. No microphone is used. Switch themes any time with <kbd>⌥⌘L</kbd>.</p>
     </div>
 
     <div class="wrap" id="demo">
       <div class="shot"><video controls muted loop playsinline preload="metadata" poster="assets/mica-demo-poster.png" width="1280" height="564" aria-describedby="demo-caption"><source src="assets/mica-demo.mp4" type="video/mp4">Your browser cannot play this video. Read the demo transcript below or download the MP4.</video></div>
-      <p class="caption" id="demo-caption">Fresh capture of the current native Mica view: local commands, Unicode output, prompt navigation, vocabulary correction from a fake transcript (no microphone), dark and light themes, and the saved SSH profile manager. The Mac Studio and Linux VPN entries are fictional; no SSH connection is made and no coding agent is invoked. The memory readout belongs to the capture process. The focus timer appears separately in the macOS menu bar.</p>
+      <p class="caption" id="demo-caption">Fresh capture of the current native Mica view, with the project name in the window badge: local commands, Unicode output, prompt navigation, vocabulary correction from a fake transcript (no microphone), dark and light themes, and the saved SSH profile manager. In the running app, right-click the single Dock icon to choose a named project window. The Mac Studio and Linux VPN entries are fictional; no SSH connection is made and no coding agent is invoked. The memory readout belongs to the capture process. The focus timer appears separately in the macOS menu bar.</p>
       <details class="demo-transcript"><summary>Demo transcript and download</summary>
-        <p>The Mica Demo window has Shell, Preview and Agent tabs. Scripted typing runs local commands that print a greeting with CJK text, an emoji and an accent, then <code>seq 1 60</code> prints numbered lines. The demo shows scrollback search, Quick Select, Command Palette, prompt navigation, vocabulary correction and saved SSH profiles. The SSH destinations and transcript are fictional; there is no microphone use, network access or coding agent.</p>
+        <p>The Mica Demo window has Shell, Preview and Agent tabs, and keeps “Mica Demo” visible in its top-right project badge. Scripted typing runs local commands that print a greeting with CJK text, an emoji and an accent, then <code>seq 1 60</code> prints numbered lines. The demo shows scrollback search, Quick Select, Command Palette, prompt navigation, vocabulary correction and saved SSH profiles. In the app, the Dock menu lists open project windows by project and tab name. The SSH destinations and transcript are fictional; there is no microphone use, network access or coding agent.</p>
         <p><a href="assets/mica-demo.mp4" download>Download the demo MP4</a>. The video is silent and starts only when you press Play.</p>
       </details>
     </div>
@@ -263,10 +263,10 @@
           <h2>Download, drag, open.</h2>
           <ol class="steps">
             <li>Download <b>Mica.zip</b> (10.6 MB; Apple silicon, macOS 14 or later).</li>
-            <li>Extract the ZIP, move Mica to Applications and open it. Check the release page for this build’s signing status and checksums.</li>
-            <li>Hold left <kbd>⌥</kbd> to dictate. The 630 MB speech model downloads in the background on first launch.</li>
+            <li>Extract the ZIP, move Mica to Applications and open it. This build is Developer ID signed and notarized; verify it with the <a href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/SHA256SUMS.txt">published checksum manifest</a>.</li>
+            <li>Hold left <kbd>⌥</kbd> or click the microphone in the status bar to dictate. The 630 MB speech model downloads in the background on first launch.</li>
           </ol>
-          <p>Alpha 14 is Developer ID signed and notarized. Verify the download against the <a href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.14/SHA256SUMS.txt">published SHA-256 manifest</a>.</p>
+          <p>Alpha 16 is Developer ID signed and notarized. Verify the download with the <a href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/SHA256SUMS.txt">published SHA-256 manifest</a>.</p>
           <p>Prefer to build it yourself? You need the Xcode command line tools; the terminal library ships in the repository and the first build also fetches the speech package.</p>
         </div>
         <div class="code" role="group" aria-label="Build instructions"><button class="copy" type="button" data-copy="git clone https://github.com/megasoft1978/mica-terminal.git&#10;cd mica-terminal&#10;make app &amp;&amp; open build/Mica.app">Copy</button>git clone https://github.com/megasoft1978/mica-terminal.git
@@ -279,7 +279,7 @@ make app &amp;&amp; open build/Mica.app</div>
       <div class="row">
         <div>
           <h3>One window for each project.</h3>
-          <p>Name a project, give it folders and startup tabs, and open it again from a launcher on your Desktop. The Dock icon shows the mark of the project in front. The status bar shows the git branch, and a worktree tab gives each agent its own checkout.</p>
+          <p>Name a project, give it folders and startup tabs, and open it again from a launcher on your Desktop. The top-right badge and window title show the project name; hover the badge for the full name. Right-click Mica's single Dock icon to choose an open project window. Its mark follows the front project, while the menu shows each project's full name and active tab. The status bar shows the Git branch, and a worktree tab gives each agent its own checkout.</p>
         </div>
         <div class="shot"><img src="assets/crop-tabs-dark.png" width="1500" height="190" alt="A row of tabs named Shell, Preview, Codex, Claude Code and lazygit above terminal output." loading="lazy"></div>
       </div>
@@ -360,10 +360,10 @@ make app &amp;&amp; open build/Mica.app</div>
       <section class="faq">
         <h2>Privacy and common questions.</h2>
         <details><summary>What leaves my Mac?</summary><p>Mica processes dictation locally through Core ML and has no accounts, analytics or telemetry. Setting up dictation downloads the 630 MB speech model from Hugging Face. Programs you run in the terminal, including coding agents, follow their own network and privacy policies.</p></details>
-        <details><summary>Why does it ask for the microphone?</summary><p>Only when you first hold left <kbd>⌥</kbd> to dictate. Audio is processed in memory and is not saved. If access is denied, choose <strong>Open Microphone Settings</strong> in the dictation preview to open macOS Privacy &amp; Security settings.</p></details>
-        <details><summary>How do I verify a download?</summary><p>Alpha 14 is Developer ID signed and notarized. Download the <a href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.14/SHA256SUMS.txt">SHA-256 checksum manifest</a> beside the package and verify it with <code>shasum -a 256 -c SHA256SUMS.txt</code>.</p></details>
+        <details><summary>Why does it ask for the microphone?</summary><p>Only when you first hold left <kbd>⌥</kbd> or click the microphone control to dictate. Audio is processed in memory and is not saved. If access is denied, choose <strong>Open Microphone Settings</strong> in the dictation preview to open macOS Privacy &amp; Security settings.</p></details>
+        <details><summary>How do I verify a download?</summary><p>Alpha 16 is Developer ID signed and notarized. Download the <a href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/SHA256SUMS.txt">SHA-256 checksum manifest</a> beside the package and verify it with <code>shasum -a 256 -c SHA256SUMS.txt</code>.</p></details>
         <details><summary>What does it cost in memory?</summary><p>About 55–60 MB idle with three tabs, shown live in the status bar. A dictation helper adds about 35 MB only while you talk. Method and the cases where Mica does not win are in the <a href="https://github.com/megasoft1978/mica-terminal/blob/main/docs/MEMORY-BASELINE.md">measurements</a>.</p></details>
-        <details><summary>Can I run Codex, Claude Code or lazygit?</summary><p>Yes, they are ordinary programs in a zsh tab. Mica shows on the tab when an agent is working or waiting for you.</p></details>
+        <details><summary>Can I run Codex, Claude Code or lazygit?</summary><p>Yes, they are ordinary programs in a zsh tab. Mica shows a compact activity label in Claude Code and Codex tabs; hover for the full status and recent activity.</p></details>
         <details><summary>Can Mica connect to another Mac or Linux machine?</summary><p>Yes. Save a profile from Session → SSH Connections… and choose its remote folder. Mica uses macOS OpenSSH and your existing SSH configuration and VPN route. On the remote Mac, enable Remote Login. Starlink's default IPv4 uses CGNAT, so use a VPN/overlay or another reachable route for connections from outside your home network.</p></details>
         <details><summary>Does it work on Intel Macs?</summary><p>Not yet. This alpha is built and tested on Apple silicon with macOS 14 or later.</p></details>
       </section>
@@ -373,8 +373,8 @@ make app &amp;&amp; open build/Mica.app</div>
       <section>
         <h2>Try it on your next project.</h2>
         <div class="actions">
-          <a class="button primary" href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.14/Mica.zip">Download for Mac</a>
-          <a class="button secondary" href="https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.14">Release notes</a>
+          <a class="button primary" href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/Mica.zip">Download for Mac</a>
+          <a class="button secondary" href="https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.16">Release notes</a>
         </div>
       </section>
     </div>

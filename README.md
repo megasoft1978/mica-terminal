@@ -11,15 +11,15 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.14"><img src="https://img.shields.io/badge/release-0.1.0--alpha.14-blue" alt="Release 0.1.0 alpha 14"></a>
+  <a href="https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.16"><img src="https://img.shields.io/badge/release-0.1.0--alpha.16-blue" alt="Release 0.1.0 alpha 16"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B%20%C2%B7%20Apple%20silicon-555" alt="macOS 14 or later, Apple silicon">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
 </p>
 
 <p align="center">
   <a href="https://megasoft1978.github.io/mica-terminal/">Website</a> ·
-  <a href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.14/Mica.zip"><strong>Download</strong></a> ·
-  <a href="https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.14">Release notes</a> ·
+  <a href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/Mica.zip"><strong>Download</strong></a> ·
+  <a href="https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.16">Release notes</a> ·
   <a href="LICENSE">MIT license</a>
 </p>
 
@@ -36,7 +36,7 @@
 <summary>Watch the animated demo (30-second MP4)</summary>
 
 <p align="center">
-  <img src="docs/assets/mica-demo.gif" alt="Mica shows terminal features and saved SSH profiles for a Mac Studio and a Linux VPN host; sample destinations are fictional and no connection is made" width="900">
+  <img src="docs/assets/mica-demo.gif" alt="Mica shows a project name in the top-right window badge, terminal features, and saved SSH profiles for fictional hosts" width="900">
 </p>
 
 A fresh offscreen capture of the current native Mica view. It shows local commands, Quick Select, the Command Palette, prompt navigation, vocabulary correction from a fake transcript (no microphone), saved SSH profiles, and the compact menu bar focus timer with its controls. The Mac Studio and Linux VPN destinations are fictional; no SSH connection is made. It does not invoke a coding agent. The memory readout belongs to the capture process. Close this section to hide the animation, or [watch the MP4 with playback controls](https://megasoft1978.github.io/mica-terminal/#demo).
@@ -59,11 +59,11 @@ iTerm2 plus Wispr Flow is about 770 MB before you add a timer. Dictation adds a 
 
 ## What you get
 
-- **A window per project.** Named tabs, folders and project windows reopen after quitting, including when you launch another project; restored tabs start fresh shells. Project launchers keep their configured layouts. The Dock icon shows the mark of the project in front. The status bar shows the git branch, and **Session → New Worktree Tab…** gives an agent its own checkout.
-- **Agents stay ordinary programs.** Run Codex, Claude Code, `lazygit` or anything else in a normal `zsh` tab. Mica reads the visible screen for signs of work or a question and shows it on the tab. Background notifications distinguish waiting from finished work, make no sound and can be muted per tab.
+- **A window per project.** The project name stays visible in the top-right badge and window title; hover over the badge to read the full name. Right-click Mica's single Dock icon to choose an open project window, and its icon mark follows the front project. Named tabs and folders reopen after quitting, project launchers keep their layouts, the status bar shows the Git branch, and **Session → New Worktree Tab…** gives an agent its own checkout.
+- **Agents stay ordinary programs.** Run Codex, Claude Code, `lazygit` or anything else in a normal `zsh` tab. Mica shows a short agent name and activity in the tab title, with the full state and recent activity in its tooltip. Background notifications distinguish waiting from finished work, make no sound and can be muted per tab.
 - **Find actions and tabs quickly.** The Command Palette (<kbd>⌘⇧P</kbd>) searches menu actions and project tabs, showing each action's shortcut and each tab's folder, branch and activity. Quick Select (<kbd>⌘⇧U</kbd>) labels visible URLs, existing file paths and git hashes; type a label to copy, or hold <kbd>⌥</kbd> to open or reveal it. Per-tab agent notifications can be muted from the tab menu or palette.
 - **Navigate commands.** Mica marks OSC 133 prompts and failed commands. Use <kbd>⌘↑</kbd>/<kbd>⌘↓</kbd> at a prompt to move between landmarks, and Edit → Select Last Command Output or Copy Last Command Output to review the latest result.
-- **Good dictation that stays on your Mac.** Hold left <kbd>⌥</kbd>, speak, edit the text, press Return. It uses NVIDIA’s Parakeet speech model through Core ML; Mica downloads the 630 MB model in the background on first launch, with progress in the status bar, so dictation is ready when you need it. A local deterministic corrector is enabled by default and uses your vocabulary file, project name, Git branch and tracked file names, and recent terminal text. Edit → Edit Vocabulary… opens your local vocabulary file; Edit → Improve Dictation with Project Vocabulary toggles correction. Edit → Undo Last Dictation restores the raw transcript while no later prompt text has been typed. Nothing you say is sent anywhere.
+- **Good dictation that stays on your Mac.** Hold left <kbd>⌥</kbd> or click the microphone in the status bar to start dictation; click it again to finish. The button also works when a remote desktop cannot send the shortcut. Speak, edit the text, press Return. It uses NVIDIA’s Parakeet speech model through Core ML; Mica downloads the 630 MB model in the background on first launch, with progress in the status bar, so dictation is ready when you need it. A local deterministic corrector is enabled by default and uses your vocabulary file, project name, Git branch and tracked file names, and recent terminal text. Edit → Edit Vocabulary… opens your local vocabulary file; Edit → Improve Dictation with Project Vocabulary toggles correction. Edit → Undo Last Dictation restores the raw transcript while no later prompt text has been typed. Nothing you say is sent anywhere.
 - Dictation can use Hold or Toggle for left <kbd>⌥</kbd> in Settings. **Edit → Undo Last Dictation** restores the raw transcript after a correction, or removes the inserted transcript, while you have not typed since.
 - **A focus timer that follows you.** One timer shared by every Mica window. A compact macOS menu bar item shows the current phase and countdown, and opens controls to start, pause, resume, or move to the next phase. The terminal status strip stays focused on folder, command, and memory context. When a phase ends, macOS tells you whether to pause work or return to focus. You can also control the timer from the **Focus** menu, and VoiceOver reads the phase, time, session label, and completed focus count.
 - **Still a real terminal.** Choose how much scrollback to keep (650 lines by default, up to 20,000 with its memory cost shown in Settings), search Unicode output and keep your reading position while retained history receives new output, Command-click links, drag tabs, choose a cursor and a dark, light or system-following theme. If a program over SSH asks to set your clipboard, Mica asks you first.
@@ -71,8 +71,8 @@ iTerm2 plus Wispr Flow is about 770 MB before you add a timer. Dictation adds a 
 
 ## Install
 
-1. [Download Mica.zip](https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.14/Mica.zip) (Apple silicon, macOS 14 or later), extract it, and move Mica to Applications.
-2. This alpha is Developer ID signed and notarized. Verify either package with the [published SHA-256 manifest](https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.14/SHA256SUMS.txt).
+1. [Download Mica.zip](https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/Mica.zip) (Apple silicon, macOS 14 or later), extract it, and move Mica to Applications.
+2. This build is Developer ID signed and notarized. Verify it with the [published SHA-256 manifest](https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/SHA256SUMS.txt).
 3. Mica asks for the microphone only when you start dictation.
 
 ### Build from source

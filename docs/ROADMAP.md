@@ -6,12 +6,15 @@ This roadmap tracks open work only. Shipped features are summarized below so the
 
 - The Command Palette (<kbd>⌘⇧P</kbd>) searches the menu action tree, displays current menu shortcuts and switches among tabs with folder, branch and activity context. It also exposes per-tab notification mute controls.
 - Dictation supports Hold (default) and Toggle modes. Edit → Undo Last Dictation removes the latest inserted transcript only while no later prompt text has been typed.
+- A microphone control in the status bar starts and finishes dictation by click, including when remote desktop software cannot send the keyboard shortcut.
 - Local deterministic dictation correction uses the user's vocabulary file, project name, Git branch and tracked file names, and recently visible terminal text. It is enabled by default, can be switched off from Edit, and Undo Last Dictation restores the raw transcript after correction. Boosting was measured (see [build/boost-measurements.md](../build/boost-measurements.md)): it inserted wrong words in unrelated places, added 59 MB of peak memory and a 98 MB download, so it was removed in favour of the deterministic corrector.
 - Quick Select (<kbd>⌘⇧U</kbd>) labels visible URLs, existing file paths and git hashes. Typing a label copies it; holding Option opens a URL or reveals a file.
 - OSC 133 A/B/C/D shell markers are emitted by Mica's zsh integration and recognized by the session parser. Per-row landmarks, failed-command markers, ⌘↑/⌘↓ prompt navigation, and last-command output selection/copy are shipped.
 - Agent notifications distinguish “needs input” from “finished”, use no sound, and can be muted per tab. Mica handles terminal notification sequences and clicking a notification returns to its window and tab.
+- Claude Code and Codex tabs show a compact activity label, with full status and recent activity in the tab tooltip.
 - The per-window agent sidebar shows project context, agent state and recent messages. The attention inbox collects agent events across windows and supports direct navigation to the waiting tab.
 - Project windows and ordinary tabs restore their names and folders after quit. Relaunch starts fresh PTY sessions; an optional setting resumes Claude Code and Codex sessions when their validated session IDs were captured. Arbitrary shell commands, other running processes and scrollback do not resume.
+- Each project window shows its project name in the top-right badge and window title. Hover the badge for the full name; the Dock menu lists open project windows, and the single Dock icon mark follows the front project.
 - SSH connection profiles save a friendly name, OpenSSH destination and remote starting folder. They use the macOS `ssh` client and existing OpenSSH configuration/authentication, restore as new connections, and can be included in `.mica` project layouts. Profile records contain no credentials.
 - The focus timer is shared across windows, with labeled focus/break/paused states, Start/Pause/Resume controls, accessible actions, completion notifications and independent auto-start settings.
 - Scrollback stores only meaningful row prefixes within a fixed history limit. Search supports Unicode text; wrapped URLs work at retained physical widths. Full column-width reflow remains open.
@@ -42,6 +45,6 @@ This roadmap tracks open work only. Shipped features are summarized below so the
 
 - The first build needs a Swift 6 toolchain and network access for the speech package. Dictation downloads its model on first use/setup and processes audio locally.
 - Agent activity may still be inferred from visible terminal text when no hook event is available, and can misread ordinary output. Detailed status should remain conservative without authoritative evidence.
-- A single Dock icon serves all project windows and shows the project mark for the front window.
+- A single Dock icon serves all project windows. Its mark follows the front project; use the Dock menu for full project and tab names.
 - History rows retain their original physical width when moved by libvterm resize callbacks. Wrapped-link detection is conservative across different widths; full retained-history reflow must preserve links, cell attributes, search and selection anchors within the per-session history cap.
 - Memory and timing figures come from one Apple silicon Mac; see [MEMORY-BASELINE.md](MEMORY-BASELINE.md).

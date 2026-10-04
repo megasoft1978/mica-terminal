@@ -7,8 +7,8 @@
 #include <sys/types.h>
 #include <vterm.h>
 
-#define MICA_VERSION "0.1.0-alpha.14"
-#define MICA_REVISION "0.1.0-alpha.14"
+#define MICA_VERSION "0.1.0-alpha.16"
+#define MICA_REVISION "0.1.0-alpha.16"
 #define MICA_HISTORY_LIMIT_BYTES (2u * 1024u * 1024u)
 
 typedef struct MicaSession MicaSession;

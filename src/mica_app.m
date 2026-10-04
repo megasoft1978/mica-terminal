@@ -312,6 +312,7 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 @property(nonatomic, assign) uint64_t attentionCount;
 @property(nonatomic, assign) uint64_t agentRSSBytes;
 @property(nonatomic, copy) NSString *gitBranch;
+@property(nonatomic, copy) NSString *projectRoot;
 @property(nonatomic, copy) NSArray<NSString *> *vocabularyFileTerms;
 @property(nonatomic, copy) NSArray<NSString *> *gitVocabularyTerms;
 @property(nonatomic, copy) NSString *recentVisibleText;
@@ -351,17 +352,39 @@ static NSString *MicaAgentNameForText(NSString *text) {
 }
 
 
-// Keep the newest words in the reserved live transcript preview.
-static NSString *MicaLastWords(NSString *text, NSUInteger count) {
+// Keep the newest complete words that fit the reserved live transcript preview.
+static NSString *MicaLastWordsFittingSize(NSString *text, NSSize size, NSDictionary *attributes) {
     NSArray<NSString *> *words = [text componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     NSMutableArray<NSString *> *kept = [NSMutableArray array];
     for (NSString *word in words) if (word.length) [kept addObject:word];
-    if (kept.count <= count) return [kept componentsJoinedByString:@" "];
-    NSArray *tail = [kept subarrayWithRange:NSMakeRange(kept.count - count, count)];
-    return [@"… " stringByAppendingString:[tail componentsJoinedByString:@" "]];
+    if (!kept.count || size.width <= 0 || size.height <= 0) return @"";
+    NSString *complete = [kept componentsJoinedByString:@" "];
+    NSRect completeBounds = [complete boundingRectWithSize:size
+        options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading attributes:attributes];
+    if (completeBounds.size.width <= size.width && completeBounds.size.height <= size.height) return complete;
+
+    NSUInteger low = 1, high = kept.count, best = 0;
+    while (low <= high) {
+        NSUInteger count = low + (high - low) / 2;
+        NSArray<NSString *> *tail = [kept subarrayWithRange:NSMakeRange(kept.count - count, count)];
+        NSString *candidate = [NSString stringWithFormat:@"… %@", [tail componentsJoinedByString:@" "]];
+        NSRect bounds = [candidate boundingRectWithSize:size
+            options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading attributes:attributes];
+        if (bounds.size.width <= size.width && bounds.size.height <= size.height) {
+            best = count;
+            low = count + 1;
+        } else {
+            if (count == 1) break;
+            high = count - 1;
+        }
+    }
+    if (!best) return @"";
+    NSArray<NSString *> *tail = [kept subarrayWithRange:NSMakeRange(kept.count - best, best)];
+    return [NSString stringWithFormat:@"… %@", [tail componentsJoinedByString:@" "]];
 }
 
 static NSString *MicaAgentStateForTab(MicaTab *tab) { return tab.agentState ?: @"idle"; }
+static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **detailOut);
 
 static NSString *MicaAgentNameForTab(MicaTab *tab) {
     if ([tab.agentKind isEqualToString:@"claude"]) return @"Claude Code";
@@ -375,6 +398,32 @@ static NSString *MicaAgentNameForTab(MicaTab *tab) {
     NSString *configuredCommandAgent = MicaAgentNameForText(tab.command);
     if (configuredCommandAgent) return configuredCommandAgent;
     return MicaAgentNameForText(tab.name);
+}
+
+static BOOL MicaAgentPromptReadyForDictation(MicaTab *tab) {
+    NSString *agent = MicaAgentNameForTab(tab);
+    if (!tab.session || (![agent isEqualToString:@"Codex"] && ![agent isEqualToString:@"Claude Code"]))
+        return NO;
+    NSString *visibleActivity = MicaAgentActivityForSession(tab.session, NULL);
+    if ([visibleActivity isEqualToString:@"Needs approval"] ||
+        [visibleActivity isEqualToString:@"Choosing session"] ||
+        [visibleActivity isEqualToString:@"Working"] ||
+        [visibleActivity isEqualToString:@"Thinking"] ||
+        [visibleActivity isEqualToString:@"Planning"] ||
+        [visibleActivity isEqualToString:@"Searching"] ||
+        [visibleActivity isEqualToString:@"Reading"] ||
+        [visibleActivity isEqualToString:@"Editing"] ||
+        [visibleActivity isEqualToString:@"Testing"] ||
+        [visibleActivity isEqualToString:@"Analyzing"] ||
+        [visibleActivity isEqualToString:@"Exploring"] ||
+        [visibleActivity isEqualToString:@"Compacting"])
+        return NO;
+    if (tab.receivedAgentHook) {
+        NSString *state = MicaAgentStateForTab(tab);
+        return [state isEqualToString:@"idle"] || [state isEqualToString:@"done"] ||
+            [state isEqualToString:@"waitingInput"];
+    }
+    return [visibleActivity isEqualToString:@"Ready"] || [visibleActivity isEqualToString:@"Needs input"];
 }
 
 static BOOL CellIsContinuation(MicaCell cell);
@@ -516,6 +565,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 #endif
 - (NSRect)tabRectAtIndex:(NSUInteger)index;
 - (CGFloat)projectBadgeWidth;
+- (NSRect)projectBadgeRect;
 - (NSRange)visibleTabRange;
 - (BOOL)hasTabOverflow;
 - (NSRect)tabOverflowRect;
@@ -546,6 +596,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (NSColor *)colorForVTermColor:(VTermColor)color isForeground:(BOOL)isForeground;
 - (NSRect)dictationPreviewRect;
 - (NSRect)microphoneSettingsButtonRect;
+- (NSRect)dictationButtonRect;
 - (NSRect)terminalHitRect;
 - (CGFloat)tabsLeadingInset;
 - (BOOL)windowIsActive;
@@ -613,7 +664,10 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, copy) void (^testAgentNotificationHandler)(NSString *title, NSString *body, MicaTab *tab);
 #endif
 - (MicaTab *)activeTab;
+- (NSString *)projectDisplayNameForTab:(MicaTab *)tab;
 - (NSString *)windowTitleForTab:(MicaTab *)tab;
+- (void)updateDockIconForProjectName:(NSString *)projectName;
+- (void)showDockWindowFromMenu:(id)sender;
 - (void)newTabWithName:(NSString *)name command:(NSString *)command;
 - (void)addTabWithName:(NSString *)name cwd:(NSString *)cwd command:(NSString *)command prefilled:(BOOL)prefilled;
 - (void)refreshVocabularyForTab:(MicaTab *)tab;
@@ -914,8 +968,27 @@ static NSMutableArray<NSURL *> *MicaPendingOpenURLs(void) {
     return pending;
 }
 
-// mica://open?layout=<path to a .mica file>&name=<project name>  ->  launch-style arguments, or nil.
-// Only layouts inside ~/.config/mica/layouts are accepted, so a web page cannot point Mica at an arbitrary file.
+// Direct .mica opens and mica:// URLs share the same path checks. Symlinks are resolved so a
+// Desktop alias can point at a trusted layout in ~/.config/mica/layouts without copying it.
+static NSArray<NSString *> *MicaArgumentsForLayoutPath(NSString *layout, NSString *layoutsDirectory) {
+    if (!layout.length || !layoutsDirectory.length) return nil;
+    NSString *resolved = [layout stringByResolvingSymlinksInPath];
+    NSString *root = [layoutsDirectory stringByResolvingSymlinksInPath];
+    NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:resolved error:nil];
+    if (!resolved.isAbsolutePath || ![resolved.pathExtension.lowercaseString isEqualToString:@"mica"] ||
+        ![resolved hasPrefix:[root stringByAppendingString:@"/"]] ||
+        ![attributes[NSFileType] isEqualToString:NSFileTypeRegular] ||
+        [attributes[NSFileSize] unsignedLongLongValue] > 64 * 1024) return nil;
+    return @[@"mica", @"--layout", resolved];
+}
+
+static NSArray<NSString *> *MicaArgumentsForLayoutFileURL(NSURL *url, NSString *layoutsDirectory) {
+    if (!url.isFileURL) return nil;
+    return MicaArgumentsForLayoutPath(url.path, layoutsDirectory);
+}
+
+// mica://open?layout=<path to a .mica file>&name=<project name> -> launch-style arguments, or nil.
+// URLs can only open layouts inside ~/.config/mica/layouts; arbitrary paths need an explicit Finder open.
 static NSArray<NSString *> *MicaArgumentsForOpenURL(NSURL *url, NSString *layoutsDirectory) {
     if (![url.scheme.lowercaseString isEqualToString:@"mica"] || ![url.host.lowercaseString isEqualToString:@"open"]) return nil;
     NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
@@ -924,12 +997,9 @@ static NSArray<NSString *> *MicaArgumentsForOpenURL(NSURL *url, NSString *layout
         if ([item.name isEqualToString:@"layout"]) layout = item.value;
         else if ([item.name isEqualToString:@"name"]) name = item.value;
     }
-    if (!layout.length) return nil;
-    NSString *resolved = [layout stringByResolvingSymlinksInPath];
-    NSString *root = [layoutsDirectory stringByResolvingSymlinksInPath];
-    if (!resolved.isAbsolutePath || ![resolved.pathExtension isEqualToString:@"mica"] ||
-        ![resolved hasPrefix:[root stringByAppendingString:@"/"]]) return nil;
-    NSMutableArray<NSString *> *arguments = [NSMutableArray arrayWithObjects:@"mica", @"--layout", resolved, nil];
+    NSArray<NSString *> *validated = MicaArgumentsForLayoutPath(layout, layoutsDirectory);
+    if (!validated) return nil;
+    NSMutableArray<NSString *> *arguments = [validated mutableCopy];
     NSString *cleanName = [name stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     if (cleanName.length && cleanName.length <= 100 &&
         [cleanName rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location == NSNotFound)
@@ -1108,6 +1178,14 @@ static NSString *MicaGitBranchForDirectory(NSString *directory) {
     return nil;
 }
 
+// The folder that holds .git for `directory`, including linked worktrees.
+static NSString *MicaGitRootForDirectory(NSString *directory) {
+    NSString *current = directory.stringByStandardizingPath;
+    for (int depth = 0; depth < 40 && current.length > 1; depth++, current = current.stringByDeletingLastPathComponent)
+        if ([NSFileManager.defaultManager fileExistsAtPath:[current stringByAppendingPathComponent:@".git"]]) return current;
+    return nil;
+}
+
 // A plain http(s) address at `index` in a line of terminal text, with trailing punctuation removed.
 // Agents print bare URLs constantly; OSC 8 links are the only ones terminals get for free.
 static NSURL *MicaBareURLInLine(NSString *line, NSUInteger index) {
@@ -1166,6 +1244,7 @@ typedef struct {
     NSRect contextRect;
     NSRect hintsRect;
     NSRect memoryRect;
+    NSRect dictationRect;
     NSArray<NSString *> *hints;
 } MicaStatusBarLayout;
 
@@ -1173,7 +1252,8 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         CGFloat minimumContextWidth, CGFloat memoryWidth, NSArray<NSString *> *hints,
         NSDictionary<NSAttributedStringKey, id> *hintAttrs) {
     MicaStatusBarLayout layout = {0};
-    layout.memoryRect = NSMakeRect(width - 12 - memoryWidth, 0, memoryWidth, kStatusHeight);
+    layout.dictationRect = NSMakeRect(width - 38, 0, 32, kStatusHeight);
+    layout.memoryRect = NSMakeRect(NSMinX(layout.dictationRect) - 12 - memoryWidth, 0, memoryWidth, kStatusHeight);
     CGFloat hintRight = NSMinX(layout.memoryRect) - 18;
     CGFloat hintWidth = 0;
     while (hints.count) {
@@ -1220,6 +1300,9 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     NSToolTipTag _tabToolTipTag;
     NSRect _tabToolTipRect;
     BOOL _hasTabToolTip;
+    NSToolTipTag _dictationToolTipTag;
+    NSRect _dictationToolTipRect;
+    BOOL _hasDictationToolTip;
     NSTimer *_leftOptionTimer;
     NSTimer *_gridSizeRetryTimer;
     BOOL _gridSizeFailureLogged;
@@ -1277,7 +1360,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
 - (BOOL)isAccessibilityElement { return YES; }
 - (NSAccessibilityRole)accessibilityRole { return NSAccessibilityTextAreaRole; }
 - (NSString *)accessibilityLabel {
-    NSString *project = self.owner.projectName;
+    NSString *project = [self.owner projectDisplayNameForTab:self.owner.activeTab];
     return project.length ? [NSString stringWithFormat:@"Terminal, %@", project] : @"Terminal";
 }
 - (NSArray *)accessibilityChildren {
@@ -1336,6 +1419,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     [super resetCursorRects];
     NSRect terminal = [self terminalRect];
     if (!NSIsEmptyRect(terminal)) [self addCursorRect:terminal cursor:NSCursor.IBeamCursor];
+    [self addCursorRect:[self dictationButtonRect] cursor:NSCursor.pointingHandCursor];
     MicaTab *tab = self.owner.activeTab;
     if (tab.session) {
         // Validate each distinct link once instead of parsing its URL for every cell.
@@ -1550,6 +1634,10 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     return denied ? NSMakeRect(MAX(0, self.bounds.size.width - 190), NSMinY(preview) + 12, 178, 24) : NSZeroRect;
 }
 
+- (NSRect)dictationButtonRect {
+    return NSMakeRect(MAX(0, self.bounds.size.width - 38), 0, MIN(32, self.bounds.size.width), kStatusHeight);
+}
+
 - (void)updateGridSize {
     MicaTab *tab = self.owner.activeTab;
     if (!tab.session) return;
@@ -1677,6 +1765,37 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     return tab.name.length ? tab.name : @"Terminal";
 }
 
+- (NSString *)agentStatusForTab:(MicaTab *)tab {
+    if (!tab || !MicaAgentNameForTab(tab)) return nil;
+    if (tab.receivedAgentHook) {
+        NSString *state = MicaAgentStateForTab(tab);
+        if ([state isEqualToString:@"working"]) return @"Working";
+        if ([state isEqualToString:@"waitingPermission"]) return @"Needs permission";
+        if ([state isEqualToString:@"waitingInput"]) return @"Needs input";
+        if ([state isEqualToString:@"done"]) return @"Done";
+        if ([state isEqualToString:@"error"]) return @"Error";
+    }
+    MicaTabActivityState state = [self activityStateForTab:tab];
+    return state == MicaTabActivityStateWaiting ? @"Needs input" :
+        state == MicaTabActivityStateRunning ? @"Running" :
+        state == MicaTabActivityStateComplete ? @"Finished" :
+        state == MicaTabActivityStateNeedsAttention ? @"Needs attention" : @"Idle";
+}
+
+- (NSString *)displayLabelForTab:(MicaTab *)tab {
+    NSString *agent = MicaAgentNameForTab(tab);
+    NSString *status = [self agentStatusForTab:tab];
+    if (!agent || !status || [status isEqualToString:@"Idle"]) return [self labelForTab:tab];
+    NSString *shortStatus = [status isEqualToString:@"Working"] ? @"Work" :
+        [status isEqualToString:@"Needs input"] ? @"Input" :
+        [status isEqualToString:@"Needs permission"] ? @"Perm" :
+        [status isEqualToString:@"Running"] ? @"Run" :
+        [status isEqualToString:@"Finished"] ? @"Done" :
+        [status isEqualToString:@"Needs attention"] ? @"Alert" : status;
+    NSString *shortAgent = [agent isEqualToString:@"Claude Code"] ? @"Claude" : agent;
+    return [NSString stringWithFormat:@"%@ · %@", shortAgent, shortStatus];
+}
+
 - (MicaTabActivityState)activityStateForTab:(MicaTab *)tab {
     if (!tab) return MicaTabActivityStateIdle;
     if (tab.receivedAgentHook) {
@@ -1772,11 +1891,18 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
 }
 
 - (CGFloat)projectBadgeWidth {
-    NSString *name = self.owner.projectName;
+    NSString *name = [self.owner projectDisplayNameForTab:self.owner.activeTab];
     if (!name.length) return 0;
     NSDictionary *attrs = @{NSFontAttributeName: [NSFont systemFontOfSize:kTabTitleFontSize
         weight:NSFontWeightSemibold]};
     return MIN(220, MAX(100, [name sizeWithAttributes:attrs].width + 26));
+}
+
+- (NSRect)projectBadgeRect {
+    CGFloat width = [self projectBadgeWidth];
+    if (width <= 0) return NSZeroRect;
+    return NSMakeRect(self.bounds.size.width - width,
+        NSMaxY(self.bounds) - kHeaderHeight, width, kHeaderHeight);
 }
 
 - (NSRange)visibleTabRange {
@@ -1863,27 +1989,48 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         _tabToolTipRect = header;
         _hasTabToolTip = YES;
     }
+    NSRect dictationRect = [self dictationButtonRect];
+    if (_hasDictationToolTip && !NSEqualRects(dictationRect, _dictationToolTipRect)) {
+        [self removeToolTip:_dictationToolTipTag];
+        _hasDictationToolTip = NO;
+    }
+    if (!_hasDictationToolTip && !NSIsEmptyRect(dictationRect)) {
+        _dictationToolTipTag = [self addToolTipRect:dictationRect owner:self userData:NULL];
+        _dictationToolTipRect = dictationRect;
+        _hasDictationToolTip = YES;
+    }
 }
 
 - (NSString *)view:(NSView *)view stringForToolTip:(NSToolTipTag)tag point:(NSPoint)point userData:(void *)data {
     (void)view;
     (void)tag;
     (void)data;
+    if (NSPointInRect(point, [self dictationButtonRect])) {
+        MicaVoiceControllerState state = self.owner.voiceController.state;
+        if (state == MicaVoiceControllerStatePreparing || state == MicaVoiceControllerStateListening)
+            return @"Stop dictation and insert the transcript";
+        if (state == MicaVoiceControllerStateTranscribing) return @"Transcribing and sending the text";
+        if (state == MicaVoiceControllerStateFailed) return @"Retry dictation";
+        return @"Start speech to text";
+    }
     if (NSPointInRect(point, [self tabOverflowRect])) {
         NSUInteger hidden = self.owner.tabs.count - [self visibleTabRange].length;
         return [NSString stringWithFormat:@"%lu more terminal tab%@", (unsigned long)hidden, hidden == 1 ? @"" : @"s"];
     }
     NSInteger index = [self tabIndexAtPoint:point];
+    if (NSPointInRect(point, [self projectBadgeRect]))
+        return [self.owner projectDisplayNameForTab:self.owner.activeTab];
     if (index == NSNotFound || index >= (NSInteger)self.owner.tabs.count) return nil;
     MicaTab *tab = self.owner.tabs[(NSUInteger)index];
     NSString *label = [self labelForTab:tab];
     NSString *agent = MicaAgentNameForTab(tab);
-    if (agent && tab.currentCommand.length) {
+    if (agent) {
         NSString *command = tab.currentCommand.length ? tab.currentCommand : (tab.command ?: agent);
         NSString *folder = tab.cwd;
         NSMutableArray<NSString *> *details = [NSMutableArray arrayWithObjects:
             [NSString stringWithFormat:@"Tab: %@", tab.name ?: @"Terminal"],
             [NSString stringWithFormat:@"Status: %@", label],
+            [NSString stringWithFormat:@"%@ status: %@", agent, [self agentStatusForTab:tab] ?: @"Idle"],
             [NSString stringWithFormat:@"Command: %@", command], nil];
         if (tab.agentActivityDetail.length)
             [details addObject:[NSString stringWithFormat:@"Recent activity: %@", tab.agentActivityDetail]];
@@ -2054,6 +2201,30 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     CGFloat hintX = NSMinX(layout.hintsRect);
     CGFloat availableWidth = layout.contextRect.size.width;
     MicaDrawCenteredLine(memoryText, layout.memoryRect, memoryAttrs, NSTextAlignmentRight);
+    NSRect dictationButton = [self dictationButtonRect];
+    MicaVoiceControllerState dictationState = self.owner.voiceController.state;
+    BOOL dictationActive = dictationState == MicaVoiceControllerStatePreparing ||
+        dictationState == MicaVoiceControllerStateListening;
+    BOOL dictationFinishing = dictationState == MicaVoiceControllerStateTranscribing;
+    NSString *dictationSymbol = dictationActive ? @"stop.fill" :
+        (dictationFinishing ? @"arrow.up.circle.fill" : @"mic");
+    NSColor *dictationTint = dictationActive ? NSColor.systemRedColor :
+        (dictationFinishing ? NSColor.controlAccentColor : MicaSecondaryLabelColor(1.0));
+    NSColor *dictationPillColor = dictationActive
+        ? [NSColor.systemRedColor colorWithAlphaComponent:0.18]
+        : (dictationFinishing ? [NSColor.controlAccentColor colorWithAlphaComponent:0.20]
+                              : [NSColor.secondaryLabelColor colorWithAlphaComponent:0.12]);
+    NSRect dictationPill = NSInsetRect(dictationButton, 5, 4);
+    [dictationPillColor setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:dictationPill xRadius:7 yRadius:7] fill];
+    NSImage *mic = [NSImage imageWithSystemSymbolName:dictationSymbol
+                                accessibilityDescription:dictationActive ? @"Stop dictation" :
+                                    (dictationFinishing ? @"Sending dictated text" : @"Start dictation")];
+    if (mic) {
+        mic = [mic imageWithSymbolConfiguration:
+            [NSImageSymbolConfiguration configurationWithHierarchicalColor:dictationTint]];
+        [mic drawInRect:NSInsetRect(dictationPill, 7, 6)];
+    }
     if (!modeName && !tab.currentCommand.length && !tab.completedCommand && viewOffset == 0) {
         NSString *branchSuffix = tab.gitBranch.length ? [NSString stringWithFormat:@"  ·  %@", tab.gitBranch] : @"";
         CGFloat branchWidth = [branchSuffix sizeWithAttributes:contextAttrs].width;
@@ -2100,6 +2271,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
             x += 8;
         }
     }
+    // The status strip control is also the mouse-only dictation entry point for remote desktops.
     if (prefetching) {
         NSRect track = NSMakeRect(0, 0, self.bounds.size.width, 2);
         [[NSColor.controlAccentColor colorWithAlphaComponent:0.16] setFill];
@@ -2183,7 +2355,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     } else if (state == MicaVoiceControllerStateFailed) {
         text = voice.statusText ?: @"Press Escape to dismiss";
     } else if (voice.transcript.length) {
-        text = MicaLastWords(voice.transcript, 20);
+        text = voice.transcript;
     } else {
         text = state == MicaVoiceControllerStateListening ? @"Listening. Your words appear in a few seconds" : @"";
     }
@@ -2206,12 +2378,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     CGFloat right = !NSIsEmptyRect(settingsButton) ? NSMinX(settingsButton) - 10 : preview.size.width - 16;
     NSRect transcriptRect = NSMakeRect(16, NSMinY(preview) + 22, MAX(0, right - 16), 50);
     if ((state == MicaVoiceControllerStateListening || state == MicaVoiceControllerStateTranscribing) && voice.transcript.length) {
-        for (NSUInteger wordCount = 20; wordCount > 1; wordCount--) {
-            text = MicaLastWords(voice.transcript, wordCount);
-            NSRect measured = [text boundingRectWithSize:transcriptRect.size
-                options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading attributes:transcriptAttrs];
-            if (measured.size.height <= transcriptRect.size.height) break;
-        }
+        text = MicaLastWordsFittingSize(voice.transcript, transcriptRect.size, transcriptAttrs);
     }
     self.dictationLabelTextRect = NSMakeRect(38, titleY, MAX(0, right - 38), 16);
     self.dictationWordsTextRect = transcriptRect;
@@ -2345,7 +2512,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
             if (NSIsEmptyRect([self tabRectAtIndex:i])) continue;
             MicaTab *candidate = self.owner.tabs[i];
             BOOL active = i == (NSUInteger)self.owner.activeIndex;
-            NSString *label = [self labelForTab:candidate];
+            NSString *label = [self displayLabelForTab:candidate];
             NSRect tabRect = [self tabRectAtIndex:i];
             NSRect textRect = NSMakeRect(NSMinX(tabRect) + 28, NSMinY(tabRect) + 2,
                                          MAX(0, tabRect.size.width - 36), tabRect.size.height - 4);
@@ -2394,23 +2561,26 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
             NSString *moreLabel = [NSString stringWithFormat:@"… %lu", (unsigned long)hidden];
             MicaDrawCenteredLine(moreLabel, moreRect, moreAttrs, NSTextAlignmentCenter);
         }
-        if (self.owner.projectName.length) {
-            CGFloat badgeWidth = [self projectBadgeWidth];
-            NSRect badge = NSMakeRect(self.bounds.size.width - badgeWidth,
-                NSMinY(header), badgeWidth, header.size.height);
+        NSString *projectName = [self.owner projectDisplayNameForTab:self.owner.activeTab];
+        if (projectName.length) {
+            NSRect badge = [self projectBadgeRect];
             NSRect capsule = NSInsetRect(badge, 4, 5);
-            [[NSColor.secondaryLabelColor colorWithAlphaComponent:0.16] setFill];
-            [[NSBezierPath bezierPathWithRoundedRect:capsule
-                xRadius:capsule.size.height / 2 yRadius:capsule.size.height / 2] fill];
+            NSBezierPath *capsulePath = [NSBezierPath bezierPathWithRoundedRect:capsule
+                xRadius:capsule.size.height / 2 yRadius:capsule.size.height / 2];
+            [[NSColor.controlAccentColor colorWithAlphaComponent:0.18] setFill];
+            [capsulePath fill];
+            [[NSColor.controlAccentColor colorWithAlphaComponent:0.42] setStroke];
+            capsulePath.lineWidth = 0.75;
+            [capsulePath stroke];
             NSMutableParagraphStyle *projectStyle = [NSMutableParagraphStyle new];
             projectStyle.lineBreakMode = NSLineBreakByTruncatingTail;
             NSDictionary *projectAttrs = @{
                 NSFontAttributeName: [NSFont systemFontOfSize:kTabTitleFontSize weight:NSFontWeightSemibold],
-                NSForegroundColorAttributeName: MicaSecondaryLabelColor(1.0),
+                NSForegroundColorAttributeName: NSColor.labelColor,
                 NSParagraphStyleAttributeName: projectStyle
             };
             NSRect projectText = NSInsetRect(capsule, 10, 0);
-            NSString *projectTitle = MicaTruncatedText(self.owner.projectName,
+            NSString *projectTitle = MicaTruncatedText(projectName,
                 projectText.size.width, projectAttrs);
             MicaDrawCenteredLine(projectTitle, projectText, projectAttrs, NSTextAlignmentCenter);
         }
@@ -2851,6 +3021,15 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         _leftOptionTimer = nil;
     }
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    NSRect dictationButton = [self dictationButtonRect];
+    if (NSPointInRect(point, dictationButton)) {
+        MicaVoiceControllerState state = self.owner.voiceController.state;
+        if (state == MicaVoiceControllerStatePreparing || state == MicaVoiceControllerStateListening)
+            [self.owner finishPushToTalk];
+        else if (state != MicaVoiceControllerStateTranscribing)
+            [self.owner beginDictationForActiveTab];
+        return;
+    }
     NSRect dictationStatus = [self dictationPreviewRect];
     NSRect microphoneSettings = [self microphoneSettingsButtonRect];
     if (!NSIsEmptyRect(microphoneSettings) && NSPointInRect(point, microphoneSettings)) {
@@ -2861,6 +3040,12 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     NSRect header = NSMakeRect(0, NSMaxY(self.bounds) - kHeaderHeight,
                                self.bounds.size.width, kHeaderHeight);
     if (NSPointInRect(point, header)) {
+        // The custom title strip replaces the native title bar. Keep double-click zoom
+        // available at the right edge even when the project badge occupies that space.
+        if (event.clickCount == 2 && point.x >= self.bounds.size.width - 72) {
+            [self.window performZoom:nil];
+            return;
+        }
         if (NSPointInRect(point, [self tabOverflowRect])) {
             [[self tabOverflowMenu] popUpMenuPositioningItem:nil atLocation:point inView:self];
             return;
@@ -3846,9 +4031,21 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *MicaNormalizedSSHProfile
 @end
 
 @implementation MicaAppDelegate
+- (NSString *)projectDisplayNameForTab:(MicaTab *)tab {
+    if (self.projectName.length) return self.projectName;
+    if (tab.remoteProfile[@"name"].length) return tab.remoteProfile[@"name"];
+    NSString *projectPath = tab.projectRoot.length ? tab.projectRoot : tab.cwd.stringByStandardizingPath;
+    if (!projectPath.length) return nil;
+    NSString *home = NSHomeDirectory().stringByStandardizingPath;
+    NSString *name = ([projectPath isEqualToString:@"/"] || [projectPath isEqualToString:home])
+        ? nil : projectPath.lastPathComponent;
+    return name.length ? name : nil;
+}
+
 - (NSString *)windowTitleForTab:(MicaTab *)tab {
     NSString *tabName = tab.name.length ? tab.name : @"Terminal";
-    if (self.projectName.length) return [NSString stringWithFormat:@"%@ — %@", self.projectName, tabName];
+    NSString *projectName = [self projectDisplayNameForTab:tab];
+    if (projectName.length) return [NSString stringWithFormat:@"%@ — %@", projectName, tabName];
     return @"Mica Terminal";
 }
 
@@ -4433,16 +4630,56 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 
 - (void)updateWindowTitle {
     if (self.window) self.window.title = [self windowTitleForTab:self.activeTab];
+    if (self.terminalView) {
+        NSRect header = NSMakeRect(0, NSMaxY(self.terminalView.bounds) - kHeaderHeight,
+            self.terminalView.bounds.size.width, kHeaderHeight);
+        [self.terminalView setNeedsDisplayInRect:header];
+    }
     if (!self.baseApplicationIcon)
         self.baseApplicationIcon = [NSImage imageNamed:NSImageNameApplicationIcon];
-    // Rebuilding the Dock icon on every tab change allocates and flickers; only redo it when the project changes.
-    if (!gAppliedIconProject || ![gAppliedIconProject isEqualToString:self.projectName ?: @""]) {
-        gAppliedIconProject = self.projectName ?: @"";
-        NSApp.applicationIconImage = MicaProjectApplicationIcon(self.baseApplicationIcon, self.projectName);
-    }
+    // The Dock has one tile for this process; only the key window sets its project mark.
+    if (self.window.isKeyWindow || (!NSApp.keyWindow && MicaControllers().firstObject == self))
+        [self updateDockIconForProjectName:[self projectDisplayNameForTab:self.activeTab]];
     // Each project window remembers where it was last placed.
     if (self.window && self.projectName.length && !getenv("MICA_TEST_NO_STARTUP") && !self.window.frameAutosaveName.length)
         [self.window setFrameAutosaveName:[@"MicaWindow-" stringByAppendingString:self.projectName]];
+}
+
+- (void)updateDockIconForProjectName:(NSString *)projectName {
+    NSString *key = projectName ?: @"";
+    // Rebuilding the Dock icon on every tab change allocates and flickers; only redo it when the project changes.
+    if (!gAppliedIconProject || ![gAppliedIconProject isEqualToString:key]) {
+        gAppliedIconProject = key;
+        NSApp.applicationIconImage = MicaProjectApplicationIcon(self.baseApplicationIcon, projectName);
+    }
+}
+
+- (NSMenu *)applicationDockMenu:(NSApplication *)sender {
+    (void)sender;
+    NSArray<MicaAppDelegate *> *controllers = [MicaControllers() copy];
+    if (!controllers.count) return nil;
+    NSMutableArray<MicaAppDelegate *> *ordered = [NSMutableArray arrayWithCapacity:controllers.count];
+    for (MicaAppDelegate *controller in controllers)
+        if (controller.window.isKeyWindow) [ordered addObject:controller];
+    for (MicaAppDelegate *controller in controllers)
+        if (controller.window && !controller.window.isKeyWindow) [ordered addObject:controller];
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Open Projects"];
+    for (MicaAppDelegate *controller in ordered) {
+        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:
+            [controller windowTitleForTab:controller.activeTab]
+            action:@selector(showDockWindowFromMenu:) keyEquivalent:@""];
+        item.target = controller;
+        item.state = controller.window.isKeyWindow ? NSControlStateValueOn : NSControlStateValueOff;
+        [menu addItem:item];
+    }
+    return menu;
+}
+
+- (void)showDockWindowFromMenu:(id)sender {
+    (void)sender;
+    if (!self.window) return;
+    [NSApp activateIgnoringOtherApps:YES];
+    [self.window makeKeyAndOrderFront:nil];
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
@@ -4456,7 +4693,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSMutableArray<NSURL *> *pending = MicaPendingOpenURLs();
     NSMutableArray<NSArray<NSString *> *> *pendingArguments = [NSMutableArray array];
     for (NSURL *url in pending) {
-        NSArray<NSString *> *arguments = MicaArgumentsForOpenURL(url, MicaDefaultLayoutsDirectory());
+        NSArray<NSString *> *arguments = url.isFileURL
+            ? MicaArgumentsForLayoutFileURL(url, MicaDefaultLayoutsDirectory())
+            : MicaArgumentsForOpenURL(url, MicaDefaultLayoutsDirectory());
         if (arguments) [pendingArguments addObject:arguments];
     }
     [pending removeAllObjects];
@@ -5409,13 +5648,17 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     if (![tab.gitBranchLookupPath isEqualToString:tabPath]) {
         tab.gitBranchLookupPath=tabPath;
         tab.gitBranch=nil;
+        tab.projectRoot=nil;
         __weak MicaTab *branchTab=tab; __weak typeof(self) branchSelf=self;
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{
             NSString *branch=MicaGitBranchForDirectory(tabPath);
+            NSString *projectRoot=MicaGitRootForDirectory(tabPath);
             dispatch_async(dispatch_get_main_queue(), ^{
                 MicaTab *strongTab=branchTab; MicaAppDelegate *strongSelf=branchSelf;
                 if (strongTab && strongSelf && !strongTab.remoteProfile && [strongSelf.tabs containsObject:strongTab] && [strongTab.cwd isEqualToString:tabPath]) {
                     strongTab.gitBranch=branch;
+                    strongTab.projectRoot=projectRoot;
+                    if (strongTab == strongSelf.activeTab) [strongSelf updateWindowTitle];
                     [strongSelf.terminalView setNeedsDisplayInRect:NSMakeRect(0,0,strongSelf.terminalView.bounds.size.width,kStatusHeight)];
                     [strongSelf.windowContentView.sidebarView refreshRows];
                 }
@@ -5465,14 +5708,6 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 - (void)closeTab:(id)sender { (void)sender; [self closeActiveTab]; }
 - (void)nextTab:(id)sender { (void)sender; [self selectRelativeTab:1]; }
 - (void)previousTab:(id)sender { (void)sender; [self selectRelativeTab:-1]; }
-
-// The folder that holds .git for `directory`, or nil outside a repository.
-static NSString *MicaGitRootForDirectory(NSString *directory) {
-    NSString *current = directory.stringByStandardizingPath;
-    for (int depth = 0; depth < 40 && current.length > 1; depth++, current = current.stringByDeletingLastPathComponent)
-        if ([NSFileManager.defaultManager fileExistsAtPath:[current stringByAppendingPathComponent:@".git"]]) return current;
-    return nil;
-}
 
 // Only branch names git itself would accept without surprises; nothing that could be read as an option.
 static BOOL MicaValidBranchName(NSString *name) {
@@ -5669,10 +5904,27 @@ static BOOL MicaValidBranchName(NSString *name) {
     (void)application;
     for (NSURL *url in urls) {
         if (!MicaControllers().count) { [MicaPendingOpenURLs() addObject:url]; continue; }   // still launching
-        NSArray<NSString *> *arguments = MicaArgumentsForOpenURL(url, MicaDefaultLayoutsDirectory());
+        NSArray<NSString *> *arguments = url.isFileURL
+            ? MicaArgumentsForLayoutFileURL(url, MicaDefaultLayoutsDirectory())
+            : MicaArgumentsForOpenURL(url, MicaDefaultLayoutsDirectory());
         if (arguments) [self openProjectWindowWithArguments:arguments];
-        else MicaDiagnosticsLog(@"launch", @"ignored a mica:// URL that is not a layout inside the layouts folder");
+        else MicaDiagnosticsLog(@"launch", @"ignored an open request that is not a valid Mica layout");
     }
+}
+
+- (void)application:(NSApplication *)application openFiles:(NSArray<NSString *> *)filenames {
+    (void)application;
+    for (NSString *filename in filenames) {
+        NSURL *url = [NSURL fileURLWithPath:filename];
+        if (!MicaControllers().count) {
+            [MicaPendingOpenURLs() addObject:url];
+            continue;
+        }
+        NSArray<NSString *> *arguments = MicaArgumentsForLayoutFileURL(url, MicaDefaultLayoutsDirectory());
+        if (arguments) [self openProjectWindowWithArguments:arguments];
+        else MicaDiagnosticsLog(@"launch", @"ignored a file open that is not a valid Mica layout");
+    }
+    [NSApp replyToOpenOrPrint:NSApplicationDelegateReplySuccess];
 }
 
 - (void)startPushToTalk {
@@ -5696,6 +5948,7 @@ static BOOL MicaValidBranchName(NSString *name) {
             workingDirectory = liveDirectory;
             tab.cwd = liveDirectory;
             [self refreshVocabularyForTab:tab];
+            [self updateWindowTitle];
         }
     }
     // Capture once at dictation start instead of maintaining a rolling screen buffer.
@@ -5753,7 +6006,9 @@ static BOOL MicaValidBranchName(NSString *name) {
     NSString *insertedText = MicaApplyDictationSnippet(corrected, MicaDictationSnippetsFromFile(snippetsURL));
     NSData *bytes = [insertedText dataUsingEncoding:NSUTF8StringEncoding];
     if (!bytes.length) return NO;
+    BOOL submitToAgent = MicaAgentPromptReadyForDictation(target);
     mica_session_paste(target.session, bytes.bytes, bytes.length);
+    if (submitToAgent) mica_session_key(target.session, VTERM_KEY_ENTER, VTERM_MOD_NONE);
     self.lastDictationText = insertedText;
     self.lastDictationRawText = transcript;
     self.lastDictationTab = target;
@@ -6300,6 +6555,7 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
                 mica_session_pid(tab.session) != pid || [cwd isEqualToString:tab.cwd]) return;
             tab.cwd = cwd;
             [strongSelf refreshVocabularyForTab:tab];
+            if (tab == strongSelf.activeTab) [strongSelf updateWindowTitle];
             [strongSelf.terminalView setNeedsDisplayInRect:NSMakeRect(0, 0,
                 strongSelf.terminalView.bounds.size.width, kStatusHeight)];
             [strongSelf.windowContentView.sidebarView refreshRows];

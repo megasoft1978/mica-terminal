@@ -9,4 +9,5 @@ Please report security issues privately through GitHub's "Report a vulnerability
 ## Scope notes
 
 - Terminal output is untrusted. Mica only opens `http` and `https` OSC 8 links, and only on Command-click.
+- Agent hooks use a per-session token over a private Unix socket. The listener accepts bounded messages and a bounded number of simultaneous clients; it does not change permissions on arbitrary socket parent directories or unlink non-socket paths.
 - Tests use local fixtures and never send prompts to agent CLIs or make network calls.

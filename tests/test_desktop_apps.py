@@ -58,6 +58,16 @@ def make_base_app(path: Path) -> None:
 
 
 def main() -> None:
+    app_plist = plistlib.loads((ROOT / "Info.plist").read_bytes())
+    mica_document = next(
+        item for item in app_plist["CFBundleDocumentTypes"]
+        if "com.megasoft78.mica.project-layout" in item["LSItemContentTypes"]
+    )
+    assert mica_document["CFBundleTypeRole"] == "Editor"
+    assert app_plist["UTExportedTypeDeclarations"][0]["UTTypeTagSpecification"][
+        "public.filename-extension"
+    ] == ["mica"]
+
     with tempfile.TemporaryDirectory(prefix="mica-desktop-apps-") as temporary:
         root = Path(temporary)
         base_app = root / "Mica.app"
@@ -70,6 +80,54 @@ def main() -> None:
         (layout_dir / "alpha.mica").write_text("# Mica layout v1\nShell\t/tmp\t\n", encoding="utf-8")
         (layout_dir / "beta.mica").write_text("# Mica layout v1\nCodex\t/tmp\t\n", encoding="utf-8")
 
+        legacy_app = output / "Legacy Project.app"
+        write_plist(legacy_app / "Contents/Info.plist", {
+            "CFBundlePackageType": "APPL",
+            "MicaProjectLayoutName": "alpha",
+        })
+        legacy_record = root / "legacy-manifest.json"
+        legacy_record.write_text(json.dumps([{
+            "app_name": legacy_app.name,
+            "display_name": "Alpha Project",
+            "layout_name": "alpha",
+            "app_path": str(legacy_app),
+        }]), encoding="utf-8")
+        untracked_app = output / "Untracked Project.app"
+        write_plist(untracked_app / "Contents/Info.plist", {
+            "CFBundleDisplayName": "Untracked Project",
+            "CFBundleIdentifier": "com.example.untracked-project",
+            "MicaProjectLayoutName": "beta",
+        })
+        loaded_projects = INSTALLER.load_projects(legacy_record, output, layout_dir, output)
+        assert [item["app_name"] for item in loaded_projects] == [
+            "Legacy Project.mica", "Untracked Project.mica"
+        ]
+        migrated = loaded_projects[0]
+        assert migrated["app_name"] == "Legacy Project.mica"
+        assert Path(migrated["legacy_app_path"]) == legacy_app.resolve()
+        migration_backups = root / "migration-backups"
+        INSTALLER.install_layout_launcher(migrated, migration_backups)
+        migrated_launcher = output / "Legacy Project.mica"
+        assert migrated_launcher.is_symlink() and migrated_launcher.resolve() == (layout_dir / "alpha.mica").resolve()
+        assert not legacy_app.exists()
+        assert (migration_backups / legacy_app.name / "Contents/Info.plist").is_file()
+        INSTALLER.install_layout_launcher(migrated, migration_backups)
+        assert migrated_launcher.is_symlink() and len(list(migration_backups.iterdir())) == 1
+
+        stale_record = root / "stale-manifest.json"
+        stale_record.write_text(json.dumps([{
+            "app_name": "Removed Project.app",
+            "display_name": "Removed Project",
+            "layout_name": "removed-project",
+        }, {
+            "app_name": "Active Project.app",
+            "display_name": "Alpha Project",
+            "layout_name": "alpha",
+        }]), encoding="utf-8")
+        assert [item["app_name"] for item in INSTALLER.load_projects(
+            stale_record, output, layout_dir, output
+        )] == ["Active Project.mica", "Untracked Project.mica"]
+
         malicious_manifest = root / "malicious-manifest.json"
         malicious_manifest.write_text(json.dumps([{
             "app_name": "../Outside.app",
@@ -79,7 +137,7 @@ def main() -> None:
             INSTALLER.load_projects(malicious_manifest, output, layout_dir, output)
             raise AssertionError("installer accepted an app path outside its output directory")
         except RuntimeError as error:
-            assert "invalid app name" in str(error)
+            assert "invalid launcher name" in str(error)
 
         malicious_script = root / "launch-malicious.sh"
         try:
@@ -225,15 +283,15 @@ def main() -> None:
         project_folder = root / "A project folder"
         project_folder.mkdir()
         desktop.mkdir()
-        escaped_target = root / "Outside.app"
-        (desktop / "demo-project.app").symlink_to(escaped_target)
+        escaped_target = root / "outside.mica"
+        (desktop / "demo-project.mica").symlink_to(escaped_target)
         try:
             INSTALLER.create_instance_record("Demo Project", project_folder, "", layout_dir, desktop)
             raise AssertionError("new-instance accepted a symlink launcher target")
         except FileExistsError as error:
-            assert "symlink" in str(error)
+            assert "launcher already exists" in str(error)
         assert not (layout_dir / "demo-project.mica").exists()
-        (desktop / "demo-project.app").unlink()
+        (desktop / "demo-project.mica").unlink()
         make_base_app(base_app)
         icon_tool = Path(os.environ.get("MICA_PROJECT_ICON_TOOL", INSTALLER.DEFAULT_PROJECT_ICON_TOOL))
         create = subprocess.run(
@@ -254,18 +312,11 @@ def main() -> None:
             check=True,
         )
         layout = layout_dir / "demo-project.mica"
-        app = desktop / "demo-project.app"
+        app = desktop / "demo-project.mica"
         assert layout.read_text(encoding="utf-8") == (
             f"# Mica layout v1\n# Mica project: Demo Project\nShell\t{project_folder.resolve()}\t\n"
         )
-        app_info = INSTALLER.read_plist(app / "Contents/Info.plist")
-        assert app_info["CFBundleDisplayName"] == "Demo Project"
-        assert app_info["MicaProjectLayout"] == str(layout.resolve())
-        assert app_info["CFBundleIdentifier"] == "com.megasoft78.mica.project.demo-project"
-        launcher = app / "Contents/MacOS/Mica"
-        assert str(base_app.resolve()) in launcher.read_text(encoding="utf-8")
-        assert "--layout" in launcher.read_text(encoding="utf-8")
-        assert not (app / "Contents/Resources/Scripts/main.scpt").exists()
+        assert app.is_symlink() and app.resolve() == layout.resolve()
         assert json.loads(manifest.read_text(encoding="utf-8"))[0]["launch_script"] is None
         assert "created " in create.stdout and "opens a zsh shell" in create.stdout
 
@@ -295,7 +346,9 @@ def main() -> None:
         )
         flag_layout = (flag_root / "layouts" / "flag-project.mica").read_text(encoding="utf-8")
         assert flag_layout.endswith(f"Shell\t{project_folder.resolve()}\tcodex\n"), flag_layout
-        assert (flag_desktop / "flag-project.app").is_dir() and "created " in flag_run.stdout
+        flag_launcher = flag_desktop / "flag-project.mica"
+        assert flag_launcher.is_symlink() and flag_launcher.resolve() == (flag_root / "layouts/flag-project.mica").resolve()
+        assert "created " in flag_run.stdout
 
         conflict = subprocess.run(
             [
@@ -314,7 +367,7 @@ def main() -> None:
             capture_output=True,
         )
         assert conflict.returncode != 0
-        assert app.is_dir() and layout.is_file()
+        assert app.is_symlink() and app.resolve() == layout.resolve() and layout.is_file()
         assert len(json.loads(manifest.read_text(encoding="utf-8"))) == 1
 
         command_create = subprocess.run(
@@ -335,11 +388,11 @@ def main() -> None:
             check=True,
         )
         command_layout = layout_dir / "agent-project.mica"
-        command_app = desktop / "agent-project.app"
+        command_app = desktop / "agent-project.mica"
         assert command_layout.read_text(encoding="utf-8") == (
             f"# Mica layout v1\n# Mica project: Agent Project\nShell\t{project_folder.resolve()}\tcodex\n"
         )
-        assert INSTALLER.read_plist(command_app / "Contents/Info.plist")["MicaProjectLayout"] == str(command_layout.resolve())
+        assert command_app.is_symlink() and command_app.resolve() == command_layout.resolve()
         assert "prefilled in the shell" in command_create.stdout
         assert len(json.loads(manifest.read_text(encoding="utf-8"))) == 2
 
