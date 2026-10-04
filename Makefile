@@ -72,6 +72,11 @@ app: $(APP_FONTS) $(APP_LAUNCHER_SCRIPT) $(APP_ICON_TOOL) $(APP_HOOK_HELPER) $(A
 		codesign --verify --deep --strict $(APP); \
 	fi
 
+$(APP)/Contents/Info.plist: Info.plist
+	@mkdir -p $(dir $@)
+	cp $< $@
+app: $(APP)/Contents/Info.plist
+
 $(APP_BIN): Makefile $(VTERM_STATIC) src/mica_agent_detect.c include/mica_agent_detect.h src/mica_agent_state.m src/mica_agent_state.h src/mica_agent_rss.m src/mica_agent_rss.h src/mica_status_context.m src/mica_status_context.h src/mica_ssh_profile.m src/mica_ssh_profile.h src/mica_attention.m src/mica_attention.h src/mica_resume.m src/mica_resume.h src/mica_hook_install.m src/mica_hook_install.h src/mica_app.m src/mica_status_item.m src/mica_status_item.h src/mica_voice_controller.m src/mica_voice_controller.h src/mica_diagnostics.m src/mica_diagnostics.h src/mica_vocabulary.m src/mica_vocabulary.h $(CORE) $(POMODORO) include/mica.h include/mica_pomodoro.h Info.plist
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(OBJC_WARNINGS) -fobjc-arc $(CPPFLAGS) \
@@ -84,9 +89,6 @@ $(BUILD)/test-resume: tests/test_resume.m src/mica_resume.m src/mica_resume.h
 $(BUILD)/test-ssh-profile: tests/test_ssh_profile.m src/mica_ssh_profile.m src/mica_ssh_profile.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(MACOSX_VERSION_FLAG) $(OBJC_WARNINGS) -fobjc-arc -Isrc -framework Foundation src/mica_ssh_profile.m tests/test_ssh_profile.m -o $@
-	@mkdir -p $(APP)/Contents
-	@cp Info.plist $(APP)/Contents/Info.plist
-	@touch $(APP)
 
 $(VOICE_BINARY): voice/Package.swift voice/Package.resolved $(VOICE_SWIFT_SOURCES)
 	@mkdir -p $(BUILD) $(VOICE_MODULE_CACHE)
