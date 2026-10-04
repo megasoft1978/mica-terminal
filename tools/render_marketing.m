@@ -64,9 +64,20 @@ int main(int argc, const char *argv[]) {
         // The readout would show this render tool's own footprint; show the measured idle figure for the sample instead.
         delegate.memoryLabel = @"58 MB";
         SaveView(delegate, [outputDirectory stringByAppendingPathComponent:@"mica-dark.png"]);
-        // Capture real shipped discovery controls over fictional/local terminal output.
-        type(@"clear; printf 'https://example.test/guide  /Users/megasoft78/Desktop/Freelance/mica-terminal/README.md  3f9c1a2\\n'");
+        // Capture real shipped discovery controls over fictional/local terminal output and a temporary file.
+        char quickFixtureTemplate[] = "/tmp/mica-marketing.XXXXXX";
+        char *quickFixturePath = mkdtemp(quickFixtureTemplate);
+        if (!quickFixturePath) return 1;
+        NSString *quickFixtureDirectory = [NSString stringWithUTF8String:quickFixturePath];
+        NSString *quickFixtureFile = [quickFixtureDirectory stringByAppendingPathComponent:@"README.md"];
+        if (![NSFileManager.defaultManager createFileAtPath:quickFixtureFile
+            contents:[@"Mica marketing fixture\\n" dataUsingEncoding:NSUTF8StringEncoding] attributes:nil]) return 1;
+        type([NSString stringWithFormat:@"clear; printf 'https://example.test/guide  %@  3f9c1a2\\n'", quickFixtureFile]);
         [delegate.terminalView toggleQuickSelect:nil];
+        for (int i = 0; i < 60 && !delegate.terminalView.quickSelectActive; i++) {
+            [delegate pollSessions:nil]; RunLoopFor(0.02);
+        }
+        if (!delegate.terminalView.quickSelectActive || delegate.terminalView.quickSelectMatches.count < 3) return 1;
         SaveView(delegate, [outputDirectory stringByAppendingPathComponent:@"quick-select-dark.png"]);
         [delegate.terminalView toggleQuickSelect:nil];
         [delegate toggleCommandPalette:nil];
@@ -102,10 +113,15 @@ int main(int argc, const char *argv[]) {
         SaveView(delegate, [outputDirectory stringByAppendingPathComponent:@"vocabulary-correction-demo.png"]);
         [delegate setLightTheme:YES];
         RunLoopFor(0.3);
+        type(@"clear; printf 'git status --short\\n M Sources/Fieldnote.swift\\n\\nmake test\\n✓ 42 tests passed\\n'");
         delegate.activeTab.cwd = @"/Users/me/code/fieldnote";
         SaveView(delegate, [outputDirectory stringByAppendingPathComponent:@"mica-light.png"]);
-        type(@"clear; printf 'https://example.test/guide  /Users/megasoft78/Desktop/Freelance/mica-terminal/README.md  3f9c1a2\\n'");
+        type([NSString stringWithFormat:@"clear; printf 'https://example.test/guide  %@  3f9c1a2\\n'", quickFixtureFile]);
         [delegate.terminalView toggleQuickSelect:nil];
+        for (int i = 0; i < 60 && !delegate.terminalView.quickSelectActive; i++) {
+            [delegate pollSessions:nil]; RunLoopFor(0.02);
+        }
+        if (!delegate.terminalView.quickSelectActive || delegate.terminalView.quickSelectMatches.count < 3) return 1;
         SaveView(delegate, [outputDirectory stringByAppendingPathComponent:@"quick-select-light.png"]);
         [delegate.terminalView toggleQuickSelect:nil];
         [delegate toggleCommandPalette:nil];
@@ -123,6 +139,7 @@ int main(int argc, const char *argv[]) {
         [[paletteBitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
             writeToFile:[outputDirectory stringByAppendingPathComponent:@"command-palette-light.png"] atomically:YES];
         [delegate toggleCommandPalette:nil];
+        [NSFileManager.defaultManager removeItemAtPath:quickFixtureDirectory error:nil];
         for (MicaTab *tab in delegate.tabs) if (tab.session) mica_session_destroy(tab.session), tab.session = NULL;
     }
     return 0;

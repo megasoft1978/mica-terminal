@@ -7,10 +7,8 @@ command -v ffmpeg >/dev/null || { echo 'ffmpeg is required to encode demo assets
 make build/render-demo
 work_dir=$(mktemp -d "$repo_root/build/demo-export.XXXXXX")
 build/render-demo "$work_dir/frames"
-ffmpeg -v error -y -framerate 10 -i "$work_dir/frames/frame-%04d.png" -frames:v 160 \
-    -c:v libx264 -crf 24 -preset slow -pix_fmt yuv420p -movflags +faststart -an "$work_dir/base.mp4"
-# A short project-first walkthrough: identify the window, choose from the real Dock menu titles,
-# then show the second named project window. Keep the longer feature tour below as a second look.
+# A focused project-switching clip: identify the window, choose from the Dock menu titles,
+# then show the second named project window.
 ffmpeg -v error -y \
     -loop 1 -framerate 10 -t 2.4 -i "$work_dir/frames/project-switch-fieldnote.png" \
     -loop 1 -framerate 10 -t 2.4 -i "$work_dir/frames/project-switch-menu.png" \
@@ -24,24 +22,24 @@ ffmpeg -v error -y -i "$work_dir/project-switching-demo.mp4" \
 cp "$work_dir/frames/project-switch-menu.png" "$work_dir/project-switching-demo-poster.png"
 ffmpeg -v error -y -i "$work_dir/project-switching-demo-poster.png" -frames:v 1 -q:v 2 \
     "$work_dir/project-switching-demo-poster.jpg"
-# Hold feature stills long enough to read; both are captures of the current native UI.
-ffmpeg -v error -y -i "$work_dir/base.mp4" -loop 1 -t 2 -i "$work_dir/frames/quick-select-demo.png" \
-    -loop 1 -t 2 -i "$work_dir/frames/command-palette-demo.png" \
-    -loop 1 -t 2 -i "$work_dir/frames/prompt-navigation-demo.png" \
-    -loop 1 -t 2 -i "$work_dir/frames/vocabulary-correction-demo.png" \
-    -loop 1 -t 3 -i "$work_dir/frames/ssh-profiles-demo.png" \
-    -loop 1 -t 3 -i "$work_dir/frames/timer-menu-bar-demo.png" \
-    -filter_complex '[0:v]setpts=PTS-STARTPTS,scale=1280:564:force_original_aspect_ratio=decrease,pad=1280:564:(ow-iw)/2:(oh-ih)/2,setsar=1[a];[1:v]fps=10,scale=1280:564:force_original_aspect_ratio=decrease,pad=1280:564:(ow-iw)/2:(oh-ih)/2,setsar=1[b];[2:v]fps=10,scale=1280:564:force_original_aspect_ratio=decrease,pad=1280:564:(ow-iw)/2:(oh-ih)/2,setsar=1[c];[3:v]fps=10,scale=1280:564:force_original_aspect_ratio=decrease,pad=1280:564:(ow-iw)/2:(oh-ih)/2,setsar=1[d];[4:v]fps=10,scale=1280:564:force_original_aspect_ratio=decrease,pad=1280:564:(ow-iw)/2:(oh-ih)/2,setsar=1[e];[5:v]fps=10,scale=1280:564:force_original_aspect_ratio=decrease,pad=1280:564:(ow-iw)/2:(oh-ih)/2,setsar=1[f];[6:v]fps=10,scale=1280:564:force_original_aspect_ratio=decrease,pad=1280:564:(ow-iw)/2:(oh-ih)/2,setsar=1[g];[a][b][c][d][e][f][g]concat=n=7:v=1:a=0[out]' \
-    -map '[out]' -c:v libx264 -crf 24 -preset slow -pix_fmt yuv420p -movflags +faststart -an "$work_dir/mica-demo.mp4"
-ffmpeg -v error -y -framerate 10 -i "$work_dir/frames/frame-%04d.png" -loop 1 -t 1.5 -i "$work_dir/frames/quick-select-demo.png" \
-    -loop 1 -t 1.5 -i "$work_dir/frames/command-palette-demo.png" \
-    -loop 1 -t 1.5 -i "$work_dir/frames/prompt-navigation-demo.png" \
-    -loop 1 -t 1.5 -i "$work_dir/frames/vocabulary-correction-demo.png" \
-    -loop 1 -t 2 -i "$work_dir/frames/ssh-profiles-demo.png" \
-    -loop 1 -t 2 -i "$work_dir/frames/timer-menu-bar-demo.png" \
-    -filter_complex '[0:v]fps=8,scale=800:352:force_original_aspect_ratio=decrease,pad=800:352:(ow-iw)/2:(oh-ih)/2,setsar=1[base];[1:v]fps=8,scale=800:352:force_original_aspect_ratio=decrease,pad=800:352:(ow-iw)/2:(oh-ih)/2,setsar=1[q];[2:v]fps=8,scale=800:352:force_original_aspect_ratio=decrease,pad=800:352:(ow-iw)/2:(oh-ih)/2,setsar=1[p];[3:v]fps=8,scale=800:352:force_original_aspect_ratio=decrease,pad=800:352:(ow-iw)/2:(oh-ih)/2,setsar=1[n];[4:v]fps=8,scale=800:352:force_original_aspect_ratio=decrease,pad=800:352:(ow-iw)/2:(oh-ih)/2,setsar=1[v];[5:v]fps=8,scale=800:352:force_original_aspect_ratio=decrease,pad=800:352:(ow-iw)/2:(oh-ih)/2,setsar=1[s];[6:v]fps=8,scale=800:352:force_original_aspect_ratio=decrease,pad=800:352:(ow-iw)/2:(oh-ih)/2,setsar=1[t];[base][q][p][n][v][s][t]concat=n=7:v=1:a=0,split[a][b];[a]palettegen=max_colors=18[pal];[b][pal]paletteuse=dither=none[out]' \
-    -map '[out]' -frames:v 250 -loop 0 "$work_dir/mica-demo.gif"
-ffmpeg -v error -y -i "$work_dir/frames/frame-0090.png" -frames:v 1 -vf 'scale=1280:-2' "$work_dir/mica-demo-poster.png"
+# A captioned feature tour with readable holds. The first scenes establish project identity,
+# followed by the terminal, palette, Quick Select, local dictation, timer and SSH profiles.
+ffmpeg -v error -y \
+    -loop 1 -framerate 10 -t 2.0 -i "$work_dir/frames/project-switch-fieldnote.png" \
+    -loop 1 -framerate 10 -t 2.0 -i "$work_dir/frames/project-switch-menu.png" \
+    -loop 1 -framerate 10 -t 2.0 -i "$work_dir/frames/project-switch-northstar.png" \
+    -loop 1 -framerate 10 -t 1.8 -i "$work_dir/frames/feature-tabs.png" \
+    -loop 1 -framerate 10 -t 2.2 -i "$work_dir/frames/feature-palette.png" \
+    -loop 1 -framerate 10 -t 2.2 -i "$work_dir/frames/feature-quick-select.png" \
+    -loop 1 -framerate 10 -t 2.2 -i "$work_dir/frames/feature-dictation.png" \
+    -loop 1 -framerate 10 -t 2.0 -i "$work_dir/frames/feature-focus-timer.png" \
+    -loop 1 -framerate 10 -t 2.0 -i "$work_dir/frames/feature-ssh.png" \
+    -filter_complex '[0:v]fps=10,scale=1280:564:force_original_aspect_ratio=decrease,pad=1280:564:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[a];[1:v]fps=10,scale=1280:564:force_original_aspect_ratio=decrease,pad=1280:564:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[b];[2:v]fps=10,scale=1280:564:force_original_aspect_ratio=decrease,pad=1280:564:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[c];[3:v]fps=10,scale=1280:564:force_original_aspect_ratio=decrease,pad=1280:564:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[d];[4:v]fps=10,scale=1280:564:force_original_aspect_ratio=decrease,pad=1280:564:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[e];[5:v]fps=10,scale=1280:564:force_original_aspect_ratio=decrease,pad=1280:564:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[f];[6:v]fps=10,scale=1280:564:force_original_aspect_ratio=decrease,pad=1280:564:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[g];[7:v]fps=10,scale=1280:564:force_original_aspect_ratio=decrease,pad=1280:564:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[h];[8:v]fps=10,scale=1280:564:force_original_aspect_ratio=decrease,pad=1280:564:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[i];[a][b][c][d][e][f][g][h][i]concat=n=9:v=1:a=0[out]' \
+    -map '[out]' -c:v libx264 -crf 23 -preset slow -pix_fmt yuv420p -movflags +faststart -an "$work_dir/mica-demo.mp4"
+ffmpeg -v error -y -i "$work_dir/mica-demo.mp4" \
+    -vf 'fps=6,scale=800:352:flags=lanczos,split[a][b];[a]palettegen=max_colors=64[pal];[b][pal]paletteuse=dither=bayer' \
+    -loop 0 "$work_dir/mica-demo.gif"
+cp "$work_dir/frames/project-switch-fieldnote.png" "$work_dir/mica-demo-poster.png"
 cp "$work_dir/mica-demo.mp4" "$work_dir/mica-demo.gif" "$work_dir/mica-demo-poster.png" docs/assets/
 cp "$work_dir/project-switching-demo.mp4" "$work_dir/project-switching-demo.gif" "$work_dir/project-switching-demo-poster.jpg" docs/assets/
 cp "$work_dir/frames/quick-select-demo.png" docs/assets/quick-select-demo.png
@@ -50,4 +48,4 @@ cp "$work_dir/frames/prompt-navigation-demo.png" docs/assets/prompt-navigation-d
 cp "$work_dir/frames/vocabulary-correction-demo.png" docs/assets/vocabulary-correction-demo.png
 cp "$work_dir/frames/ssh-profiles-demo.png" docs/assets/ssh-profiles-demo.png
 cp "$work_dir/frames/timer-menu-bar-demo.png" docs/assets/timer-menu-bar-demo.png
-printf 'Created the short project-switching demo, the longer feature tour, posters and feature captures. Source frames: %s/frames\n' "$work_dir"
+printf 'Created project-switching and feature-tour MP4/GIF assets, posters and feature captures. Source frames: %s/frames\n' "$work_dir"

@@ -6,22 +6,22 @@
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#f3f5f8" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0b0f14" media="(prefers-color-scheme: dark)">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; media-src 'self'; font-src 'self'; style-src 'sha256-o+0Fg1rOx4Lr3Yg0B8t3itljKfaZTiwKOKgXST4jcRo='; script-src 'sha256-iUYeWoXRRX+DrIVa4NcILSYwuvb18vq7YMzO3Dr2gYQ=' 'sha256-obQLhE2id96/7pWU+OVxA2Il4k1t4IAuXtnh2TzQdyE='; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; media-src 'self'; font-src 'self'; style-src 'sha256-Jq51OqL1NEw+VEeJ1NayFulJRby0ZQ/1cd6QzMbI/aQ='; script-src 'sha256-ZKWJvTMQWK9icjNSqRT0S6fWvWANSeyOku2tgJhld4g=' 'sha256-aQkviU13uVEd3T/778S6YyfmCR17tVNrd9s7rqcTR/U='; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
   <title>Mica — know exactly which project you’re in</title>
-  <meta name="description" content="Give every project its own named Mac window. Switch between open projects from one Dock icon. Mica includes a terminal, on-device dictation and a focus timer.">
+  <meta name="description" content="Give every project its own named Mac window. See the name in the window, then switch by name from one Dock icon. Mica includes a terminal, on-device dictation and a focus timer.">
   <link rel="canonical" href="https://megasoft1978.github.io/mica-terminal/">
   <link rel="icon" type="image/png" sizes="64x64" href="icon-64.png">
   <link rel="apple-touch-icon" href="icon-180.png">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Mica">
   <meta property="og:title" content="Mica — know exactly which project you’re in">
-  <meta property="og:description" content="Give every project its own named Mac window. Switch between open projects from one Dock icon.">
+  <meta property="og:description" content="Give every project its own named Mac window. See the name in the window, then switch by name from one Dock icon.">
   <meta property="og:url" content="https://megasoft1978.github.io/mica-terminal/">
   <meta property="og:image" content="https://megasoft1978.github.io/mica-terminal/assets/project-switching-demo-poster.jpg">
-  <meta property="og:image:alt" content="Mica’s Dock menu lists the open Fieldnote and Northstar windows by project name.">
+  <meta property="og:image:alt" content="Illustrated Mica Dock menu showing fictional Fieldnote and Northstar project windows.">
   <meta name="twitter:card" content="summary_large_image">
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Mica","applicationCategory":"DeveloperApplication","operatingSystem":"macOS 14 or later","softwareVersion":"0.1.0-alpha.16","license":"https://opensource.org/licenses/MIT","isAccessibleForFree":true,"downloadUrl":"https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/Mica.zip","fileSize":"10.6MB","description":"A native Mac terminal with saved SSH profiles, on-device dictation, project identity, command context and a focus timer that idles around 55-60 MB.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"sameAs":["https://github.com/megasoft1978/mica-terminal"]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Mica","applicationCategory":"DeveloperApplication","operatingSystem":"macOS 14 or later","softwareVersion":"0.1.0-alpha.16","license":"https://opensource.org/licenses/MIT","isAccessibleForFree":true,"downloadUrl":"https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/Mica.zip","fileSize":"10.6MB","description":"A native Mac terminal with named project windows, on-device dictation, command search and a focus timer.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"sameAs":["https://github.com/megasoft1978/mica-terminal"]}</script>
   <style>
     @font-face { font-family: "JetBrains Mono"; src: url(fonts/JetBrainsMono-Regular.woff2) format("woff2"); font-weight: 400; font-display: swap; }
     @font-face { font-family: "JetBrains Mono"; src: url(fonts/JetBrainsMono-Bold.woff2) format("woff2"); font-weight: 700; font-display: swap; }
@@ -49,7 +49,10 @@
     .skip { position: absolute; left: 16px; top: -60px; z-index: 20; padding: 10px 14px; background: var(--ink); color: var(--bg); border-radius: 8px; text-decoration: none; }
     .skip:focus { top: 12px; }
 
-    header { display: flex; align-items: center; justify-content: space-between; height: 72px; position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(12px); }
+    header { height: 72px; position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(12px); }
+    header .header-inner { display: flex; align-items: center; justify-content: space-between; height: 100%; }
+    main [id] { scroll-margin-top: 88px; }
+    #main { scroll-margin-top: 72px; }
     nav a.dl { background: var(--ink); color: var(--bg); padding: 8px 16px; border-radius: 999px; font-weight: 600; text-decoration: none; }
     nav a.dl:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
     .brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; font: 700 19px var(--display); letter-spacing: -0.02em; }
@@ -57,6 +60,8 @@
     nav { display: flex; align-items: center; gap: 26px; font-size: 15px; color: var(--muted); }
     nav a { text-decoration: none; }
     nav a:hover { color: var(--ink); }
+    nav .desktop-sections { display: flex; align-items: center; gap: 26px; }
+    nav .mobile-sections { display: none; position: relative; }
 
     .hero { padding: 52px 0 0; text-align: center; }
     h1 { max-width: 19ch; margin: 0 auto; font: 700 clamp(44px, 8vw, 92px)/0.98 var(--display); letter-spacing: -0.045em; text-wrap: balance; }
@@ -93,7 +98,7 @@
     section { padding: 112px 0 0; }
     h2 { margin: 0; font: 700 clamp(30px, 4.4vw, 48px)/1.05 var(--display); letter-spacing: -0.035em; text-wrap: balance; }
     .memory { padding-top: 112px; }
-    .memory-lede { max-width: 38em; color: var(--muted); margin: 16px 0 0; }
+    .memory-lede { max-width: 44em; color: var(--muted); margin: 16px 0 0; }
     .bars { list-style: none; margin: 40px 0 0; padding: 0; display: grid; gap: 14px; }
     .bars li { display: grid; grid-template-columns: minmax(150px, 220px) 1fr 84px; align-items: center; gap: 18px; }
     .bars .name { font-weight: 600; } .bars small { display: block; color: var(--muted); font-weight: 400; font-size: 13px; }
@@ -103,7 +108,7 @@
     .bars .bar.mica { width: 9%; } .bars .bar.b69 { width: 10.7%; } .bars .bar.b80 { width: 12.4%; }
     .bars .bar.b126 { width: 19.5%; } .bars .bar.b645 { width: 100%; }
     .bars .value { text-align: right; font: 600 15px var(--mono); }
-    .memory-note { max-width: 46em; color: var(--muted); margin: 28px 0 0; font-size: 15px; }
+    .memory-note { max-width: 54em; color: var(--muted); margin: 28px 0 0; font-size: 15px; }
     .memory-note strong { color: var(--ink); }
     .install { display: grid; gap: 28px; grid-template-columns: 1fr 1.15fr; align-items: center; }
     .install p { color: var(--muted); max-width: 30em; margin: 16px 0 0; }
@@ -125,6 +130,11 @@
     .fact:first-child { border-left: 0; padding-left: 0; }
     .fact b { display: block; font: 700 28px var(--display); letter-spacing: -0.03em; }
     .fact span { color: var(--muted); font-size: 15px; }
+    .feature-intro { max-width: 44em; margin: 16px 0 0; color: var(--muted); }
+    .limits-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 22px; margin-top: 30px; }
+    .limit { padding: 24px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+    .limit h3 { margin: 0; font: 650 20px/1.2 var(--display); }
+    .limit p { margin: 10px 0 0; color: var(--muted); }
 
     .final { text-align: center; padding-bottom: 96px; }
     .final .code { max-width: 640px; margin: 32px auto 0; text-align: left; }
@@ -156,10 +166,24 @@
     }
     @media (max-width: 860px) {
       .install, .row, .row.flip { grid-template-columns: 1fr; gap: 28px; }
+      .limits-grid { grid-template-columns: 1fr; }
       .row.flip .shot { order: 0; }
       .facts { grid-template-columns: 1fr 1fr; } .fact:nth-child(3) { border-left: 0; padding-left: 0; } .fact { border-top: 1px solid var(--line); } .fact:nth-child(-n+2) { border-top: 0; }
       section { padding-top: 80px; } .row { padding-top: 72px; }
-      nav a.hide-small { display: none; }
+      nav { gap: 12px; font-size: 14px; }
+      nav .desktop-sections { display: none; }
+      nav .mobile-sections { display: block; }
+      nav .mobile-sections > summary { cursor: pointer; list-style: none; white-space: nowrap; }
+      nav .mobile-sections > summary::-webkit-details-marker { display: none; }
+      nav .mobile-sections > summary::after { content: "⌄"; margin-left: 6px; }
+      nav .mobile-sections[open] > div { position: absolute; top: calc(100% + 12px); right: 0; z-index: 10; display: grid; min-width: 160px; padding: 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink); box-shadow: 0 14px 36px rgba(0,0,0,.18); }
+      nav .mobile-sections[open] > div a { padding: 8px 10px; }
+    }
+    @media (max-width: 380px) {
+      .brand { gap: 6px; font-size: 18px; }
+      nav { gap: 8px; }
+      nav a.github { display: none; }
+      nav a.dl { padding-inline: 12px; }
     }
     .faq details { border-top: 1px solid var(--line); padding: 14px 0; }
     .faq details:last-of-type { border-bottom: 1px solid var(--line); }
@@ -181,36 +205,48 @@
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
-  <div class="wrap">
-    <header>
+  <header id="top">
+    <div class="wrap header-inner">
       <a class="brand" href="#top" aria-label="Mica home"><img src="icon-64.png" alt="" width="30" height="30"><span>Mica</span></a>
       <nav aria-label="Main">
-        <a class="hide-small" href="#memory">Memory</a>
-        <a class="hide-small" href="#features">Features</a>
-        <a class="hide-small" href="#ssh">SSH</a>
-        <a class="hide-small" href="#compare">Compare</a>
-        <a class="hide-small" href="#install">Install</a>
-        <a href="https://github.com/megasoft1978/mica-terminal">GitHub</a>
+        <div class="desktop-sections">
+          <a href="#memory">Memory</a>
+          <a href="#features">Features</a>
+          <a href="#ssh">SSH</a>
+          <a href="#limits">Limits</a>
+          <a href="#install">Install</a>
+        </div>
+        <details class="mobile-sections">
+          <summary>Sections</summary>
+          <div>
+            <a href="#memory">Memory</a>
+            <a href="#features">Features</a>
+            <a href="#ssh">SSH</a>
+            <a href="#limits">Limits</a>
+            <a href="#install">Install</a>
+          </div>
+        </details>
+        <a class="github" href="https://github.com/megasoft1978/mica-terminal">GitHub</a>
         <a class="dl" href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/Mica.zip">Download</a>
       </nav>
-    </header>
-  </div>
+    </div>
+  </header>
 
   <main id="main">
-    <div id="top" class="wrap hero">
+    <div class="wrap hero">
       <h1>Know exactly which project you’re in.</h1>
-      <p class="lede">Keep each project in its own named window. Mica’s Dock menu lets you switch by name. Terminal and agent tabs, on-device dictation and a focus timer come built in.</p>
+      <p class="lede">Give each project its own named window. See the name in the window, then switch between open projects from Mica’s single Dock icon. Terminal tabs, on-device dictation and a focus timer are built in.</p>
       <div class="actions">
         <a class="button primary" href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/Mica.zip">Download for Mac</a>
         <a class="button secondary" href="#demo">See how switching works</a>
       </div>
-      <p class="fine">Version 0.1.0 alpha 16 · 10.6 MB · Apple silicon, macOS 14 or later · about 55–60 MB idle · Free and open source</p>
+      <p class="fine">Version 0.1.0 alpha 16 · 10.6 MB · Apple silicon · macOS 14 or later · Free and open source</p>
 
       <div class="stage">
         <div class="sheet"></div><div class="sheet two"></div><div class="sheet three"></div>
         <figure class="window">
-          <img id="shot-dark" src="assets/mica-dark.png" width="2200" height="880" alt="Mica’s Fieldnote project window with its name visible at the right end of the tab strip, plus terminal output and a live memory readout.">
-          <img id="shot-light" src="assets/mica-light.png" width="2200" height="880" alt="Light Mica terminal showing vocabulary correction on a fake transcript without microphone input." hidden>
+          <img id="shot-dark" src="assets/mica-dark.png" width="2200" height="880" alt="Mica’s Fieldnote project window. The name appears at the right end of the tab strip above Shell, Preview, Codex, Claude Code and lazygit tabs.">
+          <img id="shot-light" src="assets/mica-light.png" width="2200" height="880" alt="The same fictional Fieldnote project window in Mica’s light theme." hidden>
           <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
         </figure>
       </div>
@@ -222,23 +258,27 @@
     </div>
 
     <div class="wrap" id="demo">
-      <h2 class="demo-heading">Find any project in eight seconds.</h2>
-      <div class="shot"><video controls muted playsinline preload="metadata" poster="assets/project-switching-demo-poster.jpg" width="1280" height="564" aria-describedby="demo-caption"><source src="assets/project-switching-demo.mp4" type="video/mp4">Your browser cannot play this video. Read the demo transcript below or download the MP4.</video></div>
-      <p class="caption" id="demo-caption">A short walkthrough built from Mica’s current window captures and Dock-menu entries. See “Fieldnote” in its window badge, open the project list, then choose “Northstar — Shell.” Each window keeps its own project name and working folder.</p>
+      <h2 class="demo-heading">See project switching in this 8-second demo.</h2>
+      <div class="shot"><video controls muted playsinline preload="metadata" poster="assets/project-switching-demo-poster.jpg" width="1280" height="564" aria-label="Illustrated eight-second walkthrough of switching between named Mica project windows"><source src="assets/project-switching-demo.mp4" type="video/mp4">Your browser cannot play this video. Read the demo transcript below or download the MP4.</video></div>
+      <p class="caption" id="demo-caption">An illustrated walkthrough assembled from current Mica window captures and live Dock-menu entries. The project names and terminal output are fictional; the menu panel is drawn for the demo.</p>
       <details class="demo-transcript"><summary>Demo transcript and download</summary>
-        <p>Mica uses one Dock icon for its shared process. Right-clicking it opens a project list built from the open windows; the active project has a checkmark, and choosing another entry brings that window forward. The short demo uses fictional Fieldnote and Northstar projects and local sample output. No coding agent or network connection is used.</p>
-        <p><a href="assets/project-switching-demo.mp4" download>Download the 8-second project demo</a>. It is silent and starts only when you press Play.</p>
+        <p>Right-click Mica’s single Dock icon to see open project windows and their active tabs. The current window is checked; choosing another entry brings it forward. This demo uses fictional Fieldnote and Northstar projects and local sample output. It does not run an agent, use a microphone or connect to a remote host.</p>
+        <p><a href="assets/project-switching-demo.mp4" download>Download the project-switching demo</a>. It is silent and starts only when you press Play.</p>
       </details>
-      <details class="feature-tour"><summary>Watch the longer feature tour (30 seconds)</summary>
-        <div class="shot"><video controls muted playsinline preload="none" poster="assets/mica-demo-poster.png" width="1280" height="564"><source src="assets/mica-demo.mp4" type="video/mp4">Your browser cannot play this video.</video></div>
-        <p class="caption">Quick Select, the Command Palette, prompt navigation, local vocabulary correction, saved SSH profiles and the menu-bar focus timer. SSH destinations are fictional; no connection is made.</p>
+      <details class="feature-tour"><summary>Watch the 18-second feature tour</summary>
+        <div class="shot"><video controls muted playsinline preload="none" poster="assets/mica-demo-poster.png" width="1280" height="564" aria-label="18-second Mica feature tour: named project windows, terminal tabs, command search, Quick Select, local dictation, focus timer and SSH profiles"><source src="assets/mica-demo.mp4" type="video/mp4">Your browser cannot play this video. Open the <a href="assets/mica-demo.mp4">MP4</a> or <a href="assets/mica-demo.gif">looping animated GIF, which has no pause control</a>.</video></div>
+        <p class="caption">The tour moves from named project windows to terminal tabs, Command Palette, Quick Select, an example dictation transcript, the focus timer and saved SSH profiles. Project names, commands and destinations are fictional. The Dock chooser and timer menu are illustrated from Mica’s current menu items. The tour uses no microphone, coding agent or remote connection.</p>
+        <p class="caption"><a href="assets/mica-demo.gif">Open the looping GIF (no pause control; use MP4 for reduced motion)</a> or <a href="assets/mica-demo.mp4" download>download the silent MP4 with playback controls</a>.</p>
+        <details class="demo-transcript"><summary>Read the feature tour</summary>
+          <ol><li>Each project has a named window; choose an open project from Mica’s Dock menu.</li><li>Keep shell tools in named terminal tabs.</li><li>Search actions and tabs with the Command Palette.</li><li>Label a visible link, existing path or Git hash with Quick Select.</li><li>Review and correct a local dictation example before insertion.</li><li>Check the focus phase and countdown in the menu bar.</li><li>Save SSH profiles to open fresh terminal connections later.</li></ol>
+        </details>
       </details>
     </div>
 
     <div class="wrap" id="memory">
       <section class="memory">
-        <h2>It weighs less than the tools it replaces.</h2>
-        <p class="memory-lede">Most people run a terminal, a voice-typing app and a timer separately, and the voice app is often a web browser in disguise. Mica builds all three into one native process, with no web view.</p>
+        <h2>A dated memory baseline.</h2>
+        <p class="memory-lede">On September 29, 2026, one Mica window with three tabs used about 55–60 MB idle on the same Apple silicon Mac as the other measurements. This was before alpha 16, so treat it as a baseline—not a measurement of this release.</p>
         <ul class="bars" aria-label="Idle memory use of each app, in megabytes">
           <li><span class="name">Mica <small>terminal, voice typing, timer</small></span><span class="track"><i class="bar mica"></i></span><span class="value">55–60 MB</span></li>
           <li><span class="name">Alacritty <small>terminal only</small></span><span class="track"><i class="bar b69"></i></span><span class="value">69 MB</span></li>
@@ -246,29 +286,7 @@
           <li><span class="name">iTerm2 <small>terminal only</small></span><span class="track"><i class="bar b126"></i></span><span class="value">126 MB</span></li>
           <li><span class="name">Wispr Flow <small>voice typing only</small></span><span class="track"><i class="bar b645"></i></span><span class="value">645 MB</span></li>
         </ul>
-        <p class="memory-note"><strong>iTerm2 plus Wispr Flow is about 770 MB</strong> before you add a timer. Measured idle with one window each, on the same Mac. Voice typing adds a helper of about 35 MB only while you speak, then it exits, and Mica shows its own memory live in the status bar. Very large windows cost more in every app, and project windows share one process; the <a href="https://github.com/megasoft1978/mica-terminal/blob/main/docs/MEMORY-BASELINE.md">measurements page</a> has the method and the cases where Mica does not win.</p>
-      </section>
-    </div>
-
-    <div class="wrap" id="compare">
-      <section class="compare">
-        <h2>Where it wins, and where it does not.</h2>
-        <div class="tablewrap" tabindex="0" role="region" aria-label="Feature comparison; scroll horizontally to see all apps">
-          <table>
-            <caption class="sr">Mica compared with iTerm2, Alacritty, kitty and Wispr Flow</caption>
-            <thead><tr><th scope="col"></th><th scope="col">Mica</th><th scope="col">iTerm2</th><th scope="col">Alacritty</th><th scope="col">kitty</th><th scope="col">Wispr Flow</th></tr></thead>
-            <tbody>
-              <tr><th scope="row">Idle memory, measured</th><td class="win">55–60 MB</td><td>126 MB</td><td>69 MB</td><td>80 MB</td><td>645 MB</td></tr>
-              <tr><th scope="row">Terminal</th><td class="win">Yes</td><td>Yes</td><td>Yes</td><td>Yes</td><td>No</td></tr>
-              <tr><th scope="row">Voice typing</th><td class="win">Yes, on your Mac</td><td>No</td><td>No</td><td>No</td><td>Yes</td></tr>
-              <tr><th scope="row">Focus timer</th><td class="win">Yes</td><td>No</td><td>No</td><td>No</td><td>No</td></tr>
-              <tr><th scope="row">Split panes</th><td class="lose">Not yet</td><td>Yes</td><td>No</td><td>Yes</td><td>n/a</td></tr>
-              <tr><th scope="row">Scripting and plugins</th><td class="lose">Layout files only</td><td>Yes</td><td>Config file</td><td>Yes</td><td>n/a</td></tr>
-              <tr><th scope="row">Open source</th><td class="win">MIT</td><td>GPL</td><td>Apache-2.0</td><td>GPL</td><td>No</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <p class="memory-note">Memory figures are idle, one window, on the same Mac; <a href="https://github.com/megasoft1978/mica-terminal/blob/main/docs/MEMORY-BASELINE.md">method and caveats</a>. Feature rows are from each project’s own documentation as of September 2026. Mica is young: iTerm2 and kitty are more mature and more configurable.</p>
+        <p class="memory-note">Each figure is an idle measurement with one window on the same Mac. Mica’s speech helper adds about 30–37 MB during dictation, then exits; additional project windows share the main Mica process. Window size, settings and macOS affect memory. See the <a href="https://github.com/megasoft1978/mica-terminal/blob/main/docs/MEMORY-BASELINE.md">measurement method and caveats</a>.</p>
       </section>
     </div>
 
@@ -278,10 +296,10 @@
           <h2>Download, drag, open.</h2>
           <ol class="steps">
             <li>Download <b>Mica.zip</b> (10.6 MB; Apple silicon, macOS 14 or later).</li>
-            <li>Extract the ZIP, move Mica to Applications and open it. This build is Developer ID signed and notarized; verify it with the <a href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/SHA256SUMS.txt">published checksum manifest</a>.</li>
-            <li>Hold left <kbd>⌥</kbd> or click the microphone in the status bar to dictate. The 630 MB speech model downloads in the background on first launch.</li>
+            <li>Extract the ZIP, move Mica to Applications and open it. This build is Developer ID signed and notarized; the <a href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/SHA256SUMS.txt">checksum manifest</a> is available beside the download.</li>
+            <li>Mica prepares dictation in the background on first launch and after app updates that change its speech helper. It downloads model files only if they are missing and reuses local files otherwise. If you start dictating before setup finishes, the helper loads the model on demand. This setup does not require microphone access.</li>
+            <li>Grant microphone access only when you start dictating. Review and edit the transcript before sending it to the terminal prompt.</li>
           </ol>
-          <p>Alpha 16 is Developer ID signed and notarized. Verify the download with the <a href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/SHA256SUMS.txt">published SHA-256 manifest</a>.</p>
           <p>Prefer to build it yourself? You need the Xcode command line tools; the terminal library ships in the repository and the first build also fetches the speech package.</p>
         </div>
         <div class="code" role="group" aria-label="Build instructions"><button class="copy" type="button" data-copy="git clone https://github.com/megasoft1978/mica-terminal.git&#10;cd mica-terminal&#10;make app &amp;&amp; open build/Mica.app">Copy</button>git clone https://github.com/megasoft1978/mica-terminal.git
@@ -291,96 +309,94 @@ make app &amp;&amp; open build/Mica.app</div>
     </div>
 
     <div class="wrap" id="features">
+      <section>
+        <h2>Useful tools around your terminal.</h2>
+        <p class="feature-intro">Mica keeps project identity at the center, then adds fast navigation, local dictation, a shared timer and SSH profiles around ordinary shell sessions.</p>
+      </section>
       <div class="row">
         <div>
-          <h3>One window for each project.</h3>
-          <p>Name a project, give it folders and startup tabs, and open it again from a launcher on your Desktop. The top-right badge and window title show the project name; hover the badge for the full name. Right-click Mica's single Dock icon to choose an open project window. Its mark follows the front project, while the menu shows each project's full name and active tab. The status bar shows the Git branch, and a worktree tab gives each agent its own checkout.</p>
+          <h3>Recognize each project at a glance.</h3>
+          <p>Open a project in its own named window. The project name appears in the title and top-right badge; hover the badge to see the full name. Right-click Mica’s Dock icon to switch between open projects; each menu entry shows its project name and active tab. Desktop launchers can reopen a project with its folders and startup tabs.</p>
         </div>
         <div class="shot"><img src="assets/crop-tabs-dark.png" width="1500" height="190" alt="A row of tabs named Shell, Preview, Codex, Claude Code and lazygit above terminal output." loading="lazy"></div>
       </div>
       <div class="row">
         <div>
-          <h3>Find actions and useful text quickly.</h3>
-          <p>Open the Command Palette with <kbd>⌘⇧P</kbd> to search menu actions, switch tabs and mute notifications for a tab. Quick Select (<kbd>⌘⇧U</kbd>) labels visible URLs, existing file paths and git hashes; type a label to copy, or hold Option to open or reveal it.</p>
+          <h3>Keep shell tools in named tabs.</h3>
+          <p>Run Claude Code, Codex, <code>lazygit</code> and other programs in regular <code>zsh</code> tabs. Mica’s activity detection is designed for Claude Code and Codex; screen-based detection is best-effort, and other programs are not guaranteed an agent status. The Git branch appears in the status bar, and a worktree tab can give an agent a separate checkout.</p>
         </div>
-        <div class="shot"><img src="assets/command-palette-tabs-dark.png" width="620" height="390" alt="The Command Palette searches for Shell and shows the matching project tab, its context and a per-tab mute action." loading="lazy"><img src="assets/command-palette-dark.png" width="620" height="390" alt="Searching notifications lists mute controls for each project tab." loading="lazy"></div>
+        <div class="shot"><img src="assets/mica-dark.png" width="2200" height="880" alt="The Fieldnote project window with Shell, Preview, Codex, Claude Code and lazygit tabs." loading="lazy"></div>
       </div>
       <div class="row">
         <div>
-          <h3>Dictate the way you prefer.</h3>
-          <p>Choose Hold or Toggle for left Option in Settings. Live speech appears in a reserved multiline preview above the terminal, leaving command status separate in the bottom strip. The terminal stays visible and resizes for the preview. Toggle starts and stops dictation with a key press. Edit → Edit Vocabulary… edits the local vocabulary file, and Edit → Improve Dictation with Project Vocabulary toggles deterministic correction. Undo Last Dictation restores the raw transcript if you have not typed more prompt text since. The fixed 40-prompt text fixture scores 24/40 raw and 34/40 corrected; this is not an audio recognition benchmark.</p>
-          <p>Mica marks OSC 133 prompts and failed commands. At a prompt, use <kbd>⌘↑</kbd>/<kbd>⌘↓</kbd> to navigate landmarks; Edit → Select Last Command Output or Copy Last Command Output selects or copies the latest command result.</p>
+          <h3>Find actions, tabs and terminal items.</h3>
+          <p>Search menu actions and project tabs with the Command Palette (<kbd>⌘⇧P</kbd>). Quick Select (<kbd>⌘⇧U</kbd>) labels visible URLs, existing file paths and Git hashes. Type a label to copy; hold Option to open a link or reveal a file.</p>
         </div>
-        <div class="shot"><img src="assets/prompt-navigation-demo.png" width="1000" height="440" alt="A sample terminal with OSC 133 prompt landmarks, a failed-command marker and command output, shown after prompt navigation." loading="lazy"><img src="assets/vocabulary-correction-demo.png" width="1000" height="440" alt="A fake transcript with no microphone: raw ‘Open Mica Terminal’ is corrected to ‘Open MicaTerminal’; vocabulary editing and undo are shown." loading="lazy"></div>
+        <div class="shot"><img src="assets/command-palette-tabs-dark.png" width="620" height="390" alt="The Command Palette filters for Shell and shows a matching project tab." loading="lazy"><img src="assets/quick-select-dark.png" width="1000" height="440" alt="Quick Select labels terminal links and other visible text with keyboard hints." loading="lazy"></div>
       </div>
       <div class="row">
         <div>
-          <h3>Know whether an agent finished or needs you.</h3>
-          <p>Background notifications label waiting work as “needs input” and completed work as “finished.” They are silent by default, and each tab can mute them from its context menu or the Command Palette.</p>
+          <h3>Dictate locally, then review.</h3>
+          <p>Hold or toggle left Option to dictate into a multiline preview above the terminal. Edit the transcript before it reaches the prompt. Recognition runs on your Mac with Moondream’s Parakeet Ultra, based on NVIDIA Parakeet TDT 0.6B v3 and converted to Core ML by FluidInference. Mica corrects project vocabulary locally; Undo restores the raw transcript when available.</p>
+          <p>Mica prepares the model in the background during first setup and after speech-helper updates. If you dictate before setup finishes, the helper loads it on demand. Microphone access is requested only when you start dictating.</p>
         </div>
-        <div class="shot"><img src="assets/command-palette-light.png" width="620" height="390" alt="The Command Palette in light appearance with actions and notification controls." loading="lazy"></div>
+        <div class="shot"><img src="assets/vocabulary-correction-demo.png" width="1000" height="440" alt="An illustrative fake transcript with a corrected project name; no microphone is used." loading="lazy"></div>
       </div>
 
       <div class="row flip">
         <div>
-          <h3>Agents are ordinary programs.</h3>
-          <p>Run Codex, Claude Code or anything else in a normal zsh tab. Mica reads the visible screen for signs of work or a question, shows it on the tab, and notifies you when a program asks for attention, so you can look away until it does. Your own zsh configuration keeps working.</p>
+          <h3>Keep a focus timer in the menu bar.</h3>
+          <p>One timer is shared across Mica windows. See the current focus or break phase and countdown, then start, pause, resume or end a phase from the menu bar or Focus menu. Mica can notify you when a phase ends.</p>
         </div>
-        <div class="shot"><img src="assets/crop-terminal-dark.png" width="1300" height="388" alt="Terminal output with coloured commit hashes and passing test lines." loading="lazy"></div>
+        <div class="shot"><img src="assets/timer-menu-bar-demo.png" width="720" height="320" alt="Mica’s focus timer in the macOS menu bar with its phase, countdown and controls." loading="lazy"></div>
       </div>
 
-      <div class="row">
+      <div class="row" id="ssh">
         <div>
-          <h3>Speak, then read it back.</h3>
-          <p>Hold left <kbd>⌥</kbd>, speak, and review the multiline preview above your terminal. Release to insert your words in the prompt, then edit before Return. Recognition runs on your Mac with NVIDIA’s Parakeet model. Mica fetches the 630 MB model in the background on first launch, and the recognizer only occupies memory while you are speaking.</p>
+          <h3>Save SSH destinations as profiles.</h3>
+          <p>Set a display name, OpenSSH destination and optional remote folder. Mica opens a fresh interactive tab using macOS OpenSSH and your existing keys, agent, <code>~/.ssh/config</code> and host-key checks. Profiles can be included in project launchers. Mica stores no SSH passwords or private keys.</p>
         </div>
-        <div class="shot"><img src="assets/mica-dark.png" width="2200" height="880" alt="Mica's terminal layout keeps contextual status at the bottom, with room above the terminal reserved for a multiline dictation preview while speaking." loading="lazy"></div>
-      </div>
-
-      <div class="row flip" id="ssh">
-        <div>
-          <h3>Save SSH connections to the folders you use.</h3>
-          <p>Create a profile with a friendly name, OpenSSH destination and remote starting folder. Mica opens it in a new interactive terminal tab using macOS's <code>ssh</code> client, existing <code>~/.ssh/config</code>, keys, agent and VPN route. Profiles restore as new connections and can be added to project launchers.</p>
-          <p>On a Mac, enable <strong>System Settings → General → Sharing → Remote Login</strong>. Linux hosts use their normal SSH server. Starlink's default IPv4 uses CGNAT, so access from outside the local network needs a route such as Tailscale or another VPN/overlay, reachable IPv6 or an eligible public IP. Mica stores no passwords or private keys and preserves OpenSSH host-key checks.</p>
-          <p><a href="https://github.com/megasoft1978/mica-terminal/blob/main/docs/PLAN-SSH-PROFILES.md">SSH profile design and limits</a></p>
-        </div>
-        <div class="shot"><img src="assets/ssh-profiles-demo.png" width="760" height="450" alt="Mica's SSH Connections window showing fictional Mac Studio and Linux VPN profiles, each with a remote starting folder; no network connection is active." loading="lazy"></div>
+        <div class="shot"><img src="assets/ssh-profiles-demo.png" width="760" height="450" alt="Fictional Mac Studio and Linux SSH profiles with remote folders; no connection is active." loading="lazy"></div>
       </div>
 
       <div class="row flip">
         <div>
-          <h3>Know when to focus and when to pause.</h3>
-          <p>One timer is shared by every Mica window on your Mac. A compact native menu bar item shows a focus, break, or paused symbol with the countdown. Click it for Start, Pause, Resume, and End Phase controls. The terminal status strip stays clear for folder, command, and memory context. When a phase ends, a macOS notification tells you whether to pause work or return to focus. You can also control the timer from the Focus menu, and VoiceOver reads the phase, time, session label, and completed focus count.</p>
-        </div>
-        <div class="shot"><img src="assets/timer-menu-bar-demo.png" width="720" height="320" alt="Mica's compact menu bar focus countdown with its focus, pause, next phase, Show Mica and Settings controls." loading="lazy"></div>
-      </div>
-
-      <div class="row">
-        <div>
-          <h3>Still your terminal.</h3>
-          <p>Search what scrolled by with <kbd>⌘F</kbd>, open links and web addresses with <kbd>⌘</kbd>-click, drag tabs to reorder them, and paste images for agents that read them. When a program on a remote machine asks to set your clipboard, Mica asks you first.</p>
+          <h3>Use familiar terminal workflows.</h3>
+          <p>Search scrollback with <kbd>⌘F</kbd>, open links with <kbd>⌘</kbd>-click, reorder tabs, navigate prompt landmarks and copy the last command’s output. Mica uses libvterm to parse terminal escape sequences and keeps your normal shell configuration.</p>
         </div>
         <div class="shot"><img src="assets/crop-terminal-light.png" width="1300" height="388" alt="The same terminal in the light theme, with dark JetBrains Mono text on white." loading="lazy"></div>
       </div>
 
       <div class="facts">
         <div class="fact"><b>Native</b><span>AppKit and a C session core</span></div>
-        <div class="fact"><b>55–60 MB</b><span>idle with three tabs, <a href="https://github.com/megasoft1978/mica-terminal/blob/main/docs/MEMORY-BASELINE.md">measured</a></span></div>
+        <div class="fact"><b>On-device</b><span>speech recognition with Core ML</span></div>
         <div class="fact"><b>macOS 14+</b><span>Built and tested on Apple silicon</span></div>
         <div class="fact"><b>MIT</b><span>Read it, build it, change it</span></div>
       </div>
     </div>
 
+    <div class="wrap" id="limits">
+      <section>
+        <h2>Know Mica’s current limits.</h2>
+        <p class="feature-intro">Mica is an early, focused terminal app. These boundaries help set the right expectations.</p>
+        <div class="limits-grid">
+          <article class="limit"><h3>Apple silicon Mac</h3><p>Requires macOS 14 or later on Apple silicon. Intel Macs are not supported.</p></article>
+          <article class="limit"><h3>No split panes yet</h3><p>Use named tabs and project windows to organize terminal sessions.</p></article>
+          <article class="limit"><h3>Agent status has a narrow scope</h3><p>Activity detection is designed for Claude Code and Codex. Screen-based detection is best-effort; other terminal programs run normally without a guaranteed status label.</p></article>
+          <article class="limit"><h3>Restoration does not preserve every process</h3><p>Windows, tab names and folders restore. Tabs normally start fresh; optional resume supports Claude Code or Codex only when a validated session ID is available. Arbitrary processes and scrollback do not resume.</p></article>
+        </div>
+      </section>
+    </div>
+
     <div class="wrap" id="faq">
       <section class="faq">
         <h2>Privacy and common questions.</h2>
-        <details><summary>What leaves my Mac?</summary><p>Mica processes dictation locally through Core ML and has no accounts, analytics or telemetry. Setting up dictation downloads the 630 MB speech model from Hugging Face. Programs you run in the terminal, including coding agents, follow their own network and privacy policies.</p></details>
+        <details><summary>Does dictation send my audio or transcript anywhere?</summary><p>No. Speech recognition and vocabulary correction run locally; audio is processed in memory and not saved. The speech model downloads from Hugging Face only when its files are missing. Programs you run in terminal tabs may have their own network and privacy behavior.</p></details>
         <details><summary>Why does it ask for the microphone?</summary><p>Only when you first hold left <kbd>⌥</kbd> or click the microphone control to dictate. Audio is processed in memory and is not saved. If access is denied, choose <strong>Open Microphone Settings</strong> in the dictation preview to open macOS Privacy &amp; Security settings.</p></details>
-        <details><summary>How do I verify a download?</summary><p>Alpha 16 is Developer ID signed and notarized. Download the <a href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/SHA256SUMS.txt">SHA-256 checksum manifest</a> beside the package and verify it with <code>shasum -a 256 -c SHA256SUMS.txt</code>.</p></details>
-        <details><summary>What does it cost in memory?</summary><p>About 55–60 MB idle with three tabs, shown live in the status bar. A dictation helper adds about 35 MB only while you talk. Method and the cases where Mica does not win are in the <a href="https://github.com/megasoft1978/mica-terminal/blob/main/docs/MEMORY-BASELINE.md">measurements</a>.</p></details>
-        <details><summary>Can I run Codex, Claude Code or lazygit?</summary><p>Yes, they are ordinary programs in a zsh tab. Mica shows a compact activity label in Claude Code and Codex tabs; hover for the full status and recent activity.</p></details>
-        <details><summary>Can Mica connect to another Mac or Linux machine?</summary><p>Yes. Save a profile from Session → SSH Connections… and choose its remote folder. Mica uses macOS OpenSSH and your existing SSH configuration and VPN route. On the remote Mac, enable Remote Login. Starlink's default IPv4 uses CGNAT, so use a VPN/overlay or another reachable route for connections from outside your home network.</p></details>
-        <details><summary>Does it work on Intel Macs?</summary><p>Not yet. This alpha is built and tested on Apple silicon with macOS 14 or later.</p></details>
+        <details><summary>When does Mica download or prepare the speech model?</summary><p>On first launch and after updates that change the speech helper, Mica prepares dictation in the background. It downloads model files only when they are missing and reuses local files otherwise. If you dictate before setup finishes, the helper loads the model on demand. Setup does not require microphone permission.</p></details>
+        <details><summary>Can I run Codex, Claude Code or lazygit?</summary><p>Yes. They run as ordinary programs in shell tabs. Activity detection is designed for Claude Code and Codex; Mica does not guarantee an activity status for other programs.</p></details>
+        <details><summary>Can Mica connect to another Mac or Linux machine?</summary><p>Yes. Save a profile from Session → SSH Connections… and choose its remote folder. Mica uses macOS OpenSSH and your existing SSH configuration, credentials and network route. On the remote Mac, enable Remote Login.</p></details>
+        <details><summary>How do I verify the download?</summary><p>Alpha 16 is Developer ID signed and notarized. Download the <a href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/SHA256SUMS.txt">SHA-256 manifest</a> beside the package and verify it with <code>shasum -a 256 -c SHA256SUMS.txt</code>.</p></details>
       </section>
     </div>
 
@@ -399,7 +415,7 @@ make app &amp;&amp; open build/Mica.app</div>
     <div class="wrap">
       <div class="cols">
         <div>
-          <p>Mica uses AppKit and a C session core, with a patched copy of <a href="https://github.com/neovim/libvterm">libvterm</a> (MIT) parsing terminal output and <a href="https://github.com/JetBrains/JetBrainsMono">JetBrains Mono</a> (SIL OFL 1.1) as its font. Local dictation uses <a href="https://github.com/FluidInference/FluidAudio">FluidAudio</a> (Apache-2.0), Apple Core ML, and <a href="https://huggingface.co/moondream/parakeet-ultra">Parakeet Ultra by Moondream</a>, based on NVIDIA Parakeet TDT 0.6B v3 (CC BY 4.0). See the <a href="https://github.com/megasoft1978/mica-terminal/blob/main/voice/THIRD_PARTY_NOTICES.md">full notices</a>.</p>
+          <p>Mica uses AppKit and a C session core; patched <a href="https://github.com/neovim/libvterm">libvterm</a> (MIT) parses terminal output, and its font is <a href="https://github.com/JetBrains/JetBrainsMono">JetBrains Mono</a> (SIL OFL 1.1). Local dictation uses <a href="https://github.com/FluidInference/FluidAudio">FluidAudio</a> (Apache-2.0), Apple Core ML and FluidInference’s Core ML conversion of <a href="https://huggingface.co/moondream/parakeet-ultra">Moondream Parakeet Ultra</a>, based on NVIDIA Parakeet TDT 0.6B v3 (CC BY 4.0). See the <a href="https://github.com/megasoft1978/mica-terminal/blob/main/voice/THIRD_PARTY_NOTICES.md">full notices</a>.</p>
           <p>Mica is released under the <a href="https://github.com/megasoft1978/mica-terminal/blob/main/LICENSE">MIT License</a>. © 2026 Gabriele Ferreri.</p>
         </div>
         <nav aria-label="Footer">
@@ -415,12 +431,25 @@ make app &amp;&amp; open build/Mica.app</div>
     (function () {
       var dark = document.getElementById("shot-dark"), light = document.getElementById("shot-light");
       var bDark = document.getElementById("theme-dark"), bLight = document.getElementById("theme-light");
+      var mobileSections = document.querySelector(".mobile-sections");
       function show(isLight) {
         dark.hidden = isLight; light.hidden = !isLight;
         bDark.setAttribute("aria-pressed", String(!isLight)); bLight.setAttribute("aria-pressed", String(isLight));
       }
       bDark.addEventListener("click", function () { show(false); });
       bLight.addEventListener("click", function () { show(true); });
+      mobileSections.addEventListener("click", function (event) {
+        if (event.target.closest && event.target.closest("a")) mobileSections.open = false;
+      });
+      document.addEventListener("click", function (event) {
+        if (!mobileSections.contains(event.target)) mobileSections.open = false;
+      });
+      document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape" && mobileSections.open) {
+          mobileSections.open = false;
+          mobileSections.querySelector("summary").focus();
+        }
+      });
       Array.prototype.forEach.call(document.querySelectorAll("[data-copy]"), function (button) {
         button.addEventListener("click", function () {
           var text = button.getAttribute("data-copy");
