@@ -524,9 +524,6 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (NSInteger)tabIndexAtPoint:(NSPoint)point;
 - (NSRect)dirtyRectForRows:(MicaDirtyRows)rows;
 - (NSRect)terminalRect;
-- (NSRect)pomodoroControlRect;
-- (NSString *)pomodoroStatusText;
-- (void)showPomodoroControlMenu:(id)sender;
 - (void)updateGridSize;
 - (void)scheduleGridResize;
 - (void)commitGridResize:(NSTimer *)timer;
@@ -686,7 +683,6 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)openSSHProfile:(NSDictionary<NSString *, NSString *> *)profile;
 - (void)startPomodoro:(id)sender;
 - (void)takePomodoroBreak:(id)sender;
-- (void)prefStatusTimerChanged:(NSButton *)sender;
 - (void)editPomodoroLabel:(id)sender;
 - (void)updateFocusMenuLabel;
 - (void)togglePomodoroPause:(id)sender;
@@ -1302,49 +1298,6 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         };
         [children addObject:element];
     }
-    // The focus timer is drawn text in the status strip; expose it as a button that starts, pauses or resumes it.
-    NSRect timerRect = [self pomodoroControlRect];
-    if (!NSIsEmptyRect(timerRect)) {
-        __weak typeof(self) weakSelf = self;
-        MicaPomodoro state = self.owner.pomodoro;
-        BOOL paused = mica_pomodoro_is_paused(&state);
-        BOOL focus = state.phase == MICA_POMODORO_IDLE || state.phase == MICA_POMODORO_FOCUS ||
-            state.phase == MICA_POMODORO_PAUSED_FOCUS;
-        NSInteger minutes = focus ? self.owner.focusDurationMinutes : self.owner.breakDurationMinutes;
-        double remaining = state.phase == MICA_POMODORO_IDLE ? MAX(1, minutes) * 60.0 :
-            mica_pomodoro_remaining(&state, MicaContinuousTimeSeconds());
-        NSUInteger secondsLeft = (NSUInteger)ceil(remaining);
-        NSString *phaseLabel = state.phase == MICA_POMODORO_IDLE ? @"Ready" :
-            (paused ? (focus ? @"Paused focus" : @"Paused break") : (focus ? @"Focus" : @"Break"));
-        NSString *actionLabel = state.phase == MICA_POMODORO_IDLE ? @"Start focus" :
-            (paused ? @"Resume timer" : @"Pause timer");
-        NSString *timerLabel = [NSString stringWithFormat:@"Focus timer, %@%@, %02lu:%02lu remaining, %@, %llu focus session%@ completed",
-            phaseLabel, self.owner.pomodoroLabel.length ? [NSString stringWithFormat:@", %@", self.owner.pomodoroLabel] : @"",
-            (unsigned long)(secondsLeft / 60), (unsigned long)(secondsLeft % 60), actionLabel,
-            (unsigned long long)state.completed_focuses, state.completed_focuses == 1 ? @"" : @"s"];
-        NSRect resetRect = NSMakeRect(NSMaxX(timerRect) - 29, NSMinY(timerRect), 29, timerRect.size.height);
-        NSRect toggleRect = timerRect;
-        toggleRect.size.width -= resetRect.size.width;
-        MicaTabAccessibilityElement *timer = [MicaTabAccessibilityElement accessibilityElementWithRole:NSAccessibilityButtonRole
-            frame:[self.window convertRectToScreen:[self convertRect:toggleRect toView:nil]]
-            label:timerLabel parent:self];
-        timer.pressHandler = ^BOOL{ [weakSelf.owner togglePomodoroPause:nil]; return YES; };
-        if (state.phase != MICA_POMODORO_IDLE) {
-            NSString *skipLabel = focus ? @"End focus and start break" : @"End break and start focus";
-            timer.accessibilityCustomActions = @[[[NSAccessibilityCustomAction alloc] initWithName:skipLabel handler:^BOOL{
-                MicaAppDelegate *owner = weakSelf.owner;
-                if (!owner) return NO;
-                [owner skipPomodoroPhase:nil];
-                return YES;
-            }]];
-        }
-        [children addObject:timer];
-        MicaTabAccessibilityElement *reset = [MicaTabAccessibilityElement accessibilityElementWithRole:NSAccessibilityButtonRole
-            frame:[self.window convertRectToScreen:[self convertRect:resetRect toView:nil]]
-            label:@"Reset focus timer" parent:self];
-        reset.pressHandler = ^BOOL{ [weakSelf.owner resetPomodoro:nil]; return YES; };
-        [children addObject:reset];
-    }
     return children;
 }
 - (id)accessibilityValue {
@@ -1405,8 +1358,6 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     NSRect overflow = [self tabOverflowRect];
     if ([self hasTabOverflow] && !NSIsEmptyRect(overflow))
         [self addCursorRect:overflow cursor:NSCursor.pointingHandCursor];
-    NSRect timerControl = [self pomodoroControlRect];
-    if (!NSIsEmptyRect(timerControl)) [self addCursorRect:timerControl cursor:NSCursor.pointingHandCursor];
 }
 
 - (void)layout {
@@ -1581,62 +1532,6 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
 // Room reserved at the left of the tab strip for the traffic lights (none in full screen).
 - (CGFloat)tabsLeadingInset {
     return (self.window.styleMask & NSWindowStyleMaskFullScreen) ? 8.0 : kTrafficLightInset;
-}
-
-- (NSRect)pomodoroControlRect {
-    if (![[self.owner micaDefaults] boolForKey:@"MicaShowStatusTimer"] ||
-        self.owner.pomodoro.phase == MICA_POMODORO_IDLE) return NSZeroRect;
-    CGFloat x = 12;
-    MicaUIMode mode = self.owner.uiMode;
-    int offset = self.owner.activeTab.session ? mica_session_view_offset(self.owner.activeTab.session) : 0;
-    NSString *modeName = mode == MicaUIModeTab ? @"Tab picker" :
-        ((mode == MicaUIModeScroll || offset > 0) ? @"Scrollback" : nil);
-    if (modeName) {
-        NSDictionary *attributes = @{NSFontAttributeName: [NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold]};
-        x = 12 + [modeName sizeWithAttributes:attributes].width + 18 + 12;
-    }
-    return NSMakeRect(x, floor((kStatusHeight - 23) / 2), 76, 23);
-}
-
-- (NSString *)pomodoroStatusText {
-    MicaPomodoro timer = self.owner.pomodoro;
-    BOOL focus = timer.phase == MICA_POMODORO_IDLE || timer.phase == MICA_POMODORO_FOCUS ||
-        timer.phase == MICA_POMODORO_PAUSED_FOCUS;
-    NSInteger minutes = focus ? self.owner.focusDurationMinutes : self.owner.breakDurationMinutes;
-    double remaining = timer.phase == MICA_POMODORO_IDLE ? MAX(1, minutes) * 60.0 :
-        mica_pomodoro_remaining(&timer, MicaContinuousTimeSeconds());
-    NSUInteger secondsLeft = (NSUInteger)ceil(remaining);
-    return [NSString stringWithFormat:@"%02lu:%02lu",
-        (unsigned long)(secondsLeft / 60), (unsigned long)(secondsLeft % 60)];
-}
-
-- (void)showPomodoroControlMenu:(id)sender {
-    (void)sender;
-    MicaPomodoro timer = self.owner.pomodoro;
-    NSString *toggleTitle = timer.phase == MICA_POMODORO_IDLE ? @"Start Focus" :
-        (mica_pomodoro_is_paused(&timer) ? @"Resume Timer" : @"Pause Timer");
-    BOOL focus = timer.phase == MICA_POMODORO_FOCUS || timer.phase == MICA_POMODORO_PAUSED_FOCUS;
-    NSString *skipTitle = focus ? @"End Focus & Start Break" : @"End Break & Start Focus";
-    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Focus Timer"];
-    NSString *sessionCount = [NSString stringWithFormat:@"%llu focus session%@ completed",
-        (unsigned long long)timer.completed_focuses, timer.completed_focuses == 1 ? @"" : @"s"];
-    NSMenuItem *summary = AddMenuItem(menu, sessionCount, nil, @"", 0);
-    summary.enabled = NO;
-    if (self.owner.pomodoroLabel.length) {
-        NSMenuItem *label = AddMenuItem(menu, [NSString stringWithFormat:@"Label: %@", self.owner.pomodoroLabel], nil, @"", 0);
-        label.enabled = NO;
-    }
-    AddMenuItem(menu, @"Label…", @selector(editPomodoroLabel:), @"", 0).target = self.owner;
-    [menu addItem:NSMenuItem.separatorItem];
-    AddMenuItem(menu, toggleTitle, @selector(togglePomodoroPause:), @"", 0).target = self.owner;
-    NSMenuItem *skip = AddMenuItem(menu, skipTitle, @selector(skipPomodoroPhase:), @"", 0);
-    skip.target = self.owner;
-    skip.enabled = timer.phase != MICA_POMODORO_IDLE;
-    AddMenuItem(menu, @"Reset Timer", @selector(resetPomodoro:), @"", 0).target = self.owner;
-    [menu addItem:NSMenuItem.separatorItem];
-    AddMenuItem(menu, @"Timer Settings…", @selector(openPomodoroSettings:), @"", 0).target = self.owner;
-    NSPoint location = [self convertPoint:NSEvent.mouseLocation fromView:nil];
-    [menu popUpMenuPositioningItem:nil atLocation:location inView:self];
 }
 
 - (NSRect)dictationPreviewRect {
@@ -2083,56 +1978,6 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         [modeName drawAtPoint:NSMakePoint(NSMinX(badge) + 9,
             NSMinY(badge) + MicaCenteredTextBaseline(modeFont, badge.size.height)) withAttributes:modeAttrs];
         contextX = NSMaxX(badge) + 12;
-    }
-
-    MicaPomodoro timer = self.owner.pomodoro;
-    MicaPomodoroPhase timerPhase = timer.phase;
-    BOOL paused = mica_pomodoro_is_paused(&timer);
-    BOOL focus = timerPhase == MICA_POMODORO_FOCUS || timerPhase == MICA_POMODORO_PAUSED_FOCUS ||
-        timerPhase == MICA_POMODORO_IDLE;
-    NSInteger intervalMinutes = focus ? (self.owner.focusDurationMinutes ?: kDefaultFocusMinutes) :
-        (self.owner.breakDurationMinutes ?: kDefaultBreakMinutes);
-    double intervalSeconds = MAX(1, intervalMinutes) * 60.0;
-    double remaining = timerPhase == MICA_POMODORO_IDLE ? intervalSeconds :
-        mica_pomodoro_remaining(&timer, MicaContinuousTimeSeconds());
-    NSString *timerText = [self pomodoroStatusText];
-    NSColor *timerColor = timerPhase == MICA_POMODORO_IDLE || paused ? MicaSecondaryLabelColor(1.0) :
-        (focus ? NSColor.systemGreenColor : NSColor.systemOrangeColor);
-    NSRect timerControl = [self pomodoroControlRect];
-    if (!NSIsEmptyRect(timerControl)) {
-        [[timerColor colorWithAlphaComponent:0.14] setFill];
-        [[NSBezierPath bezierPathWithRoundedRect:timerControl xRadius:7 yRadius:7] fill];
-        NSPoint ringCenter = NSMakePoint(NSMinX(timerControl) + 14, NSMidY(timerControl));
-        NSBezierPath *ringTrack = [NSBezierPath bezierPath];
-        [ringTrack appendBezierPathWithOvalInRect:NSMakeRect(ringCenter.x - 5.5, ringCenter.y - 5.5, 11, 11)];
-        ringTrack.lineWidth = 2;
-        [[timerColor colorWithAlphaComponent:0.24] setStroke];
-        [ringTrack stroke];
-        double progress = timerPhase == MICA_POMODORO_IDLE ? 0 : MIN(1, MAX(0, 1 - remaining / intervalSeconds));
-        if (progress > 0) {
-            NSBezierPath *ringProgress = [NSBezierPath bezierPath];
-            [ringProgress appendBezierPathWithArcWithCenter:ringCenter radius:5.5 startAngle:90
-                endAngle:90 - progress * 360 clockwise:YES];
-            ringProgress.lineWidth = 2;
-            [timerColor setStroke];
-            [ringProgress stroke];
-        }
-        NSDictionary *timerAttrs = @{
-            NSFontAttributeName: [NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold],
-            NSForegroundColorAttributeName: timerColor
-        };
-        [[timerText uppercaseString] drawAtPoint:NSMakePoint(NSMinX(timerControl) + 25,
-            MicaCenteredTextBaseline(timerAttrs[NSFontAttributeName], timerControl.size.height) + NSMinY(timerControl))
-            withAttributes:timerAttrs];
-        NSString *timerTip = [NSString stringWithFormat:@"%@ · %llu completed today",
-            self.owner.pomodoroLabel.length ? self.owner.pomodoroLabel : (self.owner.projectName ?: @"Focus"),
-            (unsigned long long)[[self.owner micaDefaults] integerForKey:@"MicaDailyFocusCount"]];
-        [self removeAllToolTips];
-        self.toolTip = timerTip;
-        contextX = NSMaxX(timerControl) + 12;
-    } else {
-        [self removeAllToolTips];
-        self.toolTip = nil;
     }
 
     NSString *folderName = tab.cwd.length ? tab.cwd : @"/";
@@ -3006,11 +2851,6 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         _leftOptionTimer = nil;
     }
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
-    NSRect timerControl = [self pomodoroControlRect];
-    if (NSPointInRect(point, timerControl)) {
-        [self.owner togglePomodoroPause:nil];
-        return;
-    }
     NSRect dictationStatus = [self dictationPreviewRect];
     NSRect microphoneSettings = [self microphoneSettingsButtonRect];
     if (!NSIsEmptyRect(microphoneSettings) && NSPointInRect(point, microphoneSettings)) {
@@ -3126,10 +2966,6 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     if (tabIndex != NSNotFound) {
         MicaTab *tab = self.owner.tabs[(NSUInteger)tabIndex];
         [NSMenu popUpContextMenu:[self.owner notificationMenuForTab:tab] withEvent:event forView:self];
-        return;
-    }
-    if (NSPointInRect(point, [self pomodoroControlRect])) {
-        [self showPomodoroControlMenu:nil];
         return;
     }
     [super rightMouseDown:event];
@@ -4084,6 +3920,7 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
     }
     [root updateFocusMenuLabel];
     [root updatePomodoroTimer];
+    if (gMicaStatusItem) [root updateMenuBarTimer];
 }
 
 - (void)configurePomodoro {
@@ -4302,7 +4139,9 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
 }
 
 - (void)applyMenuBarTimerPreference {
-    BOOL enabled = [[self micaDefaults] boolForKey:@"MicaMenuBarTimer"];
+    NSUserDefaults *defaults = [self micaDefaults];
+    BOOL enabled = [defaults objectForKey:@"MicaMenuBarTimer"]
+        ? [defaults boolForKey:@"MicaMenuBarTimer"] : YES;
 #if defined(MICA_APP_NO_MAIN)
     if (gMicaTimerStatusItemLifecycleHook) {
         if (enabled != gMicaTimerStatusItemEnabledForTests &&
@@ -4334,11 +4173,6 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
     [self applyMenuBarTimerPreference];
 }
 
-- (void)prefStatusTimerChanged:(NSButton *)sender {
-    [[self micaDefaults] setBool:sender.state == NSControlStateValueOn forKey:@"MicaShowStatusTimer"];
-    for (MicaAppDelegate *controller in MicaControllers()) [controller.terminalView setNeedsDisplay:YES];
-}
-
 - (void)prefDiagnosticsChanged:(NSButton *)sender {
     BOOL enabled = sender.state == NSControlStateValueOn;
     [[self micaDefaults] setBool:enabled forKey:@"MicaDiagnosticsEnabled"];
@@ -4356,9 +4190,7 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
     MicaAppDelegate *owner = [self menuBarTimerOwner];
     if (!gMicaStatusItem || !owner) return;
     NSDictionary *presentation = [owner menuBarTimerPresentationAtTime:MicaContinuousTimeSeconds()];
-    MicaPomodoroPhase phase = owner.pomodoro.phase;
-    NSString *title = phase == MICA_POMODORO_IDLE ? @"•" : [presentation[@"title"] substringFromIndex:[presentation[@"title"] rangeOfString:@" "].location + 1];
-    [gMicaStatusItem updateTitle:title accessibilityLabel:presentation[@"accessibilityLabel"]];
+    [gMicaStatusItem updateTitle:presentation[@"compactTitle"] accessibilityLabel:presentation[@"accessibilityLabel"]];
 }
 
 - (NSMenu *)menuBarTimerMenu {
@@ -4400,9 +4232,17 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
     NSInteger wholeSeconds = (NSInteger)seconds;
     NSString *title = [NSString stringWithFormat:@"%@ %02ld:%02ld", phase, (long)(wholeSeconds / 60), (long)(wholeSeconds % 60)];
     NSString *toggle = timer.phase == MICA_POMODORO_IDLE ? @"Start Focus" : (paused ? @"Resume Timer" : @"Pause Timer");
+    NSString *symbol = timer.phase == MICA_POMODORO_IDLE ? @"◷" : (paused ? @"Ⅱ" :
+        ((timer.phase == MICA_POMODORO_BREAK) ? @"☕" : @"◷"));
+    NSString *compactTitle = timer.phase == MICA_POMODORO_IDLE ? symbol :
+        [NSString stringWithFormat:@"%@ %02ld:%02ld", symbol, (long)(wholeSeconds / 60), (long)(wholeSeconds % 60)];
+    NSString *session = self.pomodoroLabel.length ? [NSString stringWithFormat:@", %@", self.pomodoroLabel] : @"";
+    NSString *completed = [NSString stringWithFormat:@", %llu focus session%@ completed",
+        (unsigned long long)timer.completed_focuses, timer.completed_focuses == 1 ? @"" : @"s"];
     return @{@"title": title,
-        @"accessibilityLabel": [NSString stringWithFormat:@"%@, %02ld minutes %02ld seconds remaining", phase,
-            (long)(wholeSeconds / 60), (long)(wholeSeconds % 60)],
+        @"compactTitle": compactTitle,
+        @"accessibilityLabel": [NSString stringWithFormat:@"%@%@, %02ld minutes %02ld seconds remaining%@", phase,
+            session, (long)(wholeSeconds / 60), (long)(wholeSeconds % 60), completed],
         @"toggle": toggle,
         @"endEnabled": @(timer.phase != MICA_POMODORO_IDLE),
         @"endTitle": focus ? @"End Focus & Start Break" : @"End Break & Start Focus"};
@@ -6363,18 +6203,18 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     [content addSubview:scrollback];
     NSButton *shortcut = [NSButton checkboxWithTitle:@"Show Mica with a global shortcut (⌃⌥Space)" target:self
                                               action:@selector(prefShortcutChanged:)];
-    NSButton *menuBarTimer = [NSButton checkboxWithTitle:@"Show focus timer in the menu bar" target:self
+    NSButton *menuBarTimer = [NSButton checkboxWithTitle:@"Show the focus timer in the menu bar" target:self
                                                    action:@selector(prefMenuBarTimerChanged:)];
-    menuBarTimer.frame = NSMakeRect(120, 84, 320, 20);
+    menuBarTimer.frame = NSMakeRect(120, 84, 340, 20);
     menuBarTimer.tag = 109;
-    menuBarTimer.state = [[self micaDefaults] boolForKey:@"MicaMenuBarTimer"] ? NSControlStateValueOn : NSControlStateValueOff;
+    menuBarTimer.state = (![[self micaDefaults] objectForKey:@"MicaMenuBarTimer"] ||
+        [[self micaDefaults] boolForKey:@"MicaMenuBarTimer"]) ? NSControlStateValueOn : NSControlStateValueOff;
     [content addSubview:menuBarTimer];
-    NSButton *statusTimer = [NSButton checkboxWithTitle:@"Show timer in status bar" target:self action:@selector(prefStatusTimerChanged:)];
-    statusTimer.frame = NSMakeRect(120, 36, 280, 20);
-    statusTimer.tag = 110;
-    statusTimer.state = (![[self micaDefaults] objectForKey:@"MicaShowStatusTimer"] || [[self micaDefaults] boolForKey:@"MicaShowStatusTimer"])
-        ? NSControlStateValueOn : NSControlStateValueOff;
-    [content addSubview:statusTimer];
+    NSTextField *timerHint = [NSTextField labelWithString:@"Compact countdown; click it for timer controls."];
+    timerHint.textColor = MicaSecondaryLabelColor(1.0);
+    timerHint.font = [NSFont systemFontOfSize:10.5];
+    timerHint.frame = NSMakeRect(120, 68, 310, 13);
+    [content addSubview:timerHint];
     NSButton *vocabulary = [NSButton checkboxWithTitle:@"Improve dictation with project vocabulary" target:self action:@selector(prefVocabularyChanged:)];
     vocabulary.frame = NSMakeRect(120, 158, 330, 20);
     vocabulary.state = (![[self micaDefaults] objectForKey:@"MicaDictationVocabularyEnabled"] ||

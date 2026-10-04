@@ -662,8 +662,7 @@ static int MicaRunUISelfTest(void) {
             [[NSUserDefaults standardUserDefaults] objectForKey:@"MicaDictationVocabularyBoostEnabled"] == nil;
         [delegate openPreferences:nil];
         NSButton *menuBarTimerPreference = (NSButton *)[delegate.preferencesWindow.contentView viewWithTag:109];
-        BOOL menuBarTimerPreferenceVisible = [menuBarTimerPreference.title isEqualToString:@"Show focus timer in the menu bar"] &&
-            menuBarTimerPreference.state == NSControlStateValueOff;
+        BOOL menuBarTimerPreferenceVisible = [menuBarTimerPreference.title isEqualToString:@"Show the focus timer in the menu bar"];
         MicaUITestRecord(report, &allPassed,
                          newShellMenuItem.target == delegate &&
                          sshProfilesMenuItem.target == delegate &&
@@ -3312,23 +3311,19 @@ static int MicaRunUISelfTest(void) {
                 @{NSFontAttributeName:[NSFont monospacedDigitSystemFontOfSize:11.5 weight:NSFontWeightMedium]}].width;
             NSArray<NSString *> *layoutHints = @[@"⌘/ Shortcuts", @"⌥ Dictate", @"⌘1–8 Switch tab",
                 @"⌘T New tab", @"⌘Q Quit"];
-            NSRect layoutTimer = [delegate.terminalView pomodoroControlRect];
             BOOL narrowRectsDoNotOverlap = YES;
             for (NSNumber *widthValue in @[@600, @800]) {
                 CGFloat width = widthValue.doubleValue;
-                MicaStatusBarLayout layout = MicaComputeStatusBarLayout(width, NSMaxX(layoutTimer) + 12,
+                MicaStatusBarLayout layout = MicaComputeStatusBarLayout(width, 12,
                     minFolderContext, layoutMemoryWidth, layoutHints, layoutHintAttrs);
                 narrowRectsDoNotOverlap = narrowRectsDoNotOverlap &&
-                    !NSIntersectsRect(layoutTimer, layout.contextRect) &&
-                    !NSIntersectsRect(layoutTimer, layout.hintsRect) &&
-                    !NSIntersectsRect(layoutTimer, layout.memoryRect) &&
                     !NSIntersectsRect(layout.contextRect, layout.hintsRect) &&
                     !NSIntersectsRect(layout.contextRect, layout.memoryRect) &&
                     !NSIntersectsRect(layout.hintsRect, layout.memoryRect) &&
                     layout.contextRect.size.width >= minFolderContext - 18;
             }
             MicaUITestRecord(report, &allPassed, narrowRectsDoNotOverlap,
-                @"status timer, folder context, hints and memory rectangles never overlap at 600 px or 800 px");
+                @"terminal status strip keeps folder context, hints and memory clear at 600 px or 800 px without a timer");
             NSMutableArray<NSString *> *fortyTranscriptWords = [NSMutableArray array];
             for (NSUInteger wordIndex = 0; wordIndex < 40; wordIndex++)
                 [fortyTranscriptWords addObject:@[@"recent", @"words", @"current", @"phrase"][wordIndex % 4]];
@@ -3748,7 +3743,6 @@ static int MicaRunUISelfTest(void) {
         NSUserDefaults *menuTimerDefaults = [[NSUserDefaults alloc] initWithSuiteName:menuTimerSuite];
         [menuTimerDefaults removePersistentDomainForName:menuTimerSuite];
         gMicaDefaultsOverride = menuTimerDefaults;
-        [menuTimerDefaults setBool:YES forKey:@"MicaShowStatusTimer"];
         MicaAppDelegate *timerWindowA = [[MicaAppDelegate alloc] init];
         MicaAppDelegate *timerWindowB = [[MicaAppDelegate alloc] init];
         [MicaControllers() addObject:timerWindowA];
@@ -3759,8 +3753,9 @@ static int MicaRunUISelfTest(void) {
         MicaUITestAttachWindow(timerWindowB);
         gMicaTimerStatusItemLifecycleHook = MicaUITestMenuTimerLifecycle;
         gMenuTimerLifecycleEnableCount = gMenuTimerLifecycleDisableCount = 0;
-        BOOL menuTimerDefaultsOff = ![menuTimerDefaults boolForKey:@"MicaMenuBarTimer"] && !gMicaTimerStatusItemEnabledForTests;
-        NSButton *menuTimerPreference = [NSButton checkboxWithTitle:@"Show focus timer in the menu bar"
+        BOOL menuTimerDefaultsOn = (![menuTimerDefaults objectForKey:@"MicaMenuBarTimer"] ||
+            [menuTimerDefaults boolForKey:@"MicaMenuBarTimer"]) && !gMicaTimerStatusItemEnabledForTests;
+        NSButton *menuTimerPreference = [NSButton checkboxWithTitle:@"Show the focus timer in the menu bar"
             target:timerWindowA action:@selector(prefMenuBarTimerChanged:)];
         menuTimerPreference.state = NSControlStateValueOn;
         [timerWindowA prefMenuBarTimerChanged:menuTimerPreference];
@@ -3835,33 +3830,25 @@ static int MicaRunUISelfTest(void) {
         BOOL timerLabelInFocusMenu = NO;
         for (NSMenuItem *item in focusRootForLabel.submenu.itemArray)
             if (item.tag == 9137 && [item.title isEqualToString:@"Session: Cycle 9"]) timerLabelInFocusMenu = YES;
-        BOOL timerLabelAccessible = NO;
-        for (NSString *label in [[timerWindowB.terminalView accessibilityChildren] valueForKey:@"accessibilityLabel"])
-            if ([label containsString:@"Cycle 9"]) timerLabelAccessible = YES;
+        NSDictionary *timerAccessiblePresentation = [timerWindowB menuBarTimerPresentationAtTime:MicaContinuousTimeSeconds()];
+        BOOL timerLabelAccessible = [timerAccessiblePresentation[@"accessibilityLabel"] containsString:@"Cycle 9"];
         NSArray *timerAXLabels = [[timerWindowA.terminalView accessibilityChildren]
             valueForKey:@"accessibilityLabel"];
-        BOOL timerToggleAccessible = NO;
-        for (NSString *label in timerAXLabels)
-            if ([label hasPrefix:@"Focus timer, Focus,"] &&
-                [label containsString:@"0 focus sessions completed"] &&
-                [label containsString:@"Pause timer"]) timerToggleAccessible = YES;
-        BOOL timerControlsAccessible = timerToggleAccessible && [timerAXLabels containsObject:@"Reset focus timer"];
+        BOOL timerControlsAccessible = ![timerAXLabels.description containsString:@"Focus timer,"] &&
+            [NSApp.mainMenu itemWithTitle:@"Focus"] != nil;
         [timerWindowB togglePomodoroPause:nil];
         [timerWindowA refreshPomodoroState];
         BOOL timerPauseShared = timerWindowA.pomodoro.phase == MICA_POMODORO_PAUSED_FOCUS &&
             [timerWindowA.pomodoroLabel isEqualToString:@"Cycle 9"];
-        BOOL pausedPhaseVisible = [[timerWindowA.terminalView pomodoroStatusText] containsString:@":"];
+        NSDictionary *pausedAccessibility = [timerWindowA menuBarTimerPresentationAtTime:MicaContinuousTimeSeconds()];
+        BOOL pausedPhaseVisible = [pausedAccessibility[@"title"] hasPrefix:@"Paused focus "] &&
+            [pausedAccessibility[@"accessibilityLabel"] containsString:@"seconds remaining"];
         NSMenuItem *skipTimerMenu = [[NSMenuItem alloc] initWithTitle:@"End Current Phase"
             action:@selector(skipPomodoroPhase:) keyEquivalent:@""];
         BOOL timerSkipMenuAccessible = [timerWindowA validateMenuItem:skipTimerMenu] &&
             [skipTimerMenu.title isEqualToString:@"End Focus & Start Break"];
-        BOOL timerSkipAXPerformed = NO;
-        for (NSAccessibilityElement *element in [timerWindowA.terminalView accessibilityChildren]) {
-            for (NSAccessibilityCustomAction *action in element.accessibilityCustomActions) {
-                if ([action.name isEqualToString:@"End focus and start break"] && action.handler)
-                    timerSkipAXPerformed = action.handler();
-            }
-        }
+        BOOL timerSkipAXPerformed = [timerWindowA validateMenuItem:skipTimerMenu];
+        if (timerSkipAXPerformed) [timerWindowA skipPomodoroPhase:nil];
         [timerWindowB refreshPomodoroState];
         BOOL timerSkipFocusShared = timerSkipAXPerformed && timerSkipMenuAccessible &&
             [timerWindowA validateMenuItem:skipTimerMenu] &&
@@ -3869,19 +3856,9 @@ static int MicaRunUISelfTest(void) {
             timerWindowA.pomodoro.phase == MICA_POMODORO_BREAK &&
             timerWindowB.pomodoro.phase == MICA_POMODORO_BREAK && timerWindowB.pomodoro.completed_focuses == 1;
         BOOL timerLabelSurvivesPauseAndFocusEnd = [timerWindowB.pomodoroLabel isEqualToString:@"Cycle 9"];
-        BOOL timerCountAccessible = NO;
-        for (NSString *label in [[timerWindowB.terminalView accessibilityChildren] valueForKey:@"accessibilityLabel"])
-            if ([label hasPrefix:@"Focus timer, Break,"] &&
-                [label containsString:@"1 focus session completed"]) timerCountAccessible = YES;
-        NSString *visibleTimerStatus = [timerWindowB.terminalView pomodoroStatusText];
-        NSRect visibleTimerRect = [timerWindowB.terminalView pomodoroControlRect];
-        NSDictionary *visibleTimerAttributes = @{NSFontAttributeName:
-            [NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold]};
-        CGFloat visibleTimerTextWidth = ceil([[visibleTimerStatus uppercaseString]
-            sizeWithAttributes:visibleTimerAttributes].width);
-        BOOL timerPhaseVisible = [visibleTimerStatus containsString:@":"] &&
-            ![visibleTimerStatus containsString:@"done"] && visibleTimerRect.size.width == 76 &&
-            visibleTimerRect.size.width > visibleTimerTextWidth;
+        NSDictionary *breakAccessibility = [timerWindowB menuBarTimerPresentationAtTime:MicaContinuousTimeSeconds()];
+        BOOL timerCountAccessible = [breakAccessibility[@"accessibilityLabel"] containsString:@"1 focus session completed"];
+        BOOL timerPhaseVisible = [breakAccessibility[@"title"] hasPrefix:@"Break "];
         timerSkipFocusShared = timerSkipFocusShared && timerCountAccessible && timerPhaseVisible && pausedPhaseVisible;
         [timerWindowB skipPomodoroPhase:nil];
         [timerWindowA refreshPomodoroState];
@@ -3902,18 +3879,20 @@ static int MicaRunUISelfTest(void) {
         phaseLabelProbe.phase = MICA_POMODORO_FOCUS;
         phaseLabelProbe.deadline = MicaContinuousTimeSeconds() + 90;
         timerWindowB.pomodoro = phaseLabelProbe;
-        BOOL timerLabelsAllPhases = [[timerWindowB.terminalView pomodoroStatusText] containsString:@":"];
+        BOOL timerLabelsAllPhases = [[timerWindowB menuBarTimerPresentationAtTime:MicaContinuousTimeSeconds()][@"title"] hasPrefix:@"Focus "];
         phaseLabelProbe.phase = MICA_POMODORO_PAUSED_BREAK;
         phaseLabelProbe.paused_remaining = 45;
         timerWindowB.pomodoro = phaseLabelProbe;
+        NSDictionary *pausedBreakPresentation = [timerWindowB menuBarTimerPresentationAtTime:MicaContinuousTimeSeconds()];
         timerLabelsAllPhases = timerLabelsAllPhases &&
-            [[timerWindowB.terminalView pomodoroStatusText] containsString:@":"];
+            [pausedBreakPresentation[@"title"] hasPrefix:@"Paused break "];
         timerWindowB.pomodoro = (MicaPomodoro){0};
-        timerLabelsAllPhases = timerLabelsAllPhases &&
-            NSIsEmptyRect([timerWindowB.terminalView pomodoroControlRect]);
+        NSDictionary *readyPresentation = [timerWindowB menuBarTimerPresentationAtTime:MicaContinuousTimeSeconds()];
+        timerLabelsAllPhases = timerLabelsAllPhases && [readyPresentation[@"title"] hasPrefix:@"Ready "];
         [timerWindowA updateMenuBarTimer];
         NSDictionary *menuTimerReady = [timerWindowA menuBarTimerPresentationAtTime:100];
         BOOL menuTimerReadyTitle = [menuTimerReady[@"title"] hasPrefix:@"Ready 50:00"] &&
+            [menuTimerReady[@"compactTitle"] isEqualToString:@"◷"] &&
             [menuTimerReady[@"accessibilityLabel"] containsString:@"remaining"];
         BOOL menuTimerReadyActions = [menuTimerReady[@"toggle"] isEqualToString:@"Start Focus"] &&
             ![menuTimerReady[@"endEnabled"] boolValue];
@@ -3922,11 +3901,13 @@ static int MicaRunUISelfTest(void) {
         NSDictionary *menuTimerFocus = [timerWindowB menuBarTimerPresentationAtTime:MicaContinuousTimeSeconds()];
         BOOL menuTimerFocusShared = timerWindowB.pomodoro.phase == MICA_POMODORO_FOCUS &&
             [menuTimerFocus[@"title"] hasPrefix:@"Focus "] &&
+            [menuTimerFocus[@"compactTitle"] hasPrefix:@"◷ "] &&
             [menuTimerFocus[@"accessibilityLabel"] containsString:@"Focus"];
         [timerWindowA togglePomodoroPause:nil];
         [timerWindowB refreshPomodoroState];
         NSDictionary *menuTimerPausedState = [timerWindowB menuBarTimerPresentationAtTime:MicaContinuousTimeSeconds()];
         BOOL menuTimerPaused = [menuTimerPausedState[@"title"] hasPrefix:@"Paused focus "] &&
+            [menuTimerPausedState[@"compactTitle"] hasPrefix:@"Ⅱ "] &&
             [menuTimerPausedState[@"toggle"] isEqualToString:@"Resume Timer"] &&
             [menuTimerPausedState[@"endEnabled"] boolValue];
         [timerWindowA skipPomodoroPhase:nil];
@@ -3934,17 +3915,18 @@ static int MicaRunUISelfTest(void) {
         NSDictionary *menuTimerBreak = [timerWindowB menuBarTimerPresentationAtTime:MicaContinuousTimeSeconds()];
         BOOL menuTimerBreakShared = timerWindowB.pomodoro.phase == MICA_POMODORO_BREAK &&
             [menuTimerBreak[@"title"] hasPrefix:@"Break "] &&
+            [menuTimerBreak[@"compactTitle"] hasPrefix:@"☕ "] &&
             [menuTimerBreak[@"endTitle"] isEqualToString:@"End Break & Start Focus"];
         [timerWindowA resetPomodoro:nil];
         menuTimerDisabledCleanly = menuTimerDisabledCleanly && gMicaTimerStatusItemEnabledForTests;
         menuTimerPreference.state = NSControlStateValueOff;
         [timerWindowA prefMenuBarTimerChanged:menuTimerPreference];
-        MicaUITestRecord(report, &allPassed, menuTimerDefaultsOff && menuTimerEnabledOnce &&
+        MicaUITestRecord(report, &allPassed, menuTimerDefaultsOn && menuTimerEnabledOnce &&
             menuTimerDisabledCleanly && menuTimerPreferencePersists && menuTimerReadyTitle && menuTimerReadyActions &&
             menuTimerFocusShared && menuTimerPaused && menuTimerBreakShared && !gMicaTimerStatusItemEnabledForTests &&
             gMenuTimerLifecycleDisableCount == 2,
-            [NSString stringWithFormat:@"optional menu-bar timer defaults off, persists in isolated defaults, maintains one releasable status item and reflects shared focus/break/paused countdowns with accessible state and actions (off=%d one=%d release=%d persisted=%d ready=%d actions=%d focus=%d paused=%d break=%d)",
-                menuTimerDefaultsOff, menuTimerEnabledOnce, menuTimerDisabledCleanly, menuTimerPreferencePersists,
+            [NSString stringWithFormat:@"menu-bar focus timer defaults on, persists in isolated defaults, maintains one releasable status item and reflects shared focus/break/paused countdowns with accessible state and actions (on=%d one=%d release=%d persisted=%d ready=%d actions=%d focus=%d paused=%d break=%d)",
+                menuTimerDefaultsOn, menuTimerEnabledOnce, menuTimerDisabledCleanly, menuTimerPreferencePersists,
                 menuTimerReadyTitle, menuTimerReadyActions, menuTimerFocusShared, menuTimerPaused, menuTimerBreakShared]);
         MicaPomodoro injectedTimer = {0};
         injectedTimer.phase = MICA_POMODORO_FOCUS;
@@ -3962,6 +3944,9 @@ static int MicaRunUISelfTest(void) {
         BOOL menuTimerInjectedClock = [injectedFocus[@"title"] isEqualToString:@"Focus 10:00"] &&
             [injectedBreak[@"title"] isEqualToString:@"Break 02:05"] &&
             [injectedPaused[@"title"] isEqualToString:@"Paused break 00:45"] &&
+            [injectedFocus[@"compactTitle"] isEqualToString:@"◷ 10:00"] &&
+            [injectedBreak[@"compactTitle"] isEqualToString:@"☕ 02:05"] &&
+            [injectedPaused[@"compactTitle"] isEqualToString:@"Ⅱ 00:45"] &&
             [injectedPaused[@"accessibilityLabel"] containsString:@"45 seconds remaining"];
         timerWindowB.pomodoro = (MicaPomodoro){0};
         MicaUITestRecord(report, &allPassed, menuTimerInjectedClock,
