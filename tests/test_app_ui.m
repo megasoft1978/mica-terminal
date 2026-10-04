@@ -2524,7 +2524,7 @@ static int MicaRunUISelfTest(void) {
             for (int attempt = 0; imageReaderReady && attempt < 500; attempt++) {
                 mica_session_poll(imageTab.session, 0);
                 if (MicaUITestFindText(imageTab.session, @"22", NULL, NULL) &&
-                    MicaUITestFindText(imageTab.session, @"IMAGE-ROUTE-OK", NULL, NULL)) {
+                    MicaUITestFindTextAcrossWrappedRows(imageTab.session, @"IMAGE-ROUTE-OK")) {
                     imagePasteWorked = YES;
                     break;
                 }
@@ -2886,13 +2886,13 @@ static int MicaRunUISelfTest(void) {
                 [restoredStateOwner.activeTab.cwd isEqual:MicaStandardizedWorkingDirectory(@"/tmp")] &&
                 [restoredStateOwner.activeTab.command isEqual:@"printf MICA_RESTORED"] &&
                 restoredStateOwner.activeTab.muteNotifications;
-            for (int attempt = 0; restoredSession && attempt < 3000; attempt++) {
+            for (int attempt = 0; restoredSession && attempt < 300; attempt++) {
                 [restoredStateOwner pollSessions:nil];
-                if (MicaUITestFindText(restoredStateOwner.activeTab.session, @"printf MICA_RESTORED", NULL, NULL)) break;
+                if (MicaUITestFindTextAcrossWrappedRows(restoredStateOwner.activeTab.session, @"printf MICA_RESTORED")) break;
                 usleep(10000);
             }
             BOOL restorePrefillsWithoutRunning = restoredSession &&
-                MicaUITestFindText(restoredStateOwner.activeTab.session, @"printf MICA_RESTORED", NULL, NULL) &&
+                MicaUITestFindTextAcrossWrappedRows(restoredStateOwner.activeTab.session, @"printf MICA_RESTORED") &&
                 mica_session_command_completion_count(restoredStateOwner.activeTab.session) == 0;
             for (NSValue *value in [restoredStateOwner detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
             NSDictionary *missingFolderState = @{@"version":@1,@"windows":@[@{@"tabs":@[@{
@@ -2966,12 +2966,12 @@ static int MicaRunUISelfTest(void) {
             [resumeDefaults removePersistentDomainForName:resumeSuite]; gMicaDefaultsOverride = resumeDefaults;
             MicaAppDelegate *resumeOff = [MicaAppDelegate new]; resumeOff.tabs = [NSMutableArray array]; resumeOff.activeIndex = 0;
             [resumeOff loadLaunchConfigurationFromArguments:@[@"mica"] bundleInfo:@{}];
-            for (int attempt = 0; attempt < 3000; attempt++) {
+            for (int attempt = 0; attempt < 100; attempt++) {
                 [resumeOff pollSessions:nil];
-                if (MicaUITestFindText(resumeOff.activeTab.session, @"claude --resume session-1234", NULL, NULL)) break;
+                if (MicaUITestFindTextAcrossWrappedRows(resumeOff.activeTab.session, @"claude --resume session-1234")) break;
                 usleep(10000);
             }
-            BOOL resumeOffPrefilled = MicaUITestFindText(resumeOff.activeTab.session, @"claude --resume session-1234", NULL, NULL) &&
+            BOOL resumeOffPrefilled = MicaUITestFindTextAcrossWrappedRows(resumeOff.activeTab.session, @"claude --resume session-1234") &&
                 ![NSFileManager.defaultManager fileExistsAtPath:capture];
             for (NSValue *value in [resumeOff detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
             [resumeDefaults setBool:YES forKey:@"MicaResumeAgentsOnRestore"];
