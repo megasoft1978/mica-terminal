@@ -46,6 +46,93 @@ static void PollDemo(MicaAppDelegate *owner) {
 }
 @end
 
+@interface MicaProjectStoryCard : NSView
+@property(nonatomic, strong) NSImage *windowImage;
+@property(nonatomic, copy) NSString *headline;
+@property(nonatomic, copy) NSString *caption;
+@property(nonatomic, copy) NSArray<NSMenuItem *> *projectItems;
+@property(nonatomic) BOOL showsProjectMenu;
+@property(nonatomic) NSUInteger highlightedProject;
+@end
+
+@implementation MicaProjectStoryCard
+- (BOOL)isFlipped { return YES; }
+- (void)drawRect:(NSRect)dirtyRect {
+    (void)dirtyRect;
+    NSGradient *background = [[NSGradient alloc] initWithStartingColor:[NSColor colorWithCalibratedRed:0.075 green:0.095 blue:0.125 alpha:1]
+        endingColor:[NSColor colorWithCalibratedRed:0.035 green:0.045 blue:0.065 alpha:1]];
+    [background drawInRect:self.bounds angle:90];
+    NSDictionary *headlineAttributes = @{ NSFontAttributeName:[NSFont systemFontOfSize:25 weight:NSFontWeightSemibold],
+        NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:0.96 alpha:1] };
+    NSDictionary *captionAttributes = @{ NSFontAttributeName:[NSFont systemFontOfSize:14],
+        NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:0.72 alpha:1] };
+    [self.headline drawAtPoint:NSMakePoint(56, 22) withAttributes:headlineAttributes];
+    [self.caption drawAtPoint:NSMakePoint(56, 57) withAttributes:captionAttributes];
+
+    if (!self.showsProjectMenu) {
+        NSRect windowRect = NSMakeRect(140, 105, 1000, 440);
+        NSBezierPath *frame = [NSBezierPath bezierPathWithRoundedRect:windowRect xRadius:12 yRadius:12];
+        [[NSColor colorWithCalibratedWhite:0.22 alpha:1] setFill]; [frame fill];
+        [self.windowImage drawInRect:NSInsetRect(windowRect, 1, 1) fromRect:NSZeroRect
+            operation:NSCompositingOperationSourceOver fraction:1.0 respectFlipped:YES hints:nil];
+        return;
+    }
+
+    NSRect windowRect = NSMakeRect(54, 168, 720, 317);
+    NSBezierPath *windowFrame = [NSBezierPath bezierPathWithRoundedRect:windowRect xRadius:10 yRadius:10];
+    [[NSColor colorWithCalibratedWhite:0.22 alpha:1] setFill]; [windowFrame fill];
+    [self.windowImage drawInRect:NSInsetRect(windowRect, 1, 1) fromRect:NSZeroRect
+        operation:NSCompositingOperationSourceOver fraction:1.0 respectFlipped:YES hints:nil];
+
+    NSRect menuRect = NSMakeRect(630, 153, 590, 340);
+    NSBezierPath *menuPanel = [NSBezierPath bezierPathWithRoundedRect:menuRect xRadius:14 yRadius:14];
+    [[NSColor colorWithCalibratedRed:0.13 green:0.15 blue:0.19 alpha:0.98] setFill]; [menuPanel fill];
+    [[NSColor colorWithCalibratedWhite:0.38 alpha:0.75] setStroke]; menuPanel.lineWidth = 1; [menuPanel stroke];
+    NSDictionary *menuTitleAttributes = @{ NSFontAttributeName:[NSFont systemFontOfSize:15 weight:NSFontWeightSemibold],
+        NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:0.92 alpha:1] };
+    [@"Open Projects" drawAtPoint:NSMakePoint(menuRect.origin.x + 20, menuRect.origin.y + 18) withAttributes:menuTitleAttributes];
+    [[NSColor colorWithCalibratedWhite:1 alpha:0.12] setStroke];
+    NSBezierPath *separator = [NSBezierPath bezierPath]; separator.lineWidth = 1;
+    [separator moveToPoint:NSMakePoint(menuRect.origin.x + 12, menuRect.origin.y + 54)];
+    [separator lineToPoint:NSMakePoint(NSMaxX(menuRect) - 12, menuRect.origin.y + 54)]; [separator stroke];
+    for (NSUInteger index = 0; index < self.projectItems.count; index++) {
+        NSMenuItem *item = self.projectItems[index];
+        NSRect row = NSMakeRect(menuRect.origin.x + 8, menuRect.origin.y + 66 + index * 64, menuRect.size.width - 16, 54);
+        if (index == self.highlightedProject) {
+            [[NSColor colorWithCalibratedRed:0.10 green:0.36 blue:0.77 alpha:1] setFill];
+            [[NSBezierPath bezierPathWithRoundedRect:row xRadius:8 yRadius:8] fill];
+        }
+        NSDictionary *rowAttributes = @{ NSFontAttributeName:[NSFont systemFontOfSize:15 weight:index == self.highlightedProject ? NSFontWeightSemibold : NSFontWeightRegular],
+            NSForegroundColorAttributeName:NSColor.whiteColor };
+        [item.title drawAtPoint:NSMakePoint(row.origin.x + 18, row.origin.y + 17) withAttributes:rowAttributes];
+        if (item.state == NSControlStateValueOn) {
+            NSDictionary *checkAttributes = @{ NSFontAttributeName:[NSFont systemFontOfSize:15 weight:NSFontWeightSemibold],
+                NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:0.85 alpha:1] };
+            [@"✓" drawAtPoint:NSMakePoint(row.origin.x + row.size.width - 32, row.origin.y + 17) withAttributes:checkAttributes];
+        }
+    }
+}
+@end
+
+static NSImage *ImageForView(NSView *view) {
+    NSBitmapImageRep *bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
+    [view cacheDisplayInRect:view.bounds toBitmapImageRep:bitmap];
+    NSImage *image = [[NSImage alloc] initWithSize:bitmap.size];
+    [image addRepresentation:bitmap];
+    return image;
+}
+
+static BOOL SaveProjectStoryCard(NSImage *windowImage, NSString *headline, NSString *caption,
+                                 NSArray<NSMenuItem *> *items, NSUInteger highlighted, BOOL showsMenu, NSString *path) {
+    MicaProjectStoryCard *card = [[MicaProjectStoryCard alloc] initWithFrame:NSMakeRect(0, 0, 1280, 564)];
+    card.windowImage = windowImage; card.headline = headline; card.caption = caption;
+    card.projectItems = items; card.highlightedProject = highlighted; card.showsProjectMenu = showsMenu;
+    NSBitmapImageRep *bitmap = [card bitmapImageRepForCachingDisplayInRect:card.bounds];
+    [card cacheDisplayInRect:card.bounds toBitmapImageRep:bitmap];
+    NSData *png = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+    return [png writeToFile:path atomically:YES];
+}
+
 static BOOL SaveTimerMenuPreview(MicaAppDelegate *owner, NSString *directory) {
     NSString *suite = [NSString stringWithFormat:@"MicaTimerPreview-%@", NSUUID.UUID.UUIDString];
     NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:suite];
@@ -93,7 +180,7 @@ int main(int argc, const char *argv[]) {
         MicaAppDelegate *owner = [MicaAppDelegate new];
         owner.tabs = [NSMutableArray new];
         owner.activeIndex = 0;
-        owner.projectName = @"Mica Demo";
+        owner.projectName = @"Fieldnote";
         owner.focusDurationMinutes = 25;
         owner.breakDurationMinutes = 5;
         owner.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1000, 440)
@@ -184,6 +271,56 @@ int main(int argc, const char *argv[]) {
                 if (!png || ![png writeToFile:path atomically:YES]) return 1;
             }
         }
+        // A short project-first story uses two fictional windows and the same Dock-menu titles
+        // returned by the running app. The terminal output is local sample text; no agent runs.
+        NSImage *fieldnoteWindow = ImageForView(owner.terminalView);
+        MicaAppDelegate *northstarOwner = [MicaAppDelegate new];
+        northstarOwner.tabs = [NSMutableArray new]; northstarOwner.activeIndex = 0;
+        northstarOwner.projectName = @"Northstar";
+        northstarOwner.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1000, 440)
+            styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
+            backing:NSBackingStoreBuffered defer:NO];
+        northstarOwner.window.releasedWhenClosed = NO;
+        northstarOwner.terminalView = [[MicaTerminalView alloc] initWithFrame:northstarOwner.window.contentView.bounds];
+        northstarOwner.terminalView.owner = northstarOwner;
+        northstarOwner.terminalView.terminalFont = MicaTerminalFont(16);
+        [northstarOwner.window setContentView:northstarOwner.terminalView];
+        MicaTab *northstarTab = [MicaTab new]; northstarTab.name = @"Shell";
+        northstarTab.cwd = @"/Users/me/code/northstar";
+        northstarTab.session = mica_session_create("/tmp", nil, 24, 100);
+        if (!northstarTab.session) return 1;
+        [northstarOwner.tabs addObject:northstarTab];
+        [northstarOwner setLightTheme:NO]; [northstarOwner.terminalView updateGridSize];
+        const char *northstarSetup = "PROMPT='northstar> '; RPROMPT=''; clear\n";
+        mica_session_write(northstarTab.session, northstarSetup, strlen(northstarSetup));
+        for (int attempt = 0; attempt < 80; attempt++) PollDemo(northstarOwner);
+        const char *northstarOutput = "clear; printf 'git status --short\\n M Sources/App.swift\\n\\nmake test\\n✓ 42 tests passed\\n'\n";
+        mica_session_write(northstarTab.session, northstarOutput, strlen(northstarOutput));
+        for (int attempt = 0; attempt < 80; attempt++) PollDemo(northstarOwner);
+        NSImage *northstarWindow = ImageForView(northstarOwner.terminalView);
+        [MicaControllers() removeAllObjects];
+        [MicaControllers() addObject:owner]; [MicaControllers() addObject:northstarOwner];
+        NSMenu *projectMenu = [owner applicationDockMenu:NSApp];
+        if (projectMenu.itemArray.count != 2 ||
+            ![projectMenu.itemArray[0].title isEqualToString:[owner windowTitleForTab:owner.activeTab]] ||
+            ![projectMenu.itemArray[1].title isEqualToString:[northstarOwner windowTitleForTab:northstarTab]]) return 1;
+        projectMenu.itemArray[0].state = NSControlStateValueOn;
+        BOOL savedStory =
+            SaveProjectStoryCard(fieldnoteWindow, @"Every project gets its own window.",
+                @"The project name stays visible in the window.", @[], 0, NO,
+                [directory stringByAppendingPathComponent:@"project-switch-fieldnote.png"]) &&
+            SaveProjectStoryCard(fieldnoteWindow, @"Choose an open project by name.",
+                @"Right-click the one Mica Dock icon to see your project windows.", projectMenu.itemArray, 0, YES,
+                [directory stringByAppendingPathComponent:@"project-switch-menu.png"]) &&
+            SaveProjectStoryCard(fieldnoteWindow, @"Choose an open project by name.",
+                @"Right-click the one Mica Dock icon to see your project windows.", projectMenu.itemArray, 1, YES,
+                [directory stringByAppendingPathComponent:@"project-switch-menu-select.png"]) &&
+            SaveProjectStoryCard(northstarWindow, @"Switch straight to Northstar.",
+                @"Each window keeps its own project name and working folder.", @[], 0, NO,
+                [directory stringByAppendingPathComponent:@"project-switch-northstar.png"]);
+        if (!savedStory) return 1;
+        [MicaControllers() removeAllObjects];
+        mica_session_destroy(northstarTab.session); northstarTab.session = NULL;
         // Companion stills make the cycle's discovery controls legible beside the animated terminal demo.
         const char *samples = "clear; printf 'https://example.test/guide  /Users/megasoft78/Desktop/Freelance/mica-terminal/README.md  3f9c1a2\\n'\n";
         mica_session_write(session, samples, strlen(samples));
@@ -249,7 +386,7 @@ int main(int argc, const char *argv[]) {
         [demoDefaults removePersistentDomainForName:suiteName];
         gMicaDefaultsOverride = nil;
         for (MicaTab *tab in owner.tabs) { mica_session_destroy(tab.session); tab.session = NULL; }
-        printf("Captured current-UI frames with local PTY output and fictional SSH profiles.\n");
+        printf("Captured current-UI frames, a project-switch story, local PTY output and fictional SSH profiles.\n");
     }
     return 0;
 }

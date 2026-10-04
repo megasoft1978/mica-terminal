@@ -6,20 +6,20 @@
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#f3f5f8" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0b0f14" media="(prefers-color-scheme: dark)">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; media-src 'self'; font-src 'self'; style-src 'sha256-bD3HGNgGvd7mwf4jBoC4XPYKhzTev381f9ZtyZGX/pk='; script-src 'sha256-iUYeWoXRRX+DrIVa4NcILSYwuvb18vq7YMzO3Dr2gYQ=' 'sha256-obQLhE2id96/7pWU+OVxA2Il4k1t4IAuXtnh2TzQdyE='; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; media-src 'self'; font-src 'self'; style-src 'sha256-o+0Fg1rOx4Lr3Yg0B8t3itljKfaZTiwKOKgXST4jcRo='; script-src 'sha256-iUYeWoXRRX+DrIVa4NcILSYwuvb18vq7YMzO3Dr2gYQ=' 'sha256-obQLhE2id96/7pWU+OVxA2Il4k1t4IAuXtnh2TzQdyE='; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
-  <title>Mica — terminal, voice typing and focus timer in one light Mac app</title>
-  <meta name="description" content="Mica puts a terminal, saved SSH profiles, on-device voice typing and a focus timer in one native Mac app that idles around 55–60 MB.">
+  <title>Mica — know exactly which project you’re in</title>
+  <meta name="description" content="Give every project its own named Mac window. Switch between open projects from one Dock icon. Mica includes a terminal, on-device dictation and a focus timer.">
   <link rel="canonical" href="https://megasoft1978.github.io/mica-terminal/">
   <link rel="icon" type="image/png" sizes="64x64" href="icon-64.png">
   <link rel="apple-touch-icon" href="icon-180.png">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Mica">
-  <meta property="og:title" content="Mica — terminal, voice typing and focus timer in one light Mac app">
-  <meta property="og:description" content="One native Mac app for your terminal, saved Mac and Linux SSH profiles, on-device dictation and a focus timer. About 55–60 MB idle.">
+  <meta property="og:title" content="Mica — know exactly which project you’re in">
+  <meta property="og:description" content="Give every project its own named Mac window. Switch between open projects from one Dock icon.">
   <meta property="og:url" content="https://megasoft1978.github.io/mica-terminal/">
-  <meta property="og:image" content="https://megasoft1978.github.io/mica-terminal/assets/mica-dark.png">
-  <meta property="og:image:alt" content="Mica window with the active project name in its top-right badge, project tabs, terminal output and a live memory readout.">
+  <meta property="og:image" content="https://megasoft1978.github.io/mica-terminal/assets/project-switching-demo-poster.jpg">
+  <meta property="og:image:alt" content="Mica’s Dock menu lists the open Fieldnote and Northstar windows by project name.">
   <meta name="twitter:card" content="summary_large_image">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Mica","applicationCategory":"DeveloperApplication","operatingSystem":"macOS 14 or later","softwareVersion":"0.1.0-alpha.16","license":"https://opensource.org/licenses/MIT","isAccessibleForFree":true,"downloadUrl":"https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/Mica.zip","fileSize":"10.6MB","description":"A native Mac terminal with saved SSH profiles, on-device dictation, project identity, command context and a focus timer that idles around 55-60 MB.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"sameAs":["https://github.com/megasoft1978/mica-terminal"]}</script>
   <style>
@@ -37,8 +37,8 @@
               --accent: #8f86ff; --code-bg: #0a0e13; }
     }
     @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto !important; } }
-    .demo-transcript { max-width: 940px; margin: 16px auto 0; }
-    .demo-transcript summary { cursor: pointer; }
+    .demo-transcript, .feature-tour { max-width: 940px; margin: 16px auto 0; }
+    .demo-transcript summary, .feature-tour summary { cursor: pointer; }
     * { box-sizing: border-box; }
     html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
     body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.6 var(--sans); -webkit-font-smoothing: antialiased; }
@@ -58,9 +58,9 @@
     nav a { text-decoration: none; }
     nav a:hover { color: var(--ink); }
 
-    .hero { padding: 56px 0 0; text-align: center; }
-    h1 { max-width: 15ch; margin: 0 auto; font: 700 clamp(44px, 8vw, 92px)/0.98 var(--display); letter-spacing: -0.045em; text-wrap: balance; }
-    .lede { max-width: 34em; margin: 24px auto 0; color: var(--muted); font-size: clamp(18px, 2.2vw, 22px); line-height: 1.5; text-wrap: pretty; }
+    .hero { padding: 52px 0 0; text-align: center; }
+    h1 { max-width: 19ch; margin: 0 auto; font: 700 clamp(44px, 8vw, 92px)/0.98 var(--display); letter-spacing: -0.045em; text-wrap: balance; }
+    .lede { max-width: 31em; margin: 22px auto 0; color: var(--muted); font-size: clamp(18px, 2.2vw, 22px); line-height: 1.48; text-wrap: pretty; }
     .actions { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-top: 34px; }
     .button { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: 0 22px; border-radius: 12px; font-weight: 600; font-size: 16px; text-decoration: none; border: 1px solid var(--ink); }
     .button.primary { background: var(--ink); color: var(--bg); }
@@ -70,7 +70,7 @@
     .fine { margin-top: 16px; color: var(--muted); font-size: 14px; }
 
     .stage { position: relative; margin: 64px auto 0; width: min(1040px, 100%); isolation: isolate; }
-    .sheet { position: absolute; inset: 6% 3% -5% 3%; border-radius: 28px; z-index: -1; opacity: .55;
+    .sheet { position: absolute; inset: 6% 3% -5% 3%; border-radius: 28px; z-index: -1; opacity: .55; pointer-events: none;
              background: linear-gradient(135deg, color-mix(in srgb, var(--cyan) 70%, transparent), color-mix(in srgb, var(--violet) 70%, transparent)); filter: blur(0.5px); }
     .sheet.two { inset: 2% 7% -9% 7%; opacity: .32; transform: rotate(-1.2deg); }
     .sheet.three { inset: -1% 11% -13% 11%; opacity: .18; transform: rotate(1.4deg); }
@@ -86,6 +86,9 @@
     .themes button { min-height: 36px; padding: 0 16px; border: 0; border-radius: 9px; background: transparent; color: var(--muted); font: 600 14px var(--sans); cursor: pointer; }
     .themes button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
     .caption { margin-top: 12px; color: var(--muted); font-size: 14px; }
+    #demo { margin-top: 92px; }
+    .demo-heading { max-width: 20ch; margin: 0 auto 24px; text-align: center; }
+    .feature-tour .shot { margin-top: 14px; }
 
     section { padding: 112px 0 0; }
     h2 { margin: 0; font: 700 clamp(30px, 4.4vw, 48px)/1.05 var(--display); letter-spacing: -0.035em; text-wrap: balance; }
@@ -136,9 +139,16 @@
       @keyframes settle { from { opacity: 0; transform: translateY(24px) scale(.98); } }
     }
     @media (max-width: 600px) {
-      /* Show the left part of the window at a readable size instead of a tiny full view. */
-      .window img { width: 172%; max-width: none; }
+      /* Keep the project badge in the crop so the key identity cue survives on phones. */
+      .hero { padding-top: 32px; }
+      h1 { font-size: clamp(38px, 11vw, 44px); }
+      .lede { margin-top: 16px; font-size: 18px; }
+      .actions { margin-top: 24px; }
+      .fine { margin-top: 12px; }
+      .stage { margin-top: 36px; }
+      .window img { width: 172%; max-width: none; margin-left: -72%; }
       .lights { display: none; }
+      .themes { margin-top: 20px; }
       .themes button { min-height: 40px; }
     }
     @media (max-width: 600px) {
@@ -188,18 +198,18 @@
 
   <main id="main">
     <div id="top" class="wrap hero">
-      <h1>Three tools in one light Mac app.</h1>
-      <p class="lede">Mica is a terminal, on-device voice typing and a focus timer built into one native app that idles around 55–60 MB. Every project gets its own window, and coding agents run right inside it.</p>
+      <h1>Know exactly which project you’re in.</h1>
+      <p class="lede">Keep each project in its own named window. Mica’s Dock menu lets you switch by name. Terminal and agent tabs, on-device dictation and a focus timer come built in.</p>
       <div class="actions">
         <a class="button primary" href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/Mica.zip">Download for Mac</a>
-        <a class="button secondary" href="https://github.com/megasoft1978/mica-terminal">View source on GitHub</a>
+        <a class="button secondary" href="#demo">See how switching works</a>
       </div>
-      <p class="fine">Version 0.1.0 alpha 16 · 10.6 MB · Apple silicon, macOS 14 or later · Free and open source · <a href="#install">Install notes</a></p>
+      <p class="fine">Version 0.1.0 alpha 16 · 10.6 MB · Apple silicon, macOS 14 or later · about 55–60 MB idle · Free and open source</p>
 
       <div class="stage">
         <div class="sheet"></div><div class="sheet two"></div><div class="sheet three"></div>
         <figure class="window">
-          <img id="shot-dark" src="assets/mica-dark.png" width="2200" height="880" alt="Dark Mica terminal with prompt landmarks and a failed-command marker.">
+          <img id="shot-dark" src="assets/mica-dark.png" width="2200" height="880" alt="Mica’s Fieldnote project window with its name visible at the right end of the tab strip, plus terminal output and a live memory readout.">
           <img id="shot-light" src="assets/mica-light.png" width="2200" height="880" alt="Light Mica terminal showing vocabulary correction on a fake transcript without microphone input." hidden>
           <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
         </figure>
@@ -208,15 +218,20 @@
         <button type="button" id="theme-dark" aria-pressed="true">Dark</button>
         <button type="button" id="theme-light" aria-pressed="false">Light</button>
       </div>
-      <p class="caption">These real Mica views show the active project name in the top-right badge, prompt navigation in dark appearance, and a fake corrected transcript in light appearance. No microphone is used. Switch themes any time with <kbd>⌥⌘L</kbd>.</p>
+      <p class="caption">This real Mica window keeps “Fieldnote” visible in the top-right badge. Switch terminal themes with <kbd>⌥⌘L</kbd>.</p>
     </div>
 
     <div class="wrap" id="demo">
-      <div class="shot"><video controls muted loop playsinline preload="metadata" poster="assets/mica-demo-poster.png" width="1280" height="564" aria-describedby="demo-caption"><source src="assets/mica-demo.mp4" type="video/mp4">Your browser cannot play this video. Read the demo transcript below or download the MP4.</video></div>
-      <p class="caption" id="demo-caption">Fresh capture of the current native Mica view, with the project name in the window badge: local commands, Unicode output, prompt navigation, vocabulary correction from a fake transcript (no microphone), dark and light themes, and the saved SSH profile manager. In the running app, right-click the single Dock icon to choose a named project window. The Mac Studio and Linux VPN entries are fictional; no SSH connection is made and no coding agent is invoked. The memory readout belongs to the capture process. The focus timer appears separately in the macOS menu bar.</p>
+      <h2 class="demo-heading">Find any project in eight seconds.</h2>
+      <div class="shot"><video controls muted playsinline preload="metadata" poster="assets/project-switching-demo-poster.jpg" width="1280" height="564" aria-describedby="demo-caption"><source src="assets/project-switching-demo.mp4" type="video/mp4">Your browser cannot play this video. Read the demo transcript below or download the MP4.</video></div>
+      <p class="caption" id="demo-caption">A short walkthrough built from Mica’s current window captures and Dock-menu entries. See “Fieldnote” in its window badge, open the project list, then choose “Northstar — Shell.” Each window keeps its own project name and working folder.</p>
       <details class="demo-transcript"><summary>Demo transcript and download</summary>
-        <p>The Mica Demo window has Shell, Preview and Agent tabs, and keeps “Mica Demo” visible in its top-right project badge. Scripted typing runs local commands that print a greeting with CJK text, an emoji and an accent, then <code>seq 1 60</code> prints numbered lines. The demo shows scrollback search, Quick Select, Command Palette, prompt navigation, vocabulary correction and saved SSH profiles. In the app, the Dock menu lists open project windows by project and tab name. The SSH destinations and transcript are fictional; there is no microphone use, network access or coding agent.</p>
-        <p><a href="assets/mica-demo.mp4" download>Download the demo MP4</a>. The video is silent and starts only when you press Play.</p>
+        <p>Mica uses one Dock icon for its shared process. Right-clicking it opens a project list built from the open windows; the active project has a checkmark, and choosing another entry brings that window forward. The short demo uses fictional Fieldnote and Northstar projects and local sample output. No coding agent or network connection is used.</p>
+        <p><a href="assets/project-switching-demo.mp4" download>Download the 8-second project demo</a>. It is silent and starts only when you press Play.</p>
+      </details>
+      <details class="feature-tour"><summary>Watch the longer feature tour (30 seconds)</summary>
+        <div class="shot"><video controls muted playsinline preload="none" poster="assets/mica-demo-poster.png" width="1280" height="564"><source src="assets/mica-demo.mp4" type="video/mp4">Your browser cannot play this video.</video></div>
+        <p class="caption">Quick Select, the Command Palette, prompt navigation, local vocabulary correction, saved SSH profiles and the menu-bar focus timer. SSH destinations are fictional; no connection is made.</p>
       </details>
     </div>
 
