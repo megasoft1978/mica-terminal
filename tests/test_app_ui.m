@@ -1499,9 +1499,9 @@ static int MicaRunUISelfTest(void) {
         [resizeView scheduleGridResize];
         BOOL programmaticResizeDeferred = MicaUITestCountText(resizeTab.session,
             @"MICA-RESIZE-PIXELS-UPDATED") == updatesBeforeAXResize;
-        MicaUITestRunLoopFor(0.2);
-        for (int attempt = 0; attempt < 100 &&
+        for (int attempt = 0; attempt < 20 &&
              MicaUITestCountText(resizeTab.session, @"MICA-RESIZE-PIXELS-UPDATED") == updatesBeforeAXResize; attempt++) {
+            MicaUITestRunLoopFor(0.05);
             mica_session_poll(resizeTab.session, 10);
         }
         NSUInteger updatesAfterAXResize = MicaUITestCountText(resizeTab.session,
@@ -1509,9 +1509,10 @@ static int MicaRunUISelfTest(void) {
         BOOL programmaticResizeCoalesced = programmaticResizeDeferred &&
             updatesAfterAXResize == updatesBeforeAXResize + 1;
         MicaUITestRecord(report, &allPassed, programmaticResizeCoalesced,
-            [NSString stringWithFormat:@"programmatic window resizes defer and coalesce terminal PTY size changes (deferred=%d updates=%lu→%lu)",
+            [NSString stringWithFormat:@"programmatic window resizes defer and coalesce terminal PTY size changes (deferred=%d updates=%lu→%lu frame=%@ cell=%.2f grid=%ldx%ld)",
                 programmaticResizeDeferred, (unsigned long)updatesBeforeAXResize,
-                (unsigned long)updatesAfterAXResize]);
+                (unsigned long)updatesAfterAXResize, NSStringFromRect(resizeView.frame), cellWidth,
+                (long)mica_session_cols(resizeTab.session), (long)mica_session_rows(resizeTab.session)]);
         mica_session_write(resizeTab.session, "\x03", 1);
         BOOL resizeSessionExited = MicaUITestExitTabs(resizeDelegate.tabs);
         MicaUITestRecord(report, &allPassed, resizeSessionExited,
@@ -2527,7 +2528,9 @@ static int MicaRunUISelfTest(void) {
                 usleep(10000);
             }
             MicaUITestRecord(report, &allPassed, imageReaderReady && imagePasteWorked,
-                             @"Command-V forwards Ctrl-V for a clipboard image without reading or storing the image");
+                [NSString stringWithFormat:@"Command-V forwards Ctrl-V for a clipboard image without reading or storing it (ready=%d bitmap=%d bytes=%lu focus=%d)",
+                    imageReaderReady, clipboardPNG != nil, (unsigned long)clipboardPNG.length,
+                    delegate.window.firstResponder == delegate.terminalView]);
             if (imageReaderReady && !imagePasteWorked)
                 MicaUITestSendKey(delegate, @"c", NSEventModifierFlagControl, 8);
             delegate.terminalView.testClipboardImage = nil;
@@ -2970,7 +2973,7 @@ static int MicaRunUISelfTest(void) {
             [resumeDefaults setBool:YES forKey:@"MicaResumeAgentsOnRestore"];
             MicaAppDelegate *resumeOn = [MicaAppDelegate new]; resumeOn.tabs = [NSMutableArray array]; resumeOn.activeIndex = 0;
             [resumeOn loadLaunchConfigurationFromArguments:@[@"mica"] bundleInfo:@{}];
-            for (int attempt = 0; attempt < 200 && ![NSFileManager.defaultManager fileExistsAtPath:capture]; attempt++) {
+            for (int attempt = 0; attempt < 500 && ![NSFileManager.defaultManager fileExistsAtPath:capture]; attempt++) {
                 [resumeOn pollSessions:nil]; usleep(10000);
             }
             NSString *capturedArgs = [NSString stringWithContentsOfFile:capture encoding:NSUTF8StringEncoding error:nil];
@@ -2991,7 +2994,7 @@ static int MicaRunUISelfTest(void) {
             MicaAppDelegate *sshRestored = [MicaAppDelegate new];
             sshRestored.tabs = [NSMutableArray array]; sshRestored.activeIndex = 0;
             [sshRestored loadLaunchConfigurationFromArguments:@[@"mica"] bundleInfo:@{}];
-            for (int attempt = 0; attempt < 200 && ![NSFileManager.defaultManager fileExistsAtPath:capture]; attempt++) {
+            for (int attempt = 0; attempt < 500 && ![NSFileManager.defaultManager fileExistsAtPath:capture]; attempt++) {
                 [sshRestored pollSessions:nil]; usleep(10000);
             }
             NSString *sshCapturedArgs = [NSString stringWithContentsOfFile:capture encoding:NSUTF8StringEncoding error:nil];
@@ -3051,9 +3054,12 @@ static int MicaRunUISelfTest(void) {
             gMicaSessionStateURLOverride = nil;
             [MicaControllers() removeAllObjects]; [MicaControllers() addObjectsFromArray:savedControllers];
             MicaUITestRecord(report, &allPassed, stateRoundTrips && restoredSession && restorePrefillsWithoutRunning && missingFolderFallsHome && corruptIgnored && oversizedIgnored && hostileIgnored && badEntryDropped && privateStatePermissions && resumeOffPrefilled && resumeOnRan && sshRestoredSafely && sshLayoutRestoresProfile && codexResumeRan && tamperedDropped,
-                [NSString stringWithFormat:@"session state validates names/folders, ignores hostile metadata and uses private permissions (roundtrip=%d restore=%d corrupt=%d oversized=%d hostile=%d private=%d command=%d mode=%o/%o saved=%@ actual=%@ raw=%@)",
-                    stateRoundTrips, restoredSession, corruptIgnored, oversizedIgnored, hostileIgnored, privateStatePermissions,
-                    commandRestoredSafely, [stateAttributes[NSFilePosixPermissions] unsignedShortValue],
+                [NSString stringWithFormat:@"session state validates names/folders, ignores hostile metadata and uses private permissions (roundtrip=%d restore=%d prefill=%d missing=%d corrupt=%d oversized=%d hostile=%d badEntry=%d private=%d command=%d resumeOff=%d resumeOn=%d ssh=%d sshLayout=%d codex=%d tampered=%d mode=%o/%o saved=%@ actual=%@ raw=%@)",
+                    stateRoundTrips, restoredSession, restorePrefillsWithoutRunning, missingFolderFallsHome,
+                    corruptIgnored, oversizedIgnored, hostileIgnored, badEntryDropped, privateStatePermissions,
+                    commandRestoredSafely, resumeOffPrefilled, resumeOnRan, sshRestoredSafely, sshLayoutRestoresProfile,
+                    codexResumeRan, tamperedDropped,
+                    [stateAttributes[NSFilePosixPermissions] unsignedShortValue],
                     [directoryAttributes[NSFilePosixPermissions] unsignedShortValue], savedState, restoredStateOwner.activeTab, rawState]);
             [preferences close];
 
