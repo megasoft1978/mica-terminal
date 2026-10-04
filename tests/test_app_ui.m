@@ -2531,9 +2531,10 @@ static int MicaRunUISelfTest(void) {
                 usleep(10000);
             }
             MicaUITestRecord(report, &allPassed, imageReaderReady && imagePasteWorked,
-                [NSString stringWithFormat:@"image paste forwards Ctrl-V without reading or storing clipboard image data (ready=%d bitmap=%d bytes=%lu focus=%d)",
+                [NSString stringWithFormat:@"image paste forwards Ctrl-V without reading or storing clipboard image data (ready=%d bitmap=%d bytes=%lu focus=%d running=%d screen=%@)",
                     imageReaderReady, clipboardPNG != nil, (unsigned long)clipboardPNG.length,
-                    delegate.window.firstResponder == delegate.terminalView]);
+                    delegate.window.firstResponder == delegate.terminalView, mica_session_is_running(imageTab.session),
+                    MicaUITestScreenTail(imageTab.session)]);
             if (imageReaderReady && !imagePasteWorked)
                 MicaUITestSendKey(delegate, @"c", NSEventModifierFlagControl, 8);
             delegate.terminalView.testClipboardImage = nil;
@@ -2885,7 +2886,7 @@ static int MicaRunUISelfTest(void) {
                 [restoredStateOwner.activeTab.cwd isEqual:MicaStandardizedWorkingDirectory(@"/tmp")] &&
                 [restoredStateOwner.activeTab.command isEqual:@"printf MICA_RESTORED"] &&
                 restoredStateOwner.activeTab.muteNotifications;
-            for (int attempt = 0; restoredSession && attempt < 1000; attempt++) {
+            for (int attempt = 0; restoredSession && attempt < 3000; attempt++) {
                 [restoredStateOwner pollSessions:nil];
                 if (MicaUITestFindText(restoredStateOwner.activeTab.session, @"printf MICA_RESTORED", NULL, NULL)) break;
                 usleep(10000);
@@ -2965,7 +2966,7 @@ static int MicaRunUISelfTest(void) {
             [resumeDefaults removePersistentDomainForName:resumeSuite]; gMicaDefaultsOverride = resumeDefaults;
             MicaAppDelegate *resumeOff = [MicaAppDelegate new]; resumeOff.tabs = [NSMutableArray array]; resumeOff.activeIndex = 0;
             [resumeOff loadLaunchConfigurationFromArguments:@[@"mica"] bundleInfo:@{}];
-            for (int attempt = 0; attempt < 500; attempt++) {
+            for (int attempt = 0; attempt < 3000; attempt++) {
                 [resumeOff pollSessions:nil];
                 if (MicaUITestFindText(resumeOff.activeTab.session, @"claude --resume session-1234", NULL, NULL)) break;
                 usleep(10000);

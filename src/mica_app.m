@@ -3269,7 +3269,8 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     if (!tab.session) return;
 #if defined(MICA_APP_NO_MAIN)
     if (self.testClipboardImage) {
-        mica_session_text(tab.session, 'v', VTERM_MOD_CTRL);
+        const char controlV = '\x16';
+        mica_session_write(tab.session, &controlV, 1);
         [self setNeedsDisplay:YES];
         return;
     }
@@ -3290,7 +3291,8 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         if ([pasteboard.types containsObject:imageType]) {
             // Claude Code and other agent TUIs read image data from the OS
             // clipboard when they receive Ctrl+V. Cmd+V is Mica's native paste key.
-            mica_session_text(tab.session, 'v', VTERM_MOD_CTRL);
+            const char controlV = '\x16';
+            mica_session_write(tab.session, &controlV, 1);
             [self setNeedsDisplay:YES];
             return;
         }
