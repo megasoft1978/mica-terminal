@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import "mica_agent_rss.h"
 #import "mica.h"
+#include <unistd.h>
 
 @interface MicaRSSProbeTab : NSObject
 @property(nonatomic) uint64_t identifier;
@@ -26,8 +27,13 @@ int main(void) {
 
         MicaSession *session = mica_session_create("/tmp", "sleep 30", 24, 80);
         if (!session) return 2;
+        uint64_t treeRSS = 0;
+        for (int attempt = 0; attempt < 100 && treeRSS == 0; attempt++) {
+            treeRSS = mica_session_tree_rss(session);
+            if (treeRSS == 0) usleep(10000);
+        }
         BOOL processTreeAPI = mica_session_root_pid(session) == mica_session_pid(session) &&
-            mica_session_tree_rss(session) > 0 && mica_process_tree_rss(-1) == 0;
+            treeRSS > 0 && mica_process_tree_rss(-1) == 0;
         MicaRSSProbeTab *claude = [MicaRSSProbeTab new];
         claude.identifier = 7; claude.session = session; claude.agentKind = @"claude";
         MicaRSSProbeTab *codex = [MicaRSSProbeTab new];
