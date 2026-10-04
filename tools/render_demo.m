@@ -55,6 +55,7 @@ static BOOL SaveTimerMenuPreview(MicaAppDelegate *owner, NSString *directory) {
     owner.pomodoro = timer; owner.pomodoroLabel = @"Mica Demo";
     [owner applyMenuBarTimerPreference]; [owner updateMenuBarTimer];
     [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+    [owner updateMenuBarTimer];
     NSStatusItem *statusItem = [gMicaStatusItem valueForKey:@"statusItem"];
     NSStatusBarButton *button = statusItem.button;
     NSString *indicatorTitle = button.title.length ? button.title : @"◷ 24:18";
