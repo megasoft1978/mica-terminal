@@ -10,17 +10,17 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.16"><img src="https://img.shields.io/badge/release-0.1.0--alpha.16-blue" alt="Release 0.1.0 alpha 16"></a>
+  <a href="https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.17"><img src="https://img.shields.io/badge/release-0.1.0--alpha.17-blue" alt="Release 0.1.0 alpha 17"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B%20%C2%B7%20Apple%20silicon-555" alt="macOS 14 or later, Apple silicon">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
 </p>
 
-<p align="center"><strong>Free · Apple silicon · macOS 14 or later · 10.6 MB download</strong></p>
+<p align="center"><strong>Free · Apple silicon · macOS 14 or later · 10.7 MB download</strong></p>
 
 <p align="center">
   <a href="https://megasoft1978.github.io/mica-terminal/">Website</a> ·
-  <a href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/Mica.zip"><strong>Download</strong></a> ·
-  <a href="https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.16">Release notes</a> ·
+  <a href="https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.17/Mica.zip"><strong>Download</strong></a> ·
+  <a href="https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.17">Release notes</a> ·
   <a href="LICENSE">MIT license</a>
 </p>
 
@@ -64,7 +64,7 @@ The same-day iTerm2 and Wispr Flow measurements add up to about 770 MB, before a
 
 ## Install
 
-1. [Download Mica.zip](https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/Mica.zip), extract it and move Mica to Applications. This build is signed and notarized; verify the ZIP with the [SHA-256 manifest](https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/SHA256SUMS.txt).
+1. [Download Mica.zip](https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.17/Mica.zip), extract it and move Mica to Applications. This build is signed and notarized; verify the ZIP with the [SHA-256 manifest](https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.17/SHA256SUMS.txt).
 2. Mica prepares dictation in the background on first launch and after app updates that change its speech helper. It downloads model files only if they are missing and reuses local files otherwise. If you start dictating before setup finishes, the helper loads the model on demand. This setup does not require microphone permission.
 3. Mica asks for microphone access only when you start dictating. Dictation is processed locally. Completed recordings are also retained in the local dictation history so you can compare recognition models later; nothing is sent to a server.
 
