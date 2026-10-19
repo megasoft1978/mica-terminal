@@ -2806,6 +2806,76 @@ bool mica_session_get_cell(const MicaSession *session, int row, int col, MicaCel
     return true;
 }
 
+static size_t mica_utf8_encode(uint32_t cp, char out[4]) {
+    if (cp <= 0x7f) { out[0] = (char)cp; return 1; }
+    if (cp <= 0x7ff) {
+        out[0] = (char)(0xc0 | (cp >> 6)); out[1] = (char)(0x80 | (cp & 0x3f)); return 2;
+    }
+    if (cp >= 0xd800 && cp <= 0xdfff) cp = 0xfffd;
+    if (cp <= 0xffff) {
+        out[0] = (char)(0xe0 | (cp >> 12)); out[1] = (char)(0x80 | ((cp >> 6) & 0x3f));
+        out[2] = (char)(0x80 | (cp & 0x3f)); return 3;
+    }
+    if (cp > 0x10ffff) cp = 0xfffd;
+    out[0] = (char)(0xf0 | (cp >> 18)); out[1] = (char)(0x80 | ((cp >> 12) & 0x3f));
+    out[2] = (char)(0x80 | ((cp >> 6) & 0x3f)); out[3] = (char)(0x80 | (cp & 0x3f)); return 4;
+}
+
+bool mica_session_copy_remote_screen(const MicaSession *session, size_t max_rows,
+                                     size_t max_cols, char *buffer, size_t capacity,
+                                     size_t *written) {
+    if (written) *written = 0;
+    if (buffer && capacity) buffer[0] = '\0';
+    if (!session || !buffer || capacity == 0 || max_rows == 0 || max_cols == 0) return false;
+    size_t rows = (size_t)session->rows < max_rows ? (size_t)session->rows : max_rows;
+    size_t cols = (size_t)session->cols < max_cols ? (size_t)session->cols : max_cols;
+    size_t start = (size_t)session->rows - rows, used = 0;
+    for (size_t r = start; r < (size_t)session->rows; r++) {
+        for (size_t c = 0; c < cols; c++) {
+            VTermPos pos = { .row = (int)r, .col = (int)c };
+            VTermScreenCell cell;
+            if (!vterm_screen_get_cell(session->screen, pos, &cell)) goto failed;
+            if (cell.width == 0) continue;
+            size_t cell_width = cell.width > 1 ? (size_t)cell.width : 1;
+            if (cell_width > cols - c) {
+                // Do not emit a wide glyph when its second column was clipped.
+                for (size_t i = 0; i < cols - c; i++) {
+                    if (used >= capacity - 1) goto failed;
+                    buffer[used++] = ' ';
+                }
+                continue;
+            }
+            if (cell.attrs.conceal) {
+                for (size_t i = 0; i < cell_width; i++) {
+                    if (used >= capacity - 1) goto failed;
+                    buffer[used++] = ' ';
+                }
+                continue;
+            }
+            bool emitted = false;
+            for (size_t i = 0; i < VTERM_MAX_CHARS_PER_CELL && cell.chars[i]; i++) {
+                uint32_t cp = cell.chars[i];
+                if (cp < 0x20 || (cp >= 0x7f && cp < 0xa0)) cp = ' ';
+                char encoded[4]; size_t n = mica_utf8_encode(cp, encoded);
+                if (n >= capacity - used) goto failed;
+                memcpy(buffer + used, encoded, n); used += n; emitted = true;
+            }
+            if (!emitted) {
+                if (used >= capacity - 1) goto failed;
+                buffer[used++] = ' ';
+            }
+        }
+        if (used >= capacity - 1) goto failed;
+        buffer[used++] = '\n';
+    }
+    buffer[used] = '\0';
+    if (written) *written = used;
+    return true;
+failed:
+    buffer[0] = '\0';
+    return false;
+}
+
 bool mica_session_row_continues(const MicaSession *session, int row) {
     if (!session || row <= 0 || row >= session->rows) return false;
     size_t count = display_history_count(session);

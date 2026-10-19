@@ -14,8 +14,10 @@
 #import "mica_agent_rss.h"
 #import "mica_status_context.h"
 #import "mica_ssh_profile.h"
+#import "mica_remote_server.h"
 #import <UserNotifications/UserNotifications.h>
 #import <Carbon/Carbon.h>
+#import <CoreImage/CoreImage.h>
 
 #import <CommonCrypto/CommonDigest.h>
 #import <fcntl.h>
@@ -709,6 +711,14 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)takeMenuOwnership;
 - (void)handleHookEvent:(MicaHookEvent)event forTab:(MicaTab *)tab;
 - (void)setupAgentHooks:(id)sender;
+- (void)showRemoteControl:(id)sender;
+- (void)disableRemoteControl:(id)sender;
+- (void)updateRemoteControlMenu;
+- (void)presentRemotePairing;
+- (NSDictionary *)remoteSnapshot;
+- (NSString *)remoteScreenForTabID:(NSString *)identifier;
+- (BOOL)sendRemoteText:(NSString *)text toTabID:(NSString *)identifier;
+- (BOOL)selectRemoteTabID:(NSString *)identifier;
 - (void)buildMenus;
 - (void)teardownWindow;
 - (NSArray<NSValue *> *)detachSessionsForTermination;
@@ -4853,6 +4863,11 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 - (void)takeMenuOwnership {
     for (NSMenuItem *item in gControllerMenuItems) item.target = self;
     for (NSMenuItem *item in gViewMenuItems) item.target = self.terminalView;
+    // This item is inserted after the static menu targets are collected, so retarget it
+    // explicitly whenever a different project window takes ownership of the menu bar.
+    NSMenu *appMenu = [NSApp.mainMenu itemWithTitle:@"Mica"].submenu;
+    NSMenuItem *disableRemote = [appMenu itemWithTitle:@"Disable Remote Control…"];
+    if (disableRemote) disableRemote.target = self;
     if (gMicaStatusItem) [self updateMenuBarTimer];
 }
 
@@ -5101,6 +5116,168 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 
 - (void)setupAgentHooks:(id)sender { (void)sender; [MicaHookInstall presentFromWindow:self.window]; }
 
+- (NSString *)remoteIdentifierForController:(MicaAppDelegate *)controller tab:(MicaTab *)tab {
+    return [NSString stringWithFormat:@"%p-%llu", controller, (unsigned long long)tab.identifier];
+}
+
+- (NSString *)remoteScreenForTab:(MicaTab *)tab {
+    if (!tab.session) return @"";
+    size_t capacity = 48u * 160u * 4u + 49u;
+    char *bytes = calloc(capacity, 1);
+    if (!bytes) return @"";
+    size_t written = 0;
+    BOOL ok = mica_session_copy_remote_screen(tab.session, 48, 160, bytes, capacity, &written);
+    NSString *screen = ok ? [[NSString alloc] initWithBytes:bytes length:written encoding:NSUTF8StringEncoding] : @"";
+    free(bytes);
+    return screen ?: @"";
+}
+
+- (NSDictionary *)remoteSnapshot {
+    NSMutableArray *projects = [NSMutableArray array];
+    for (MicaAppDelegate *controller in MicaControllers()) {
+        NSMutableArray *tabs = [NSMutableArray array];
+        for (MicaTab *tab in controller.tabs) {
+            NSString *activity = tab.agentActivity.length ? tab.agentActivity : (tab.currentCommand.length ? tab.currentCommand : @"Shell");
+            [tabs addObject:@{@"id":[self remoteIdentifierForController:controller tab:tab],
+                @"name":tab.name.length ? tab.name : @"Terminal", @"activity":activity,
+                @"folder":tab.cwd.length ? tab.cwd : @"/",
+                @"running":@(tab.session && mica_session_is_running(tab.session)),
+                @"selected":@(tab == controller.activeTab)}];
+        }
+        NSString *name = controller.projectName.length ? controller.projectName :
+            [self projectDisplayNameForTab:controller.activeTab] ?: @"Mica Project";
+        [projects addObject:@{@"name":name, @"tabs":tabs}];
+    }
+    return @{@"projects":projects};
+}
+
+- (BOOL)sendRemoteText:(NSString *)text toTabID:(NSString *)identifier {
+    for (MicaAppDelegate *controller in MicaControllers()) for (MicaTab *tab in controller.tabs) {
+        if (![[self remoteIdentifierForController:controller tab:tab] isEqualToString:identifier] ||
+            !tab.session || !mica_session_is_running(tab.session)) continue;
+        NSData *bytes = [[text stringByAppendingString:@"\n"] dataUsingEncoding:NSUTF8StringEncoding];
+        if (bytes.length > 8192) return NO;
+        mica_session_paste(tab.session, bytes.bytes, bytes.length - 1);
+        mica_session_key(tab.session, VTERM_KEY_ENTER, VTERM_MOD_NONE);
+        MicaTab *previousPollTab = controller.dispatchPollTab;
+        controller.dispatchPollTab = tab;
+        @try { [controller pollSessions:nil]; }
+        @finally { controller.dispatchPollTab = previousPollTab; }
+        return YES;
+    }
+    return NO;
+}
+
+- (NSString *)remoteScreenForTabID:(NSString *)identifier {
+    for (MicaAppDelegate *controller in MicaControllers()) for (MicaTab *tab in controller.tabs)
+        if ([[self remoteIdentifierForController:controller tab:tab] isEqualToString:identifier])
+            return [self remoteScreenForTab:tab];
+    return nil;
+}
+
+- (BOOL)selectRemoteTabID:(NSString *)identifier {
+    for (MicaAppDelegate *controller in MicaControllers()) for (NSUInteger index = 0; index < controller.tabs.count; index++) {
+        MicaTab *tab = controller.tabs[index];
+        if (![[self remoteIdentifierForController:controller tab:tab] isEqualToString:identifier]) continue;
+        if ((NSInteger)index != controller.activeIndex) [controller selectTabAtIndex:(NSInteger)index];
+        return YES;
+    }
+    return NO;
+}
+
+- (void)showRemoteControl:(id)sender {
+    (void)sender;
+    MicaRemoteServer *server = MicaRemoteServer.sharedServer;
+    if (!server.isRunning) {
+        server.snapshot = ^NSDictionary *{ MicaAppDelegate *owner = MicaControllers().firstObject; return [owner remoteSnapshot] ?: @{@"projects":@[]}; };
+        server.screenSnapshot = ^NSString *(NSString *identifier) { return [MicaControllers().firstObject remoteScreenForTabID:identifier]; };
+        server.sendText = ^BOOL(NSString *identifier, NSString *text) { return [MicaControllers().firstObject sendRemoteText:text toTabID:identifier]; };
+        server.selectTab = ^BOOL(NSString *identifier) { return [MicaControllers().firstObject selectRemoteTabID:identifier]; };
+        if (![server start]) {
+            NSAlert *alert = [NSAlert new]; alert.messageText = @"Remote control is unavailable";
+            alert.informativeText = @"Mica could not find a private Wi‑Fi IPv4 address, or port 8765 is already in use.";
+            [alert runModal]; return;
+        }
+        [self updateRemoteControlMenu];
+    } else {
+        [server renewPairingCode];
+    }
+    [self presentRemotePairing];
+}
+
+- (void)updateRemoteControlMenu {
+    NSMenu *menu = [NSApp.mainMenu itemWithTitle:@"Mica"].submenu;
+    NSMenuItem *remote = [menu itemWithTitle:@"Remote Control…"] ?: [menu itemWithTitle:@"Show Remote Control QR…"];
+    if (!remote) return;
+    if (MicaRemoteServer.sharedServer.isRunning) {
+        remote.title = @"Show Remote Control QR…";
+        NSMenuItem *disable = [menu itemWithTitle:@"Disable Remote Control…"];
+        if (!disable) {
+            disable = [[NSMenuItem alloc] initWithTitle:@"Disable Remote Control…" action:@selector(disableRemoteControl:) keyEquivalent:@""];
+            disable.target = self;
+            [menu insertItem:disable atIndex:MAX(0, (NSInteger)[menu indexOfItem:remote] + 1)];
+        }
+    } else {
+        remote.title = @"Remote Control…";
+        NSMenuItem *disable = [menu itemWithTitle:@"Disable Remote Control…"];
+        if (disable) [menu removeItem:disable];
+    }
+}
+
+- (void)presentRemotePairing {
+    MicaRemoteServer *server = MicaRemoteServer.sharedServer;
+    if (!server.isRunning) return;
+    for (;;) {
+        NSString *pairURL = server.pairingPayload ?: @"";
+        CIFilter *filter = [CIFilter filterWithName:@"CIQRCodeGenerator"];
+        [filter setValue:[pairURL dataUsingEncoding:NSUTF8StringEncoding] forKey:@"inputMessage"];
+        [filter setValue:@"M" forKey:@"inputCorrectionLevel"];
+        CIImage *qr = filter.outputImage;
+        NSImageView *image = [[NSImageView alloc] initWithFrame:NSMakeRect(0, 0, 224, 224)];
+        image.wantsLayer = YES; image.layer.backgroundColor = NSColor.whiteColor.CGColor;
+        image.imageScaling = NSImageScaleProportionallyUpOrDown;
+        BOOL rendered = NO;
+        if (qr) {
+            CGRect extent = CGRectIntegral(qr.extent);
+            CGFloat scale = floor(190.0 / MAX(extent.size.width, extent.size.height));
+            if (scale < 1) scale = 1;
+            CGAffineTransform transform = CGAffineTransformMakeScale(scale, scale);
+            transform.tx = 17; transform.ty = 17;
+            CIImage *scaled = [qr imageByApplyingTransform:transform];
+            CIImage *white = [[CIImage imageWithColor:CIColor.whiteColor] imageByCroppingToRect:CGRectMake(0, 0, 224, 224)];
+            CIImage *composite = [scaled imageByCompositingOverImage:white];
+            CIContext *context = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer:@YES}];
+            CGImageRef bitmap = [context createCGImage:composite fromRect:CGRectMake(0, 0, 224, 224)];
+            if (bitmap) { image.image = [[NSImage alloc] initWithCGImage:bitmap size:NSMakeSize(224, 224)]; CGImageRelease(bitmap); rendered = YES; }
+        }
+        NSString *text = [NSString stringWithFormat:@"Scan with the Mica Remote Android app\n\nPairing code: %@\n\n%@\n\nAvailable only over this Wi‑Fi network using TLS. The QR code pins this Mac’s certificate. Disable Remote Control to stop the listener and revoke every paired device.%@",
+            server.pairingCode, server.localURL, rendered ? @"" : @"\n\nQR rendering failed. Reopen Remote Control to try generating it again."];
+        NSTextField *details = [NSTextField wrappingLabelWithString:text];
+        NSStackView *stack = [NSStackView new]; [stack addArrangedSubview:image]; [stack addArrangedSubview:details];
+        stack.orientation = NSUserInterfaceLayoutOrientationVertical; stack.alignment = NSLayoutAttributeCenterX;
+        stack.distribution = NSStackViewDistributionFill; stack.spacing = 14; stack.frame = NSMakeRect(0, 0, 520, 340);
+        details.preferredMaxLayoutWidth = 500;
+        NSAlert *alert = [NSAlert new]; alert.messageText = @"Mica Remote Control";
+        alert.informativeText = @"Pair a phone on the same Wi‑Fi network to view tabs and send prompts.";
+        alert.accessoryView = stack; [alert addButtonWithTitle:@"Done"];
+        [alert addButtonWithTitle:@"New Pairing Code"];
+        [alert addButtonWithTitle:@"Disable Remote Control"];
+        NSModalResponse response = [alert runModal];
+        if (response == NSAlertSecondButtonReturn) { [server renewPairingCode]; continue; }
+        if (response == NSAlertThirdButtonReturn) [self disableRemoteControl:nil];
+        return;
+    }
+}
+
+- (void)disableRemoteControl:(id)sender {
+    (void)sender;
+    [MicaRemoteServer.sharedServer stop];
+    [self updateRemoteControlMenu];
+    NSAlert *alert = [NSAlert new]; alert.messageText = @"Remote control disabled";
+    alert.informativeText = @"The local service stopped and all paired device tokens were revoked.";
+    [alert runModal];
+}
+
 - (void)buildMenus {
     NSMenu *main = [[NSMenu alloc] initWithTitle:@"Mica"];
     NSMenuItem *appRoot = [[NSMenuItem alloc] initWithTitle:@"Mica" action:nil keyEquivalent:@""];
@@ -5110,6 +5287,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
                 NSEventModifierFlagCommand).target = self;
     AddMenuItem(appMenu, @"New Project Launcher…", @selector(newProjectLauncher:), @"", 0).target = self;
     AddMenuItem(appMenu, @"Set Up Agent Hooks…", @selector(setupAgentHooks:), @"", 0).target = self;
+    AddMenuItem(appMenu, @"Remote Control…", @selector(showRemoteControl:), @"", 0).target = self;
     [appMenu addItem:NSMenuItem.separatorItem];
     // Standard macOS place for Settings (⌘,): appearance, plus links to the project and timer settings.
     AddMenuItem(appMenu, @"Settings…", @selector(openSettings:), @",", NSEventModifierFlagCommand).target = self;
@@ -6964,6 +7142,7 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     [self saveSessionState];
     MicaDiagnosticsLog(@"app", @"application is terminating");
     [MicaHookServer.sharedServer stop];
+    [MicaRemoteServer.sharedServer stop];
     unsetenv("MICA_HOOK_SOCK");
 }
 - (void)applicationWillResignActive:(NSNotification *)notification {

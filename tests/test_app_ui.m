@@ -3303,6 +3303,19 @@ static int MicaRunUISelfTest(void) {
             BOOL menuAtA = newTabItem.target == windowA;
             [windowB takeMenuOwnership];
             BOOL menuAtB = newTabItem.target == windowB;
+            NSMenu *appMenu = [NSApp.mainMenu itemWithTitle:@"Mica"].submenu;
+            NSMenuItem *disableRemoteItem = [appMenu itemWithTitle:@"Disable Remote Control…"];
+            BOOL addedDisableRemoteItem = disableRemoteItem == nil;
+            if (!disableRemoteItem) {
+                disableRemoteItem = [[NSMenuItem alloc] initWithTitle:@"Disable Remote Control…"
+                    action:@selector(disableRemoteControl:) keyEquivalent:@""];
+                [appMenu addItem:disableRemoteItem];
+            }
+            [windowA takeMenuOwnership];
+            BOOL disableMenuAtA = disableRemoteItem.target == windowA;
+            [windowB takeMenuOwnership];
+            BOOL disableMenuAtB = disableRemoteItem.target == windowB;
+            if (addedDisableRemoteItem) [appMenu removeItem:disableRemoteItem];
             NSMenu *projectDockMenu = [windowA applicationDockMenu:NSApp];
             BOOL dockMenuListsBothProjects = projectDockMenu.itemArray.count == 2;
             BOOL dockMenuTargetsCorrectWindows = NO, dockMenuTitlesIdentifyProjects = NO;
@@ -3381,9 +3394,9 @@ static int MicaRunUISelfTest(void) {
                 windowA.tabs.count == tabsBeforeClose && windowA.activeTab.session != NULL &&
                 windowB.activeTab.session == NULL && windowB.pollTimer == nil &&
                 kill(closedShellPID, 0) == -1 && errno == ESRCH;
-            MicaUITestRecord(report, &allPassed, twoWindows && menuAtA && menuAtB && noDuplicate && closedCleanly,
-                [NSString stringWithFormat:@"one process hosts several project windows (two=%d menuA=%d menuB=%d nodup=%d closed=%d)",
-                    twoWindows, menuAtA, menuAtB, noDuplicate, closedCleanly]);
+            MicaUITestRecord(report, &allPassed, twoWindows && menuAtA && menuAtB && disableMenuAtA && disableMenuAtB && noDuplicate && closedCleanly,
+                [NSString stringWithFormat:@"one process hosts several project windows (two=%d menuA=%d menuB=%d disableA=%d disableB=%d nodup=%d closed=%d)",
+                    twoWindows, menuAtA, menuAtB, disableMenuAtA, disableMenuAtB, noDuplicate, closedCleanly]);
             for (NSValue *leftover in [windowA detachSessionsForTermination]) mica_session_destroy(leftover.pointerValue);
             [MicaControllers() removeAllObjects];
             [fileManager removeItemAtPath:layoutsRoot error:nil];

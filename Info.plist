@@ -46,6 +46,8 @@
 	</array>
 	<key>NSHighResolutionCapable</key><true/>
 	<key>NSMicrophoneUsageDescription</key><string>Mica uses the microphone only when you start dictation, so it can show and insert a live transcript.</string>
+	<key>NSLocalNetworkUsageDescription</key><string>Mica Remote lets paired devices on your local network view terminal tabs and send prompts when you enable Remote Control.</string>
+	<key>NSBonjourServices</key><array><string>_mica-remote._tcp</string></array>
 	<key>NSDesktopFolderUsageDescription</key><string>Mica needs access to the project folder you opened so its terminal sessions and development tools can read and update project files.</string>
 	<key>NSDocumentsFolderUsageDescription</key><string>Mica needs access to the project folder you opened so its terminal sessions and development tools can read and update project files.</string>
 	<key>NSPrincipalClass</key><string>NSApplication</string>

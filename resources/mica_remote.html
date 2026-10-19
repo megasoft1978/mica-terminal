@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#10151c">
+<title>Mica Remote</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#10151c;color:#e8edf2;font:15px system-ui,-apple-system,sans-serif}
+header{position:sticky;top:0;background:#10151cf2;backdrop-filter:blur(16px);padding:14px 16px;border-bottom:1px solid #293441;z-index:2}
+h1{font-size:18px;margin:0}#status{font-size:12px;color:#92a2b2;margin-top:4px}.layout{max-width:760px;margin:auto;padding:14px}
+.project{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#93a8bb;margin:18px 0 8px}
+.tab{width:100%;text-align:left;color:inherit;background:#1a232d;border:1px solid #2d3a47;border-radius:12px;padding:13px;margin:5px 0}
+.tab.sel{border-color:#66baff;background:#202e3c}.name{font-weight:650}.meta{font-size:12px;color:#9daebd;margin-top:4px}
+.screen{white-space:pre;overflow:auto;background:#080c10;border:1px solid #293441;border-radius:12px;padding:12px;height:min(45vh,360px);font:12px/1.35 ui-monospace,monospace;margin:12px 0}
+.compose{position:sticky;bottom:0;background:#10151c;padding:10px 0 calc(12px + env(safe-area-inset-bottom));display:grid;gap:8px}
+textarea,input{background:#18212a;color:#f3f6f9;border:1px solid #384958;border-radius:12px;padding:12px;font:15px system-ui}
+textarea{resize:vertical;min-height:90px}button{border:0;border-radius:10px;background:#58b4ff;color:#07131d;font-weight:700;padding:12px;font-size:15px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}.secondary{background:#273746;color:#e8edf2}.empty{color:#91a2b1;text-align:center;padding:35px 12px}
+.hint{font-size:12px;color:#8fa1b1}#pairing{display:grid;gap:10px;max-width:420px;margin:36px auto}#pairing[hidden]{display:none}
+#code{font-size:22px;letter-spacing:.15em;text-align:center}#destination{font-size:13px;color:#b4c3d0}
+</style>
+</head>
+<body>
+<header><h1>Mica Remote</h1><div id="status">Connecting…</div></header>
+<main class="layout">
+<section id="pairing" hidden>
+<h2>Pair with Mica</h2><div class="hint">Enter the six-digit code shown in Mica. The code is limited to local network access.</div>
+<div class="hint">This connection uses HTTPS on your local Wi-Fi. The browser checks the Mica certificate using your browser’s normal trust settings; pair only with a Mac you trust.</div>
+<input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="Pairing code">
+<button id="pair">Pair device</button><div id="pairError" class="hint" role="status"></div>
+</section>
+<div id="tabs"></div>
+<div id="view" hidden><div id="destination"></div><div id="screen" class="screen"></div>
+<div class="compose">
+<textarea id="input" placeholder="Write a prompt…"></textarea>
+<div class="row"><button id="dictate" class="secondary">🎙 On-device dictation</button><button id="send">Send to tab</button></div>
+<div class="hint" id="speechHint">Dictation is processed on this phone when its offline language pack is available.</div>
+<div class="hint">Text is sent to the selected terminal exactly as typed over the local Wi-Fi connection. Review it before sending.</div>
+<button id="disconnect" class="secondary">Disconnect this phone</button>
+<button id="manageDevices" class="secondary">Manage paired devices</button>
+</div></div>
+<section id="devices" hidden></section>
+</main>
+<script>
+'use strict';
+const statusEl=document.querySelector('#status'),tabsEl=document.querySelector('#tabs'),view=document.querySelector('#view');
+const screenEl=document.querySelector('#screen'),input=document.querySelector('#input'),pairing=document.querySelector('#pairing');
+let token=sessionStorage.getItem('micaToken'),chosen=null,sending=false,refreshing=false,refreshAgain=false,selectionEpoch=0,authEpoch=0,pairingInFlight=false;
+const drafts=new Map();
+function deviceID(){let value=localStorage.getItem('micaDeviceID');if(!value){const bytes=crypto.getRandomValues(new Uint8Array(16));value=[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');localStorage.setItem('micaDeviceID',value)}return value}
+async function api(path,options={}){const requestToken=token;if(typeof options.body==='string'&&new TextEncoder().encode(options.body).length>8192)throw Error('Request body too large');const response=await fetch(path,{...options,redirect:'error',headers:{'Content-Type':'application/json',...(requestToken?{Authorization:'Bearer '+requestToken}:{}),...(options.headers||{})}});if(response.status===401&&path!=='/api/pair'&&token===requestToken){token=null;sessionStorage.removeItem('micaToken');authEpoch++}if(!response.ok)throw Error(`HTTP ${response.status}`);if(response.status===204)return null;const body=await response.text();if(new TextEncoder().encode(body).length>1000000)throw Error('Response too large');return JSON.parse(body)}
+function setUnpaired(message='Pair this phone with the code shown in Mica.'){authEpoch++;selectionEpoch++;token=null;sessionStorage.removeItem('micaToken');pairing.hidden=false;view.hidden=true;tabsEl.replaceChildren();statusEl.textContent='Not paired';document.querySelector('#pairError').textContent=message}
+function render(state){statusEl.textContent=`Connected to Mica · ${state.devices} paired device${state.devices===1?'':'s'}`;tabsEl.replaceChildren();let selectedName='';
+ for(const project of state.projects){const heading=document.createElement('div');heading.className='project';heading.textContent=project.name;tabsEl.append(heading);
+  for(const tab of project.tabs){const button=document.createElement('button');button.className='tab'+(chosen===tab.id?' sel':'');const name=document.createElement('div');name.className='name';name.textContent=tab.name;const meta=document.createElement('div');meta.className='meta';meta.textContent=(tab.activity||'Terminal')+(tab.running?'':' · exited');button.append(name,meta);if(chosen===tab.id)selectedName=tab.name;
+   button.onclick=async()=>{if(chosen)drafts.set(chosen,input.value);if(recognition){try{recognition.abort()}catch{}recognition=null}chosen=tab.id;selectionEpoch++;view.hidden=false;document.querySelector('#destination').textContent=`Sending to ${project.name} · ${tab.name}`;input.value=drafts.get(chosen)||'';render(state);try{await api('/api/select',{method:'POST',body:JSON.stringify({id:chosen})})}catch{}requestRefresh()};tabsEl.append(button)}
+ }
+ if(!state.projects.length)tabsEl.innerHTML='<div class="empty">No open terminal tabs.</div>';
+ if(chosen&&!state.projects.some(p=>p.tabs.some(t=>t.id===chosen))){chosen=null;selectionEpoch++;view.hidden=true}
+ if(chosen&&selectedName)document.querySelector('#destination').textContent=`Sending to ${selectedName}`;
+}
+async function refresh(){if(refreshing){refreshAgain=true;return}refreshing=true;const startingAuth=authEpoch;
+ try{do{refreshAgain=false;const epoch=selectionEpoch,tabID=chosen;const state=await api('/api/state');if(startingAuth!==authEpoch){break}if(epoch!==selectionEpoch){refreshAgain=true;continue}pairing.hidden=true;render(state);if(tabID){const snap=await api('/api/screen?id='+encodeURIComponent(tabID));if(startingAuth===authEpoch&&epoch===selectionEpoch&&chosen===tabID)screenEl.textContent=typeof snap.text==='string'?snap.text.slice(0,100000):''}}while(refreshAgain)}
+ catch(error){if(!token)setUnpaired();else if(startingAuth!==authEpoch)refreshAgain=true;else statusEl.textContent='Connection interrupted · retrying'}
+ finally{refreshing=false;if(refreshAgain)refresh()}}
+function requestRefresh(){refreshAgain=true;if(!refreshing)refresh()}
+async function pair(code){if(pairingInFlight)return;pairingInFlight=true;const button=document.querySelector('#pair');button.disabled=true;const attempt=++authEpoch;try{const deviceName=/Android/i.test(navigator.userAgent)?'Android phone':'Browser device';const result=await api('/api/pair',{method:'POST',body:JSON.stringify({code,deviceID:deviceID(),deviceName})});if(attempt!==authEpoch)return;if(typeof result.token!=='string'||result.token.length<16||result.token.length>512||!/^[A-Za-z0-9._~-]+$/.test(result.token))throw Error('Invalid pairing response');token=result.token;sessionStorage.setItem('micaToken',token);history.replaceState({},'',location.pathname);pairing.hidden=true;await refresh()}finally{pairingInFlight=false;button.disabled=false}}
+document.querySelector('#pair').onclick=async()=>{const code=document.querySelector('#code').value.trim();if(!/^\d{6}$/.test(code)){document.querySelector('#pairError').textContent='Enter the six-digit code from Mica.';return}try{await pair(code)}catch{document.querySelector('#pairError').textContent='Pairing failed or the code expired. Check it and try again.'}};
+document.querySelector('#send').onclick=async()=>{const submitted=input.value;if(!chosen||!submitted.trim()||sending)return;sending=true;const tabID=chosen,auth=authEpoch;drafts.set(tabID,submitted);try{await api('/api/input',{method:'POST',body:JSON.stringify({id:tabID,text:submitted})});if(auth===authEpoch){if(chosen===tabID&&input.value===submitted)input.value='';drafts.set(tabID,input.value);requestRefresh()}}catch{if(auth===authEpoch)statusEl.textContent='Unable to send · reconnect and try again'}finally{sending=false}};
+document.querySelector('#disconnect').onclick=async()=>{try{await api('/api/revoke',{method:'POST',body:JSON.stringify({deviceID:deviceID()})})}catch{}setUnpaired('This phone has been disconnected.')};
+document.querySelector('#manageDevices').onclick=async()=>{const panel=document.querySelector('#devices');panel.hidden=false;panel.replaceChildren();try{const result=await api('/api/devices');for(const item of result.devices){const row=document.createElement('div');row.className='row';const label=document.createElement('span');label.textContent=item.name;const revoke=document.createElement('button');revoke.textContent='Remove';revoke.onclick=async()=>{await api('/api/revoke',{method:'POST',body:JSON.stringify({deviceID:item.id})});if(item.id===deviceID()){setUnpaired('This phone has been disconnected.');return}document.querySelector('#manageDevices').click()};row.append(label,revoke);panel.append(row)}}catch{panel.textContent='Unable to load paired devices.'}};
+let recognition=null;
+document.querySelector('#dictate').onclick=async()=>{const Ctor=window.SpeechRecognition;if(!Ctor||typeof Ctor.available!=='function'){document.querySelector('#speechHint').textContent='On-device dictation is unavailable in this browser. Use the phone keyboard microphone if you choose; its privacy behavior depends on the keyboard.';input.focus();return}
+ try{const lang=navigator.language||'en-US';const availability=await Ctor.available({langs:[lang],processLocally:true,quality:'dictation'});if(availability!=='available'){document.querySelector('#speechHint').textContent=`The offline ${lang} speech pack is not ready. Install it in the browser or use keyboard dictation; Mica will not download it.`;return}
+  const active=new Ctor(),tabAtStart=chosen;recognition=active;active.lang=lang;active.processLocally=true;active.interimResults=true;active.onresult=event=>{if(recognition!==active||chosen!==tabAtStart)return;let text='';for(let i=0;i<event.results.length;i++)text+=event.results[i][0].transcript;input.value=text;};active.onerror=()=>{if(recognition===active)document.querySelector('#speechHint').textContent='Dictation stopped. Check microphone permission and offline language availability.'};active.onend=()=>{if(recognition===active)recognition=null};active.start();document.querySelector('#speechHint').textContent='Listening on this phone…';
+ }catch{document.querySelector('#speechHint').textContent='On-device dictation could not start. Check microphone permission and offline language availability.'}};
+(async()=>{if(token){try{await refresh()}catch{setUnpaired()}}else setUnpaired()} )();setInterval(()=>{if(token&&!sending)requestRefresh()},1300);
+</script>
+</body>
+</html>

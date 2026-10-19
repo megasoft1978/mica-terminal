@@ -113,6 +113,44 @@ static void write_test_file(const char *path, const char *contents, mode_t mode)
     assert(close(fd) == 0);
 }
 
+static void test_remote_screen_snapshot(void) {
+    MicaSession *concealed = mica_session_create("/tmp", "printf 'A\\033[8mSECRET\\033[0mB'; sleep 2", 3, 12);
+    assert(concealed);
+    poll_for(concealed, 150);
+    char text[256]; size_t written = 0;
+    assert(mica_session_copy_remote_screen(concealed, 3, 12, text, sizeof(text), &written));
+    assert(written > 0 && text[written] == '\0');
+    assert(strstr(text, "SECRET") == NULL);
+    assert(strstr(text, "A      B") != NULL);
+    assert(strstr(text, "B    \n") != NULL);
+    mica_session_destroy(concealed);
+
+    MicaSession *live = mica_session_create("/tmp", "printf 'OLD_LINE\\nMID_LINE\\nLIVE_LINE'; sleep 2", 2, 20);
+    assert(live);
+    poll_for(live, 150);
+    mica_session_scroll(live, 1);
+    assert(mica_session_view_offset(live) > 0);
+    char live_text[256];
+    assert(mica_session_copy_remote_screen(live, 2, 20, live_text, sizeof(live_text), NULL));
+    assert(strstr(live_text, "LIVE_LINE") != NULL);
+    assert(strstr(live_text, "OLD_LINE") == NULL);
+    live_text[0] = 'x';
+    assert(!mica_session_copy_remote_screen(live, 2, 20, live_text, 1, NULL));
+    assert(live_text[0] == '\0');
+    mica_session_destroy(live);
+
+    MicaSession *unicode = mica_session_create("/tmp", "printf '界é'; sleep 2", 1, 4);
+    assert(unicode);
+    poll_for(unicode, 150);
+    char unicode_text[32];
+    assert(mica_session_copy_remote_screen(unicode, 1, 4, unicode_text, sizeof(unicode_text), NULL));
+    assert(strncmp(unicode_text, "界", strlen("界")) == 0);
+    assert(strstr(unicode_text, "é") != NULL);
+    assert(mica_session_copy_remote_screen(unicode, 1, 1, unicode_text, sizeof(unicode_text), NULL));
+    assert(strcmp(unicode_text, " \n") == 0);
+    mica_session_destroy(unicode);
+}
+
 static char *copy_env(const char *name) {
     const char *value = getenv(name);
     return value ? strdup(value) : NULL;
@@ -217,6 +255,7 @@ static void test_descendant_agent_detection(void) {
 
 int main(void) {
     setenv("MICA_TEST_NO_STARTUP", "1", 1);
+    test_remote_screen_snapshot();
     test_descendant_agent_detection();
     MicaSession *cwd_session = mica_session_create("/tmp", "cd /; sleep 2", 6, 80);
     assert(cwd_session != NULL);

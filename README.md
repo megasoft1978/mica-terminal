@@ -68,6 +68,14 @@ The same-day iTerm2 and Wispr Flow measurements add up to about 770 MB, before a
 2. Mica prepares dictation in the background on first launch and after app updates that change its speech helper. It downloads model files only if they are missing and reuses local files otherwise. If you start dictating before setup finishes, the helper loads the model on demand. This setup does not require microphone permission.
 3. Mica asks for microphone access only when you start dictating. Audio is processed locally in memory and is not saved or sent to a server.
 
+## Local Android remote control
+
+Choose **Mica → Remote Control…** to start a temporary TLS service on the current Wi‑Fi network. Install the Android companion with `make android-install`, then scan the displayed QR code in Mica Remote. The app pins the Mac certificate, lists project tabs, shows a selected tab’s live screen, and can send typed or on-device dictated prompts. The six-digit pairing code expires after ten minutes and allows up to four devices; failed attempts are rate-limited. Reopen **Show Remote Control QR…** to display or renew the code. **Disable Remote Control…** stops the listener and revokes paired tokens. Mica accepts connections only from private IPv4 addresses on the selected Wi‑Fi subnet and advertises the service with Bonjour on the local network.
+
+The feature uses port 8765 and needs macOS Local Network permission. It is off until enabled from the Mica menu and binds only to Wi‑Fi. Traffic uses TLS 1.2 or newer with a temporary certificate generated each time Remote Control starts; its SHA-256 pin is delivered in the pairing QR. The Android companion stores its bearer token and certificate pin encrypted with Android Keystore. Its dictation uses Android’s on-device recognizer and has no network fallback; availability depends on the phone’s installed offline language model. A phone remains paired across Android app launches while Remote Control stays enabled in Mica. Paired phones can be removed from **Manage paired devices** and can re-pair without taking another device slot; disabling Remote Control revokes all pairings.
+
+The companion also serves a browser interface for devices that open the pairing URL. Browser dictation requires a browser that supports on-device speech recognition and an installed offline language pack; Mica does not download speech packs. If local recognition is unavailable, the page explains the limitation. Keyboard microphone behavior depends on the keyboard and may use its own speech service.
+
 ## Project launchers
 
 Choose **Mica → New Project Launcher…**, or run `make new-instance`. To create one from a script:
@@ -121,6 +129,8 @@ make sanitize   # session tests and fuzzer under AddressSanitizer and UBSan
 make stress     # randomized UI actions under the sanitizers
 make demo-assets # refresh native UI captures, project and feature videos, GIFs and posters
 ```
+
+To build or install the Android companion, also install JDK 17, Gradle, and the Android SDK (including platform/build tools for API 35), then run `make android` or `make android-install` with a connected device or emulator.
 
 Mica uses AppKit and a C session core; vendored [libvterm](third_party/libvterm) parses escape sequences. See [performance notes](docs/PERFORMANCE.md), [release steps](docs/RELEASING.md), [contributing](CONTRIBUTING.md) and [security](SECURITY.md).
 

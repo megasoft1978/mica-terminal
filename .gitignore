@@ -1,4 +1,8 @@
 /build/
+/android/.gradle/
+/android/build/
+/android/app/build/
+/android/local.properties
 *.mica
 *.core
 .DS_Store

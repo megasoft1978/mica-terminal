@@ -95,6 +95,11 @@ bool mica_session_fold_visible_rows(MicaSession *session, int start_row, int end
 bool mica_session_toggle_fold_at_view_row(MicaSession *session, int row);
 bool mica_session_fold_info_at_view_row(const MicaSession *session, int row, size_t *hidden_rows);
 bool mica_session_get_cell(const MicaSession *session, int row, int col, MicaCell *cell);
+// Copies a bounded live-screen snapshot as UTF-8, preserving blank columns and
+// replacing concealed cells with spaces. `capacity` includes the trailing NUL.
+bool mica_session_copy_remote_screen(const MicaSession *session, size_t max_rows,
+                                     size_t max_cols, char *buffer, size_t capacity,
+                                     size_t *written);
 // Whether this displayed row is a soft-wrap continuation of the preceding row.
 bool mica_session_row_continues(const MicaSession *session, int row);
 const char *mica_session_hyperlink_uri(const MicaSession *session, uint32_t hyperlink_id);
