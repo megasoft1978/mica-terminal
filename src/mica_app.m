@@ -15,6 +15,7 @@
 #import "mica_status_context.h"
 #import "mica_ssh_profile.h"
 #import "mica_remote_server.h"
+#import "mica_project_history.h"
 #import <UserNotifications/UserNotifications.h>
 #import <Carbon/Carbon.h>
 #import <CoreImage/CoreImage.h>
@@ -608,7 +609,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @end
 
 @interface MicaAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, MicaVoiceControllerDelegate,
-                                       UNUserNotificationCenterDelegate>
+                                       UNUserNotificationCenterDelegate, NSMenuDelegate>
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, strong) MicaTerminalView *terminalView;
 @property(nonatomic, strong) MicaWindowContentView *windowContentView;
@@ -708,6 +709,9 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (NSString *)agentNotificationTitleForTab:(MicaTab *)tab waiting:(BOOL)waiting;
 - (void)startWindowWithArguments:(NSArray<NSString *> *)arguments;
 - (void)openProjectWindowWithArguments:(NSArray<NSString *> *)arguments;
+- (void)openRecentProject:(id)sender;
+- (void)clearRecentProjects:(id)sender;
+- (void)recordRecentProjectAtPath:(NSString *)path name:(NSString *)name;
 - (void)takeMenuOwnership;
 - (void)handleHookEvent:(MicaHookEvent)event forTab:(MicaTab *)tab;
 - (void)setupAgentHooks:(id)sender;
@@ -1018,13 +1022,28 @@ static NSArray<NSString *> *MicaArgumentsForOpenURL(NSURL *url, NSString *layout
 }
 
 static NSString *MicaDefaultLayoutsDirectory(void) {
+    const char *testDirectory = getenv("MICA_TEST_LAYOUTS_DIRECTORY");
+    if (getenv("MICA_TEST_NO_STARTUP") && testDirectory && testDirectory[0])
+        return [NSString stringWithUTF8String:testDirectory];
     return [NSHomeDirectory() stringByAppendingPathComponent:@".config/mica/layouts"];
 }
 
 static NSMutableArray<NSMenuItem *> *gControllerMenuItems;   // menu items whose target is the key window's controller
 static NSMutableArray<NSMenuItem *> *gViewMenuItems;         // ... and those whose target is its terminal view
+static NSMenu *gRecentProjectsMenu;
 static BOOL gMenuBuilt;
 static NSString *gAppliedIconProject;
+
+static MicaProjectHistory *MicaRecentProjectHistory(void) {
+    NSUserDefaults *defaults = gMicaDefaultsOverride ?: NSUserDefaults.standardUserDefaults;
+    static MicaProjectHistory *history;
+    static NSUserDefaults *historyDefaults;
+    if (!history || historyDefaults != defaults) {
+        historyDefaults = defaults;
+        history = [[MicaProjectHistory alloc] initWithDefaults:defaults];
+    }
+    return history;
+}
 
 static void MicaDeliverHook(MicaHookEvent event) {
     NSString *token = [NSString stringWithUTF8String:event.token];
@@ -4698,7 +4717,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     MicaDiagnosticsLog(@"launch", [NSString stringWithFormat:@"opened app=%@ bundle=%@ pid=%d",
         NSBundle.mainBundle.infoDictionary[@"CFBundleDisplayName"] ?: @"Mica",
         NSBundle.mainBundle.bundleIdentifier ?: @"unknown", getpid()]);
-    UNUserNotificationCenter.currentNotificationCenter.delegate = self;   // the app delegate outlives every window
+    if (!getenv("MICA_TEST_NO_STARTUP"))
+        UNUserNotificationCenter.currentNotificationCenter.delegate = self;   // the app delegate outlives every window
     // Launched through a project launcher (mica:// URL)? Those URLs arrived before launch finished.
     NSMutableArray<NSURL *> *pending = MicaPendingOpenURLs();
     NSMutableArray<NSArray<NSString *> *> *pendingArguments = [NSMutableArray array];
@@ -4710,7 +4730,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     }
     [pending removeAllObjects];
     BOOL launchedFromProjectLayout = pendingArguments.count > 0;
-    NSArray<NSDictionary *> *savedWindows = (NSProcessInfo.processInfo.arguments.count <= 1 && !getenv("MICA_TEST_NO_STARTUP"))
+    NSArray<NSDictionary *> *savedWindows = (NSProcessInfo.processInfo.arguments.count <= 1 &&
+        (!getenv("MICA_TEST_NO_STARTUP") || gMicaSessionStateURLOverride))
         ? [self readSessionState] : @[];
     NSArray<NSString *> *firstArguments = pendingArguments.firstObject;
     NSUInteger nextSavedWindow = 0;
@@ -4722,8 +4743,15 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     }
     if (!firstArguments && savedWindows.count) self.savedTabsForWindow = savedWindows.firstObject[@"tabs"];
     [self startWindowWithArguments:firstArguments];
+    BOOL explicitCommandLineProject = !launchedFromProjectLayout &&
+        [NSProcessInfo.processInfo.arguments containsObject:@"--layout"] && self.explicitLayoutLaunch;
+    NSArray<NSString *> *launchArguments = firstArguments ?: NSProcessInfo.processInfo.arguments;
+    NSUInteger firstLayoutIndex = [launchArguments indexOfObject:@"--layout"];
+    BOOL firstArgumentsRequestLayout = firstLayoutIndex != NSNotFound && firstLayoutIndex + 1 < launchArguments.count;
+    if ((launchedFromProjectLayout || explicitCommandLineProject) && firstArgumentsRequestLayout)
+        [self recordRecentProjectAtPath:launchArguments[firstLayoutIndex + 1] name:self.projectName];
     if (!launchedFromProjectLayout && savedWindows.count) nextSavedWindow = 1;
-    for (NSUInteger index = nextSavedWindow; index < savedWindows.count; index++) {
+    for (NSUInteger index = nextSavedWindow; !launchedFromProjectLayout && index < savedWindows.count; index++) {
         NSDictionary *saved = savedWindows[index];
         NSString *savedLayout = saved[@"layout"];
         BOOL alreadyOpen = NO;
@@ -4868,7 +4896,53 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSMenu *appMenu = [NSApp.mainMenu itemWithTitle:@"Mica"].submenu;
     NSMenuItem *disableRemote = [appMenu itemWithTitle:@"Disable Remote Control…"];
     if (disableRemote) disableRemote.target = self;
+    for (NSMenuItem *item in gRecentProjectsMenu.itemArray)
+        if (item.action == @selector(openRecentProject:) || item.action == @selector(clearRecentProjects:)) item.target = self;
     if (gMicaStatusItem) [self updateMenuBarTimer];
+}
+
+- (void)menuNeedsUpdate:(NSMenu *)menu {
+    if (menu != gRecentProjectsMenu) return;
+    [gRecentProjectsMenu removeAllItems];
+    MicaAppDelegate *owner = MicaControllers().firstObject;
+    for (MicaAppDelegate *controller in MicaControllers())
+        if (controller.window.isKeyWindow) { owner = controller; break; }
+    NSArray<NSDictionary<NSString *, NSString *> *> *projects = MicaRecentProjectHistory().projects;
+    if (projects.count == 0) {
+        NSMenuItem *empty = [[NSMenuItem alloc] initWithTitle:@"No Recent Projects" action:nil keyEquivalent:@""];
+        empty.enabled = NO;
+        [gRecentProjectsMenu addItem:empty];
+    } else {
+        for (NSDictionary<NSString *, NSString *> *project in projects) {
+            NSString *path = project[@"path"];
+            NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:project[@"name"] action:@selector(openRecentProject:)
+                keyEquivalent:@""];
+            item.target = owner;
+            item.representedObject = path;
+            item.enabled = MicaArgumentsForLayoutPath(path, MicaDefaultLayoutsDirectory()) != nil;
+            [gRecentProjectsMenu addItem:item];
+        }
+    }
+    [gRecentProjectsMenu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *clear = [[NSMenuItem alloc] initWithTitle:@"Clear Recent Projects" action:@selector(clearRecentProjects:)
+        keyEquivalent:@""];
+    clear.target = owner;
+    clear.enabled = projects.count > 0;
+    [gRecentProjectsMenu addItem:clear];
+}
+
+- (void)openRecentProject:(id)sender {
+    if (![sender isKindOfClass:NSMenuItem.class]) return;
+    id path = [(NSMenuItem *)sender representedObject];
+    if (![path isKindOfClass:NSString.class]) return;
+    NSArray<NSString *> *arguments = MicaArgumentsForLayoutPath(path, MicaDefaultLayoutsDirectory());
+    if (arguments) [self openProjectWindowWithArguments:arguments];
+}
+
+- (void)clearRecentProjects:(id)sender {
+    (void)sender;
+    [MicaRecentProjectHistory() clear];
+    [self menuNeedsUpdate:gRecentProjectsMenu];
 }
 
 - (void)collectPaletteItemsFromMenu:(NSMenu *)menu into:(NSMutableArray<NSDictionary *> *)rows {
@@ -5286,6 +5360,11 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     AddMenuItem(appMenu, @"New Window", @selector(newInstance:), @"n",
                 NSEventModifierFlagCommand).target = self;
     AddMenuItem(appMenu, @"New Project Launcher…", @selector(newProjectLauncher:), @"", 0).target = self;
+    NSMenuItem *recentRoot = [[NSMenuItem alloc] initWithTitle:@"Recent Projects" action:nil keyEquivalent:@""];
+    gRecentProjectsMenu = [[NSMenu alloc] initWithTitle:@"Recent Projects"];
+    gRecentProjectsMenu.delegate = self;
+    recentRoot.submenu = gRecentProjectsMenu;
+    [appMenu addItem:recentRoot];
     AddMenuItem(appMenu, @"Set Up Agent Hooks…", @selector(setupAgentHooks:), @"", 0).target = self;
     AddMenuItem(appMenu, @"Remote Control…", @selector(showRemoteControl:), @"", 0).target = self;
     [appMenu addItem:NSMenuItem.separatorItem];
@@ -5616,6 +5695,13 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
+    if (item.action == @selector(openRecentProject:)) {
+        id path = item.representedObject;
+        return [path isKindOfClass:NSString.class] &&
+            MicaArgumentsForLayoutPath(path, MicaDefaultLayoutsDirectory()) != nil;
+    }
+    if (item.action == @selector(clearRecentProjects:))
+        return MicaRecentProjectHistory().projects.count > 0;
     if (item.action == @selector(undoLastDictation:)) {
         item.toolTip = self.dictationUndoValid ? nil : @"Undo is available only until you type again";
         return self.dictationUndoValid;
@@ -6057,16 +6143,27 @@ static BOOL MicaValidBranchName(NSString *name) {
     [self openProjectWindowWithArguments:@[@"mica", @"--new-window"]];
 }
 
+- (void)recordRecentProjectAtPath:(NSString *)path name:(NSString *)name {
+    if (!path.length) return;
+    NSString *canonicalPath = [path stringByStandardizingPath].stringByResolvingSymlinksInPath;
+    NSString *projectName = name;
+    if (!projectName.length) projectName = canonicalPath.lastPathComponent.stringByDeletingPathExtension;
+    [MicaRecentProjectHistory() recordLayoutPath:canonicalPath name:projectName];
+}
+
 // Opens a project window inside this process. A window already showing the same layout is brought to the
 // front instead of being duplicated.
 - (void)openProjectWindowWithArguments:(NSArray<NSString *> *)arguments {
     NSUInteger layoutIndex = [arguments indexOfObject:@"--layout"];
     NSString *layout = layoutIndex != NSNotFound && layoutIndex + 1 < arguments.count ? arguments[layoutIndex + 1] : nil;
     if (layout.length) {
+        NSString *canonicalLayout = [layout stringByStandardizingPath].stringByResolvingSymlinksInPath;
         for (MicaAppDelegate *controller in MicaControllers()) {
-            if ([controller.projectLayoutPath isEqualToString:layout] && controller.window) {
+            NSString *openLayout = [controller.projectLayoutPath stringByStandardizingPath].stringByResolvingSymlinksInPath;
+            if ([openLayout isEqualToString:canonicalLayout] && controller.window) {
                 [controller.window makeKeyAndOrderFront:nil];
                 [NSApp activateIgnoringOtherApps:YES];
+                [self recordRecentProjectAtPath:canonicalLayout name:controller.projectName];
                 return;
             }
         }
@@ -6074,6 +6171,7 @@ static BOOL MicaValidBranchName(NSString *name) {
     MicaAppDelegate *controller = [[MicaAppDelegate alloc] init];
     [controller startWindowWithArguments:arguments];
     [NSApp activateIgnoringOtherApps:YES];
+    if (layout.length) [self recordRecentProjectAtPath:controller.projectLayoutPath name:controller.projectName];
     MicaDiagnosticsLog(@"launch", [NSString stringWithFormat:@"opened another window in this process (windows=%lu)",
         (unsigned long)MicaControllers().count]);
 }

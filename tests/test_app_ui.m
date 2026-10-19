@@ -758,6 +758,67 @@ static int MicaRunUISelfTest(void) {
                          [sessionMenu itemWithTitle:@"New Codex Tab"] == nil,
                          @"smoke: shipped menu actions exist and are enabled when applicable; unavailable dictation undo is disabled");
 
+        NSString *recentMenuDirectory = [NSTemporaryDirectory() stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"mica-recent-menu-%@", NSUUID.UUID.UUIDString]];
+        const char *oldRecentLayoutsValue = getenv("MICA_TEST_LAYOUTS_DIRECTORY");
+        NSString *oldRecentLayoutsDirectory = oldRecentLayoutsValue ? @(oldRecentLayoutsValue) : nil;
+        [NSFileManager.defaultManager createDirectoryAtPath:recentMenuDirectory withIntermediateDirectories:YES attributes:nil error:nil];
+        setenv("MICA_TEST_LAYOUTS_DIRECTORY", recentMenuDirectory.fileSystemRepresentation, 1);
+        NSString *validRecentLayout = [recentMenuDirectory stringByAppendingPathComponent:@"Ready.mica"];
+        [@"# Mica layout v1\n# Mica project: Ready\nReady tab\t/private/tmp\t\n"
+            writeToFile:validRecentLayout atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        NSString *missingRecentLayout = [recentMenuDirectory stringByAppendingPathComponent:@"Missing.mica"];
+        NSString *recentMenuSuite = [NSString stringWithFormat:@"MicaRecentMenuTests.%@", NSUUID.UUID.UUIDString];
+        NSUserDefaults *oldRecentMenuDefaults = gMicaDefaultsOverride;
+        NSUserDefaults *recentMenuDefaults = [[NSUserDefaults alloc] initWithSuiteName:recentMenuSuite];
+        NSArray<MicaAppDelegate *> *oldRecentMenuControllers = [MicaControllers() copy];
+        [MicaControllers() removeAllObjects];
+        [MicaControllers() addObject:delegate];
+        [delegate takeMenuOwnership];
+        gMicaDefaultsOverride = recentMenuDefaults;
+        MicaProjectHistory *recentMenuHistory = MicaRecentProjectHistory();
+        [recentMenuHistory clear];
+        [recentMenuHistory recordLayoutPath:missingRecentLayout name:@"Missing Project"];
+        [recentMenuHistory recordLayoutPath:validRecentLayout name:@"Ready Project"];
+        [delegate menuNeedsUpdate:gRecentProjectsMenu];
+        NSMenu *recentMenu = [[NSApp.mainMenu itemWithTitle:@"Mica"].submenu itemWithTitle:@"Recent Projects"].submenu;
+        [recentMenu update];
+        NSMenuItem *readyProjectItem = recentMenu.itemArray.count > 0 ? recentMenu.itemArray[0] : nil;
+        NSMenuItem *missingProjectItem = recentMenu.itemArray.count > 1 ? recentMenu.itemArray[1] : nil;
+        NSMenuItem *clearRecentMenuItem = [recentMenu itemWithTitle:@"Clear Recent Projects"];
+        BOOL recentMenuRowsValid = [readyProjectItem.title isEqualToString:@"Ready Project"] &&
+            [missingProjectItem.title isEqualToString:@"Missing Project"] && readyProjectItem.isEnabled &&
+            !missingProjectItem.isEnabled && clearRecentMenuItem.isEnabled;
+        [recentMenuHistory clear];
+        [delegate menuNeedsUpdate:gRecentProjectsMenu];
+        [recentMenu update];
+        NSMenuItem *emptyRecentMenuItem = recentMenu.itemArray.count > 0 ? recentMenu.itemArray[0] : nil;
+        clearRecentMenuItem = [recentMenu itemWithTitle:@"Clear Recent Projects"];
+        BOOL recentMenuEmptyStateValid = [emptyRecentMenuItem.title isEqualToString:@"No Recent Projects"] &&
+            !emptyRecentMenuItem.isEnabled && !clearRecentMenuItem.isEnabled;
+        [recentMenuHistory recordLayoutPath:missingRecentLayout name:@"Missing Project"];
+        [recentMenuHistory recordLayoutPath:validRecentLayout name:@"Ready Project"];
+        [delegate menuNeedsUpdate:gRecentProjectsMenu];
+        [recentMenu update];
+        clearRecentMenuItem = [recentMenu itemWithTitle:@"Clear Recent Projects"];
+        [delegate clearRecentProjects:clearRecentMenuItem];
+        [recentMenu update];
+        BOOL clearRecentProjectsWorks = recentMenuHistory.projects.count == 0 &&
+            [recentMenu.itemArray.firstObject.title isEqualToString:@"No Recent Projects"] &&
+            ![recentMenu itemWithTitle:@"Clear Recent Projects"].isEnabled;
+        gMicaDefaultsOverride = oldRecentMenuDefaults;
+        [MicaControllers() removeAllObjects];
+        [MicaControllers() addObjectsFromArray:oldRecentMenuControllers];
+        [MicaControllers().firstObject takeMenuOwnership];
+        [recentMenuDefaults removePersistentDomainForName:recentMenuSuite];
+        if (oldRecentLayoutsDirectory) setenv("MICA_TEST_LAYOUTS_DIRECTORY", oldRecentLayoutsDirectory.fileSystemRepresentation, 1);
+        else unsetenv("MICA_TEST_LAYOUTS_DIRECTORY");
+        [NSFileManager.defaultManager removeItemAtPath:recentMenuDirectory error:nil];
+        MicaUITestRecord(report, &allPassed,
+            recentMenuRowsValid && recentMenuEmptyStateValid && clearRecentProjectsWorks,
+            [NSString stringWithFormat:@"Recent Projects menu orders history, validates missing layouts, shows an empty state and clears history (rows=%d empty=%d clear=%d)",
+                recentMenuRowsValid, recentMenuEmptyStateValid, clearRecentProjectsWorks]);
+
         NSString *sshProfileSuite = [NSString stringWithFormat:@"mica-ssh-profiles-%d", getpid()];
         NSUserDefaults *sshProfileDefaults = [[NSUserDefaults alloc] initWithSuiteName:sshProfileSuite];
         [sshProfileDefaults removePersistentDomainForName:sshProfileSuite];
@@ -3003,6 +3064,98 @@ static int MicaRunUISelfTest(void) {
             NSDictionary *directoryAttributes = [NSFileManager.defaultManager attributesOfItemAtPath:stateDirectory error:nil];
             BOOL privateStatePermissions = [stateAttributes[NSFilePosixPermissions] unsignedShortValue] == 0600 &&
                 [directoryAttributes[NSFilePosixPermissions] unsignedShortValue] == 0700;
+            NSString *explicitLayoutPath = [stateDirectory stringByAppendingPathComponent:@"Explicit.mica"];
+            [@"# Mica layout v1\n# Mica project: Explicit\nExplicit tab\t/private/tmp\t\n"
+                writeToFile:explicitLayoutPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            MicaAppDelegate *explicitProjectOwner = [MicaAppDelegate new];
+            explicitProjectOwner.tabs = [NSMutableArray array]; explicitProjectOwner.activeIndex = 0;
+            [explicitProjectOwner loadLaunchConfigurationFromArguments:@[@"mica", @"--layout", explicitLayoutPath]
+                                                              bundleInfo:@{}];
+            BOOL explicitProjectSkipsSavedWindows = explicitProjectOwner.tabs.count == 1 &&
+                [explicitProjectOwner.projectName isEqualToString:@"Explicit"] &&
+                [explicitProjectOwner.activeTab.name isEqualToString:@"Explicit tab"] &&
+                ![explicitProjectOwner.activeTab.name isEqualToString:@"Remembered"];
+            for (NSValue *value in [explicitProjectOwner detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
+
+            NSString *layoutsDirectory = [stateDirectory stringByAppendingPathComponent:@"layouts"];
+            [NSFileManager.defaultManager createDirectoryAtPath:layoutsDirectory withIntermediateDirectories:YES attributes:nil error:nil];
+            NSString *(^writeProjectLayout)(NSString *, NSString *) = ^NSString *(NSString *fileName, NSString *projectName) {
+                NSString *path = [layoutsDirectory stringByAppendingPathComponent:fileName];
+                NSString *contents = [NSString stringWithFormat:@"# Mica layout v1\n# Mica project: %@\n%@ tab\t%@\t\n",
+                    projectName, projectName, stateDirectory];
+                [contents writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                return path;
+            };
+            NSString *layoutA = writeProjectLayout(@"A.mica", @"Project A");
+            NSString *layoutB = writeProjectLayout(@"B.mica", @"Project B");
+            NSString *layoutC = writeProjectLayout(@"C.mica", @"Project C");
+            NSString *layoutD = writeProjectLayout(@"D.mica", @"Project D");
+            const char *oldLayoutsEnvironment = getenv("MICA_TEST_LAYOUTS_DIRECTORY");
+            NSString *oldLayoutsDirectory = oldLayoutsEnvironment ? @(oldLayoutsEnvironment) : nil;
+            setenv("MICA_TEST_LAYOUTS_DIRECTORY", layoutsDirectory.fileSystemRepresentation, 1);
+            NSUserDefaults *oldDefaultsOverride = gMicaDefaultsOverride;
+            NSString *launchDefaultsSuite = [NSString stringWithFormat:@"MicaLaunchTests.%@", NSUUID.UUID.UUIDString];
+            NSUserDefaults *launchDefaults = [[NSUserDefaults alloc] initWithSuiteName:launchDefaultsSuite];
+            gMicaDefaultsOverride = launchDefaults;
+            id standardRecentProjectsBeforeLaunch = [NSUserDefaults.standardUserDefaults objectForKey:@"MicaRecentProjects"];
+
+            NSDictionary *(^savedWindow)(NSString *, NSString *) = ^NSDictionary *(NSString *layout, NSString *projectName) {
+                return @{@"layout":layout, @"projectName":projectName,
+                         @"tabs":@[@{@"name":projectName, @"cwd":stateDirectory}]};
+            };
+            NSDictionary *launchState = @{@"version":@1, @"windows":@[savedWindow(layoutB, @"Project B"),
+                                                                            savedWindow(layoutD, @"Project D")]};
+            [[NSJSONSerialization dataWithJSONObject:launchState options:0 error:nil] writeToFile:statePath atomically:YES];
+            NSMutableArray<NSURL *> *pendingLayouts = MicaPendingOpenURLs();
+            NSArray<NSURL *> *oldPendingLayouts = [pendingLayouts copy];
+            [pendingLayouts removeAllObjects];
+            [pendingLayouts addObjectsFromArray:@[[NSURL fileURLWithPath:layoutA], [NSURL fileURLWithPath:layoutC]]];
+            [MicaControllers() removeAllObjects];
+            MicaAppDelegate *explicitLaunchDelegate = [MicaAppDelegate new];
+            [explicitLaunchDelegate applicationDidFinishLaunching:nil];
+            NSMutableSet<NSString *> *explicitLaunchProjects = [NSMutableSet set];
+            for (MicaAppDelegate *controller in MicaControllers())
+                if (controller.projectName.length) [explicitLaunchProjects addObject:controller.projectName];
+            BOOL explicitLaunchOnlyOpensRequestedProjects = MicaControllers().count == 2 &&
+                [explicitLaunchProjects isEqualToSet:[NSSet setWithArray:@[@"Project A", @"Project C"]]];
+            NSArray<NSDictionary<NSString *, NSString *> *> *explicitLaunchHistory = MicaRecentProjectHistory().projects;
+            BOOL explicitLaunchRecordsHistoryNewestFirst = explicitLaunchHistory.count == 2 &&
+                [explicitLaunchHistory[0][@"name"] isEqualToString:@"Project C"] &&
+                [explicitLaunchHistory[0][@"path"] isEqualToString:layoutC] &&
+                [explicitLaunchHistory[1][@"name"] isEqualToString:@"Project A"] &&
+                [explicitLaunchHistory[1][@"path"] isEqualToString:layoutA];
+            for (MicaAppDelegate *controller in [MicaControllers() copy]) {
+                for (NSValue *value in [controller detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
+                controller.window.delegate = nil; [controller.window orderOut:nil]; [controller.window close];
+            }
+            [MicaControllers() removeAllObjects]; [pendingLayouts removeAllObjects];
+
+            [[NSJSONSerialization dataWithJSONObject:launchState options:0 error:nil] writeToFile:statePath atomically:YES];
+            MicaAppDelegate *plainLaunchDelegate = [MicaAppDelegate new];
+            [plainLaunchDelegate applicationDidFinishLaunching:nil];
+            NSMutableSet<NSString *> *restoredLaunchProjects = [NSMutableSet set];
+            for (MicaAppDelegate *controller in MicaControllers())
+                if (controller.projectName.length) [restoredLaunchProjects addObject:controller.projectName];
+            BOOL plainLaunchRestoresSavedProjects = MicaControllers().count == 2 &&
+                [restoredLaunchProjects isEqualToSet:[NSSet setWithArray:@[@"Project B", @"Project D"]]];
+            id standardRecentProjectsAfterLaunch = [NSUserDefaults.standardUserDefaults objectForKey:@"MicaRecentProjects"];
+            BOOL standardRecentProjectsUnchanged = standardRecentProjectsBeforeLaunch == nil
+                ? standardRecentProjectsAfterLaunch == nil
+                : [standardRecentProjectsBeforeLaunch isEqual:standardRecentProjectsAfterLaunch];
+            BOOL plainRestoreDoesNotRecordRecentProjects = [MicaRecentProjectHistory().projects isEqualToArray:explicitLaunchHistory] &&
+                standardRecentProjectsUnchanged;
+            for (MicaAppDelegate *controller in [MicaControllers() copy]) {
+                for (NSValue *value in [controller detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
+                controller.window.delegate = nil; [controller.window orderOut:nil]; [controller.window close];
+            }
+            [MicaControllers() removeAllObjects];
+            [MicaControllers() addObjectsFromArray:savedControllers];
+            [pendingLayouts removeAllObjects]; [pendingLayouts addObjectsFromArray:oldPendingLayouts];
+            gMicaDefaultsOverride = oldDefaultsOverride;
+            [launchDefaults removePersistentDomainForName:launchDefaultsSuite];
+            if (oldLayoutsDirectory) setenv("MICA_TEST_LAYOUTS_DIRECTORY", oldLayoutsDirectory.fileSystemRepresentation, 1);
+            else unsetenv("MICA_TEST_LAYOUTS_DIRECTORY");
+            [rawState writeToFile:statePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
             NSMutableDictionary *legacyWindow = [savedState mutableCopy];
             NSMutableDictionary *legacyTab = [[legacyWindow[@"tabs"] firstObject] mutableCopy];
             [legacyTab removeObjectForKey:@"agentKind"]; [legacyTab removeObjectForKey:@"agentSessionID"];
@@ -3188,9 +3341,11 @@ static int MicaRunUISelfTest(void) {
             [NSFileManager.defaultManager removeItemAtPath:stateDirectory error:nil];
             gMicaSessionStateURLOverride = nil;
             [MicaControllers() removeAllObjects]; [MicaControllers() addObjectsFromArray:savedControllers];
-            MicaUITestRecord(report, &allPassed, stateRoundTrips && restoredSession && restorePrefillsWithoutRunning && missingFolderFallsHome && corruptIgnored && oversizedIgnored && hostileIgnored && badEntryDropped && privateStatePermissions && resumeOffPrefilled && resumeOnRan && sshRestoredSafely && sshLayoutRestoresProfile && codexResumeRan && tamperedDropped,
-                [NSString stringWithFormat:@"session state validates names/folders, ignores hostile metadata and uses private permissions (roundtrip=%d restore=%d prefill=%d missing=%d corrupt=%d oversized=%d hostile=%d badEntry=%d private=%d command=%d resumeOff=%d resumeOn=%d ssh=%d sshLayout=%d codex=%d tampered=%d mode=%o/%o saved=%@ actual=%@ raw=%@)",
-                    stateRoundTrips, restoredSession, restorePrefillsWithoutRunning, missingFolderFallsHome,
+            MicaUITestRecord(report, &allPassed, stateRoundTrips && explicitProjectSkipsSavedWindows && explicitLaunchOnlyOpensRequestedProjects && explicitLaunchRecordsHistoryNewestFirst && plainLaunchRestoresSavedProjects && plainRestoreDoesNotRecordRecentProjects && restoredSession && restorePrefillsWithoutRunning && missingFolderFallsHome && corruptIgnored && oversizedIgnored && hostileIgnored && badEntryDropped && privateStatePermissions && resumeOffPrefilled && resumeOnRan && sshRestoredSafely && sshLayoutRestoresProfile && codexResumeRan && tamperedDropped,
+                [NSString stringWithFormat:@"session state validates names/folders, explicit launches open requested projects only and record recent history, plain launch restores saved windows without recording them, ignores hostile metadata and uses private permissions (roundtrip=%d explicitConfig=%d explicitLaunch=%d explicitHistory=%d plainLaunch=%d plainHistory=%d restore=%d prefill=%d missing=%d corrupt=%d oversized=%d hostile=%d badEntry=%d private=%d command=%d resumeOff=%d resumeOn=%d ssh=%d sshLayout=%d codex=%d tampered=%d mode=%o/%o saved=%@ actual=%@ raw=%@)",
+                    stateRoundTrips, explicitProjectSkipsSavedWindows, explicitLaunchOnlyOpensRequestedProjects,
+                    explicitLaunchRecordsHistoryNewestFirst, plainLaunchRestoresSavedProjects, plainRestoreDoesNotRecordRecentProjects,
+                    restoredSession, restorePrefillsWithoutRunning, missingFolderFallsHome,
                     corruptIgnored, oversizedIgnored, hostileIgnored, badEntryDropped, privateStatePermissions,
                     commandRestoredSafely, resumeOffPrefilled, resumeOnRan, sshRestoredSafely, sshLayoutRestoresProfile,
                     codexResumeRan, tamperedDropped,
