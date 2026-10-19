@@ -9,19 +9,57 @@ private struct HelperMessage: Encodable, Sendable {
     let text: String?
     let confirmedText: String?
     let progress: Double?
+    let engine: String?
+    let modelVersion: String?
+    let streamingConfig: StreamingConfiguration?
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case message
+        case text
+        case confirmedText
+        case progress
+        case engine
+        case modelVersion = "model_version"
+        case streamingConfig = "streaming_config"
+    }
 
     init(
         type: String,
         message: String? = nil,
         text: String? = nil,
         confirmedText: String? = nil,
-        progress: Double? = nil
+        progress: Double? = nil,
+        engine: String? = nil,
+        modelVersion: String? = nil,
+        streamingConfig: StreamingConfiguration? = nil
     ) {
         self.type = type
         self.message = message
         self.text = text
         self.confirmedText = confirmedText
         self.progress = progress
+        self.engine = engine
+        self.modelVersion = modelVersion
+        self.streamingConfig = streamingConfig
+    }
+}
+
+private struct StreamingConfiguration: Encodable, Sendable {
+    let chunkSeconds: Double
+    let hypothesisChunkSeconds: Double
+    let leftContextSeconds: Double
+    let rightContextSeconds: Double
+    let minContextForConfirmation: Double
+    let confirmationThreshold: Double
+
+    private enum CodingKeys: String, CodingKey {
+        case chunkSeconds = "chunk_seconds"
+        case hypothesisChunkSeconds = "hypothesis_chunk_seconds"
+        case leftContextSeconds = "left_context_seconds"
+        case rightContextSeconds = "right_context_seconds"
+        case minContextForConfirmation = "min_context_for_confirmation"
+        case confirmationThreshold = "confirmation_threshold"
     }
 }
 
@@ -167,6 +205,19 @@ private struct MicaVoiceCLI {
                 minContextForConfirmation: 6.0,
                 confirmationThreshold: 0.80
             )
+            emit(HelperMessage(
+                type: "metadata",
+                engine: "FluidAudio",
+                modelVersion: "ultra",
+                streamingConfig: StreamingConfiguration(
+                    chunkSeconds: streamingConfig.chunkSeconds,
+                    hypothesisChunkSeconds: streamingConfig.hypothesisChunkSeconds,
+                    leftContextSeconds: streamingConfig.leftContextSeconds,
+                    rightContextSeconds: streamingConfig.rightContextSeconds,
+                    minContextForConfirmation: streamingConfig.minContextForConfirmation,
+                    confirmationThreshold: streamingConfig.confirmationThreshold
+                )
+            ))
             let manager = SlidingWindowAsrManager(config: streamingConfig)
             try await manager.loadModels(models)
             let updates = await manager.transcriptionUpdates

@@ -1,5 +1,6 @@
 #import "mica_voice_controller.h"
 #import "mica_diagnostics.h"
+#import "mica_dictation_history.h"
 
 #import <AVFoundation/AVFoundation.h>
 #import <stdatomic.h>
@@ -10,6 +11,9 @@
 @interface MicaVoiceController ()
 @property(nonatomic, strong) NSURL *helperURL;
 @property(nonatomic, strong) NSUserDefaults *micaDefaults;
+@property(nonatomic, strong) MicaDictationHistory *historyStore;
+@property(nonatomic, copy, readwrite, nullable) NSUUID *recordingID;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, id> *helperMetadata;
 @property(nonatomic, assign, readwrite) MicaVoiceControllerState state;
 @property(nonatomic, copy, readwrite) NSString *statusText;
 @property(nonatomic, copy, readwrite) NSString *transcript;
@@ -48,12 +52,16 @@
 @property(nonatomic, assign) NSUInteger recordingGeneration;
 - (void)beginForWorkingDirectory:(NSString *)workingDirectory;
 - (void)helperBecameReady;
-- (void)writeAudioPayload:(NSData *)payload frames:(unsigned int)frames toWriter:(NSFileHandle *)writer generation:(unsigned)generation;
-- (void)flushPreparationAudioToWriter:(NSFileHandle *)writer generation:(unsigned)generation;
+- (void)writeAudioPayload:(NSData *)payload frames:(unsigned int)frames toWriter:(NSFileHandle *)writer
+               generation:(unsigned)generation recordID:(nullable NSUUID *)recordID;
+- (void)flushPreparationAudioToWriter:(NSFileHandle *)writer generation:(unsigned)generation recordID:(nullable NSUUID *)recordID;
 - (void)finishAudioStreamWithWriter:(NSFileHandle *)writer;
 - (void)forceFinishExitedHelper:(NSTimer *)timer;
 - (void)releaseOutputPipe;
 - (void)finishTranscript:(NSString *)transcript;
+- (void)beginHistoryRecordWithInputFormat:(AVAudioFormat *)inputFormat;
+- (void)archiveMicrophoneBuffer:(AVAudioPCMBuffer *)buffer recordID:(nullable NSUUID *)recordID generation:(unsigned)generation;
+- (void)finishHistoryWithStatus:(NSString *)status rawTranscript:(nullable NSString *)rawTranscript failure:(nullable NSString *)failure;
 @end
 
 @implementation MicaVoiceController {
@@ -71,6 +79,7 @@ float _displayLevel;
     NSMutableData *_preparationAudio;
     NSUInteger _preparationAudioFrames;
     BOOL _audioFinishRequested;
+    BOOL _historyFinished;
 }
 
 - (pid_t)helperProcessIdentifier {
@@ -141,10 +150,17 @@ float _displayLevel;
 - (BOOL)isCapturing { return self.recordingStartedAt != nil && self.elapsedTimer != nil; }
 
 - (instancetype)initWithHelperURL:(NSURL *)helperURL defaults:(NSUserDefaults *)defaults {
+    return [self initWithHelperURL:helperURL defaults:defaults historyStore:MicaDictationHistory.sharedStore];
+}
+
+- (instancetype)initWithHelperURL:(NSURL *)helperURL defaults:(NSUserDefaults *)defaults
+                     historyStore:(MicaDictationHistory *)historyStore {
     self = [super init];
     if (self) {
         _helperURL = helperURL;
         _micaDefaults = defaults ?: NSUserDefaults.standardUserDefaults;
+        _historyStore = historyStore;
+        _helperMetadata = [NSMutableDictionary dictionary];
         _state = MicaVoiceControllerStateIdle;
         _audioWriteQueue = dispatch_queue_create("com.megasoft78.mica.voice-audio", DISPATCH_QUEUE_SERIAL);
         atomic_init(&_acceptAudio, false);
@@ -163,6 +179,7 @@ float _displayLevel;
 }
 
 - (void)dealloc {
+    if (self.recordingID) [self.historyStore cancelRecordID:self.recordingID];
     atomic_store(&_acceptAudio, false);
     atomic_store(&_discardQueuedAudio, true);
     if (self.audioEngine) {
@@ -212,6 +229,8 @@ float _displayLevel;
     [self.helperExitTimer invalidate];
     self.helperExitTimer = nil;
     self.workingDirectory = workingDirectory.length ? workingDirectory : NSFileManager.defaultManager.currentDirectoryPath;
+    self.recordingID = nil;
+    self.helperMetadata = [NSMutableDictionary dictionary];
     MicaDiagnosticsLog(@"dictation", @"dictation requested");
     self.transcript = @"";
     self.confirmedTranscript = @"";
@@ -261,6 +280,8 @@ float _displayLevel;
     NSAssert(NSThread.isMainThread, @"Voice actions must run on the main thread");
     self.recordingGeneration++;
     atomic_store(&_audioGeneration, (unsigned)self.recordingGeneration);
+    if (self.recordingID) [self.historyStore cancelRecordID:self.recordingID];
+    self.recordingID = nil;
     [self stopAudioCaptureSendingCancel:YES];
     [self.elapsedTimer invalidate];
     self.elapsedTimer = nil;
@@ -279,6 +300,47 @@ float _displayLevel;
     self.isPushToTalk = NO;
     self.recordingStartedAt = nil;
     [self setState:MicaVoiceControllerStateIdle status:@"" progress:-1];
+}
+
+- (void)updateHistoryForRecordingID:(NSUUID *)recordingID metadata:(NSDictionary<NSString *,id> *)metadata {
+    if (!recordingID || !metadata.count) return;
+    [self.historyStore updateRecordID:recordingID withMetadata:metadata];
+}
+
+- (void)beginHistoryRecordWithInputFormat:(AVAudioFormat *)inputFormat {
+    NSDictionary *metadata = @{
+        @"started_at": @([NSDate date].timeIntervalSince1970),
+        @"working_directory": self.workingDirectory ?: @"",
+        @"microphone_sample_rate": @(inputFormat.sampleRate),
+        @"microphone_channel_count": @(inputFormat.channelCount),
+        @"microphone_common_format": @(inputFormat.commonFormat),
+        @"helper_path": self.helperURL.path ?: @"",
+    };
+    self.recordingID = [self.historyStore beginRecordWithMetadata:metadata];
+    _historyFinished = NO;
+    if (!self.recordingID)
+        MicaDiagnosticsLog(@"dictation.history", @"audio archive unavailable; continuing dictation");
+}
+
+- (void)finishHistoryWithStatus:(NSString *)status rawTranscript:(NSString *)rawTranscript failure:(NSString *)failure {
+    NSUUID *recordingID = self.recordingID;
+    if (!recordingID || _historyFinished) return;
+    NSMutableDictionary *provenance = [NSMutableDictionary dictionary];
+    if (self.helperMetadata.count) provenance[@"speech_engine"] = [self.helperMetadata copy];
+    if (failure.length) provenance[@"failure_reason"] = failure;
+    NSMutableDictionary *metadata = [NSMutableDictionary dictionaryWithDictionary:@{
+        @"status": status ?: @"complete",
+        @"finished_at": @([NSDate date].timeIntervalSince1970),
+        @"transcript_hypothesis": rawTranscript ?: @"",
+    }];
+    if (provenance.count) metadata[@"provenance"] = provenance;
+    _historyFinished = YES;
+    // Keep recordingID available to the app delegate until the next capture so it can
+    // associate the recognized text with insertion provenance.
+    self.recordingID = recordingID;
+    dispatch_async(_audioWriteQueue, ^{
+        [self.historyStore finishRecordID:recordingID withMetadata:metadata];
+    });
 }
 
 - (void)launchASRHelper {
@@ -444,6 +506,13 @@ float _displayLevel;
         [self helperBecameReady];
     } else if ([type isEqualToString:@"diagnostic"]) {
         if (messageText.length) MicaDiagnosticsLog(@"dictation.metrics", @"helper reported diagnostic metrics");
+    } else if ([type isEqualToString:@"metadata"]) {
+        NSMutableDictionary *metadata = [NSMutableDictionary dictionary];
+        if ([message[@"engine"] isKindOfClass:NSString.class]) metadata[@"engine"] = message[@"engine"];
+        if ([message[@"model_version"] isKindOfClass:NSString.class]) metadata[@"model_version"] = message[@"model_version"];
+        if ([message[@"streaming_config"] isKindOfClass:NSDictionary.class])
+            metadata[@"streaming_config"] = message[@"streaming_config"];
+        if (metadata.count) [self.helperMetadata addEntriesFromDictionary:metadata];
     } else if ([type isEqualToString:@"transcript"]) {
         self.transcript = text ?: @"";
         self.confirmedTranscript = [message[@"confirmedText"] isKindOfClass:NSString.class]
@@ -488,6 +557,7 @@ float _displayLevel;
         [self failWithMessage:@"I didn’t catch any speech. Hold left Option and speak a little longer."];
         return;
     }
+    [self finishHistoryWithStatus:@"complete" rawTranscript:self.helperResult failure:nil];
     self.rawTranscript = result;
     self.transcript = result;
     self.confirmedTranscript = result;
@@ -566,18 +636,21 @@ float _displayLevel;
         }];
     self.audioConverter = converter;
     self.audioTargetFormat = targetFormat;
+    [self beginHistoryRecordWithInputFormat:inputFormat];
     atomic_store(&_acceptAudio, true);
     atomic_store(&_discardQueuedAudio, false);
     atomic_store(&_audioOverflowReported, false);
     atomic_store(&_recordedAudioFrames, 0);
 
     unsigned audioGeneration = atomic_load(&_audioGeneration);
+    NSUUID *historyRecordID = self.recordingID;
     __weak typeof(self) weakSelf = self;
     [input installTapOnBus:0 bufferSize:4096 format:inputFormat block:^(AVAudioPCMBuffer *buffer, AVAudioTime *when) {
         (void)when;
         MicaVoiceController *strongSelf = weakSelf;
         if (!strongSelf || !atomic_load(&strongSelf->_acceptAudio) ||
             atomic_load(&strongSelf->_audioGeneration) != audioGeneration) return;
+        [strongSelf archiveMicrophoneBuffer:buffer recordID:historyRecordID generation:audioGeneration];
         AVAudioFrameCount capacity = (AVAudioFrameCount)ceil(buffer.frameLength * 16000.0 / inputFormat.sampleRate) + 64;
         AVAudioPCMBuffer *converted = [[AVAudioPCMBuffer alloc] initWithPCMFormat:targetFormat frameCapacity:capacity];
         if (!converted) return;
@@ -646,7 +719,8 @@ float _displayLevel;
             if (atomic_load(&strongSelf->_audioGeneration) == audioGeneration &&
                 !atomic_load(&strongSelf->_discardQueuedAudio)) {
                 if (atomic_load(&strongSelf->_audioHelperReady)) {
-                    [strongSelf writeAudioPayload:payload frames:frameCountValue toWriter:strongSelf->_audioStreamWriter generation:audioGeneration];
+                    [strongSelf writeAudioPayload:payload frames:frameCountValue toWriter:strongSelf->_audioStreamWriter
+                        generation:audioGeneration recordID:historyRecordID];
                 } else {
                     const NSUInteger maximumBufferedFrames = 16000u * 120u;
                     if (strongSelf->_preparationAudioFrames + frameCountValue <= maximumBufferedFrames) {
@@ -668,6 +742,8 @@ float _displayLevel;
     if (![engine startAndReturnError:&error]) {
         [input removeTapOnBus:0];
         atomic_store(&_acceptAudio, false);
+        if (self.recordingID) [self.historyStore cancelRecordID:self.recordingID];
+        self.recordingID = nil;
         [self failWithMessage:[NSString stringWithFormat:@"Could not start microphone capture: %@",
             error.localizedDescription ?: @"unknown audio error"]];
         return;
@@ -699,11 +775,12 @@ float _displayLevel;
 
 - (void)helperBecameReady {
     unsigned audioGeneration = atomic_load(&_audioGeneration);
+    NSUUID *recordID = self.recordingID;
     dispatch_async(_audioWriteQueue, ^{
         if (atomic_load(&self->_audioGeneration) != audioGeneration) return;
         if (atomic_load(&self->_discardQueuedAudio)) return;
         NSFileHandle *writer = self->_audioStreamWriter;
-        [self flushPreparationAudioToWriter:writer generation:audioGeneration];
+        [self flushPreparationAudioToWriter:writer generation:audioGeneration recordID:recordID];
         if (atomic_load(&self->_audioGeneration) != audioGeneration ||
             atomic_load(&self->_discardQueuedAudio)) return;
         atomic_store(&self->_audioHelperReady, true);
@@ -718,9 +795,11 @@ float _displayLevel;
     });
 }
 
-- (void)writeAudioPayload:(NSData *)payload frames:(unsigned int)frames toWriter:(NSFileHandle *)writer generation:(unsigned)audioGeneration {
+- (void)writeAudioPayload:(NSData *)payload frames:(unsigned int)frames toWriter:(NSFileHandle *)writer
+               generation:(unsigned)audioGeneration recordID:(NSUUID *)recordID {
     if (!writer || !payload.length || !frames ||
         atomic_load(&_audioGeneration) != audioGeneration) return;
+    if (recordID) [self.historyStore appendModelInputSamples:payload recordID:recordID];
     uint32_t littleEndianCount = CFSwapInt32HostToLittle(frames);
     NSMutableData *packet = [NSMutableData dataWithBytes:&littleEndianCount length:sizeof(littleEndianCount)];
     [packet appendData:payload];
@@ -736,7 +815,12 @@ float _displayLevel;
     }
 }
 
-- (void)flushPreparationAudioToWriter:(NSFileHandle *)writer generation:(unsigned)audioGeneration {
+- (void)archiveMicrophoneBuffer:(AVAudioPCMBuffer *)buffer recordID:(NSUUID *)recordID generation:(unsigned)generation {
+    if (!buffer || !recordID || atomic_load(&_audioGeneration) != generation) return;
+    [self.historyStore appendMicrophoneBuffer:buffer recordID:recordID];
+}
+
+- (void)flushPreparationAudioToWriter:(NSFileHandle *)writer generation:(unsigned)audioGeneration recordID:(NSUUID *)recordID {
     if (!writer || !self->_preparationAudio.length) return;
     const NSUInteger bytesPerFrame = sizeof(float);
     const NSUInteger maximumPacketFrames = 160000;
@@ -748,7 +832,8 @@ float _displayLevel;
         NSUInteger frames = MIN(maximumPacketFrames, remainingFrames);
         NSUInteger count = frames * bytesPerFrame;
         NSData *payload = [buffer subdataWithRange:NSMakeRange(offset, count)];
-        [self writeAudioPayload:payload frames:(unsigned int)frames toWriter:writer generation:audioGeneration];
+        [self writeAudioPayload:payload frames:(unsigned int)frames toWriter:writer
+                     generation:audioGeneration recordID:recordID];
         offset += count;
     }
     self->_preparationAudio = nil;
@@ -824,6 +909,7 @@ float _displayLevel;
     atomic_store(&_audioGeneration, (unsigned)self.recordingGeneration);
     MicaDiagnosticsLog(@"dictation", @"dictation failed");
     [self stopAudioCaptureSendingCancel:YES];
+    [self finishHistoryWithStatus:@"failed" rawTranscript:self.helperResult failure:message];
     [self.elapsedTimer invalidate];
     self.elapsedTimer = nil;
     [self.helperExitTimer invalidate];

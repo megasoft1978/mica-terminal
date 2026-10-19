@@ -9,6 +9,7 @@ typedef NS_ENUM(NSInteger, MicaVoiceControllerState) {
 };
 
 @class MicaVoiceController;
+@class MicaDictationHistory;
 
 @protocol MicaVoiceControllerDelegate <NSObject>
 - (void)voiceControllerDidUpdate:(MicaVoiceController *)controller;
@@ -33,12 +34,19 @@ typedef NS_ENUM(NSInteger, MicaVoiceControllerState) {
 @property(nonatomic, assign, readonly) BOOL isPrefetchingModel;
 @property(nonatomic, copy, readonly) NSString *prefetchStatus;
 @property(nonatomic, assign, readonly) double prefetchFraction;
+// UUID for the current or most recently completed dictation. It remains valid through the
+// didFinishTranscript delegate callback so callers can attach insertion provenance.
+@property(nonatomic, copy, readonly, nullable) NSUUID *recordingID;
 
 - (instancetype)initWithHelperURL:(NSURL *)helperURL defaults:(NSUserDefaults *)defaults;
+- (instancetype)initWithHelperURL:(NSURL *)helperURL defaults:(NSUserDefaults *)defaults
+                     historyStore:(MicaDictationHistory *)historyStore;
 - (instancetype)initWithHelperURL:(NSURL *)helperURL;
 - (void)startPushToTalkForWorkingDirectory:(NSString *)workingDirectory;
 - (void)finishPushToTalk;
 - (void)cancel;
+- (void)updateHistoryForRecordingID:(nullable NSUUID *)recordingID
+                           metadata:(NSDictionary<NSString *, id> *)metadata;
 // After an app update Core ML recompiles the speech model on first use (about 30 s). Run that once in
 // the background, only when the model is already downloaded, and only once per helper build.
 - (void)prewarmSpeechModelIfNeeded;

@@ -313,9 +313,17 @@ static void MicaUITestSendMouse(MicaAppDelegate *delegate, NSEventType type, NSP
 @property(nonatomic) NSUInteger pushToTalkStarts;
 @property(nonatomic) NSUInteger pushToTalkFinishes;
 @property(nonatomic) NSUInteger cancels;
+@property(nonatomic, strong) NSUUID *testRecordingID;
+@property(nonatomic, strong) NSUUID *historyUpdatedRecordingID;
+@property(nonatomic, copy) NSDictionary<NSString *, id> *historyUpdateMetadata;
 @end
 
 @implementation MicaUITestVoiceController
+- (NSUUID *)recordingID { return self.testRecordingID; }
+- (void)updateHistoryForRecordingID:(NSUUID *)recordingID metadata:(NSDictionary<NSString *,id> *)metadata {
+    self.historyUpdatedRecordingID = recordingID;
+    self.historyUpdateMetadata = metadata;
+}
 - (void)startPushToTalkForWorkingDirectory:(NSString *)workingDirectory {
     (void)workingDirectory;
     self.pushToTalkStarts++;
@@ -1138,6 +1146,7 @@ static int MicaRunUISelfTest(void) {
             setenv("MICA_TEST_ZLE_DIR", voiceTestDirectory.fileSystemRepresentation, 1) == 0;
         MicaUITestVoiceController *pushToTalkProbe = [[MicaUITestVoiceController alloc]
             initWithHelperURL:[NSURL fileURLWithPath:@"/bin/false"]];
+        pushToTalkProbe.testRecordingID = NSUUID.UUID;
         voiceDelegate.voiceController = pushToTalkProbe;
         [voiceDelegate addTabWithName:@"PTT target" cwd:@"/tmp"
             command:@"printf 'PTT-TARGET-READY\\n'" prefilled:NO];
@@ -1251,6 +1260,16 @@ static int MicaRunUISelfTest(void) {
         voiceDelegate.voiceTargetTab = voiceTargetTab;
         BOOL fakeTranscriptInserted = [voiceDelegate voiceController:pushToTalkProbe
             didFinishTranscript:@"Mica Terminal"];
+        NSDictionary *firstProvenance = pushToTalkProbe.historyUpdateMetadata[@"provenance"];
+        BOOL firstInsertionRecorded = [pushToTalkProbe.historyUpdatedRecordingID isEqual:pushToTalkProbe.testRecordingID] &&
+            [voiceDelegate.voiceTargetRecordingID isEqual:pushToTalkProbe.testRecordingID] &&
+            voiceDelegate.voiceTargetRecordingTab == voiceTargetTab &&
+            [firstProvenance[@"corrected_transcript"] isEqual:@"MicaTerminal"] &&
+            [firstProvenance[@"inserted_text"] isEqual:@"MicaTerminal"] &&
+            [firstProvenance[@"paste_attempted"] boolValue] &&
+            firstProvenance[@"paste_succeeded"] == NSNull.null &&
+            [firstProvenance[@"paste_delivery"] isEqual:@"unknown"] &&
+            ![firstProvenance[@"auto_submitted"] boolValue];
         MicaUITestRunLoopFor(0.05);
         NSString *insertedBuffer = voiceTestDirectoryReady
             ? MicaUITestCaptureZLEBuffer(voiceTestDirectory, voiceTargetTab.session) : nil;
@@ -1262,10 +1281,10 @@ static int MicaRunUISelfTest(void) {
         MicaUITestRunLoopFor(0.05);
         NSString *undoneBuffer = voiceTestDirectoryReady
             ? MicaUITestCaptureZLEBuffer(voiceTestDirectory, voiceTargetTab.session) : nil;
-        MicaUITestRecord(report, &allPassed, fakeTranscriptInserted && undoEnabled &&
+        MicaUITestRecord(report, &allPassed, fakeTranscriptInserted && firstInsertionRecorded && undoEnabled &&
             [insertedBuffer isEqualToString:@"MicaTerminal"] && [undoneBuffer isEqualToString:@"Mica Terminal"],
-            [NSString stringWithFormat:@"injected corrected transcript enables undo and restores the raw transcript (enabled=%d before=%@ after=%@)",
-                undoEnabled, insertedBuffer, undoneBuffer]);
+            [NSString stringWithFormat:@"injected corrected transcript is associated with its recording and enables undo (provenance=%@ enabled=%d before=%@ after=%@)",
+                firstProvenance, undoEnabled, insertedBuffer, undoneBuffer]);
         char ptySnippetTemplate[] = "/tmp/mica-pty-snippet-XXXXXX";
         int ptySnippetFD = mkstemp(ptySnippetTemplate);
         NSString *snippetExecutionMarker = MicaUITestVoiceFile(voiceTestDirectory, voiceTargetTab.session, @"snippet-executed");
@@ -1278,6 +1297,7 @@ static int MicaRunUISelfTest(void) {
         voiceDelegate.dictationSnippetsURLOverride = ptySnippetReady ? [NSURL fileURLWithPath:[NSString stringWithUTF8String:ptySnippetTemplate]] : nil;
         voiceDelegate.voiceTargetTab = voiceTargetTab;
         BOOL ptySnippetInserted = ptySnippetReady && [voiceDelegate voiceController:pushToTalkProbe didFinishTranscript:@"Mica Terminal"];
+        NSDictionary *snippetProvenance = pushToTalkProbe.historyUpdateMetadata[@"provenance"];
         NSString *ptySnippetBuffer = ptySnippetReady ? MicaUITestCaptureZLEBuffer(voiceTestDirectory, voiceTargetTab.session) : nil;
         BOOL snippetNotExecuted = ptySnippetInserted && [ptySnippetBuffer isEqualToString:[NSString stringWithFormat:@"touch %@", snippetExecutionMarker]] &&
             ![[NSFileManager defaultManager] fileExistsAtPath:snippetExecutionMarker];
@@ -1285,10 +1305,37 @@ static int MicaRunUISelfTest(void) {
         NSString *ptySnippetUndoBuffer = ptySnippetReady ? MicaUITestCaptureZLEBuffer(voiceTestDirectory, voiceTargetTab.session) : nil;
         voiceDelegate.dictationSnippetsURLOverride = nil;
         if (ptySnippetFD >= 0) unlink(ptySnippetTemplate);
-        MicaUITestRecord(report, &allPassed, snippetNotExecuted && [ptySnippetUndoBuffer isEqualToString:@"Mica Terminal"],
-            [NSString stringWithFormat:@"corrected whole-transcript snippet is pasted as unexecuted PTY prompt text and one-step undo restores raw transcript (inserted=%d undo=%@)", snippetNotExecuted, ptySnippetUndoBuffer ?: @"<missing>"]);
+        BOOL snippetProvenanceRecorded = [snippetProvenance[@"corrected_transcript"] isEqual:@"MicaTerminal"] &&
+            [snippetProvenance[@"inserted_text"] isEqual:[NSString stringWithFormat:@"touch %@", snippetExecutionMarker]] &&
+            [snippetProvenance[@"paste_attempted"] boolValue] &&
+            ![snippetProvenance[@"auto_submitted"] boolValue];
+        MicaUITestRecord(report, &allPassed, snippetNotExecuted && snippetProvenanceRecorded &&
+            [ptySnippetUndoBuffer isEqualToString:@"Mica Terminal"],
+            [NSString stringWithFormat:@"corrected snippet insertion provenance records expanded text without claiming submission (inserted=%d provenance=%@ undo=%@)",
+                snippetNotExecuted, snippetProvenance, ptySnippetUndoBuffer ?: @"<missing>"]);
         if (savedVocabularyPreference) [[voiceDelegate micaDefaults] setObject:savedVocabularyPreference forKey:@"MicaDictationVocabularyEnabled"];
         else [[voiceDelegate micaDefaults] removeObjectForKey:@"MicaDictationVocabularyEnabled"];
+
+        pushToTalkProbe.testRecordingID = NSUUID.UUID;
+        voiceDelegate.voiceTargetTab = nil;
+        voiceDelegate.voiceTargetRecordingID = nil;
+        voiceDelegate.voiceTargetRecordingTab = nil;
+        BOOL failedInsertionRejected = ![voiceDelegate voiceController:pushToTalkProbe
+            didFinishTranscript:@"Mica Terminal"];
+        NSDictionary *failedProvenance = pushToTalkProbe.historyUpdateMetadata[@"provenance"];
+        BOOL failedInsertionRecorded = failedInsertionRejected &&
+            [pushToTalkProbe.historyUpdatedRecordingID isEqual:pushToTalkProbe.testRecordingID] &&
+            failedProvenance[@"corrected_transcript"] == NSNull.null &&
+            failedProvenance[@"inserted_text"] == NSNull.null &&
+            ![failedProvenance[@"paste_attempted"] boolValue] &&
+            ![failedProvenance[@"paste_succeeded"] boolValue] &&
+            [failedProvenance[@"paste_delivery"] isEqual:@"not_attempted"] &&
+            ![failedProvenance[@"auto_submitted"] boolValue];
+        MicaUITestRecord(report, &allPassed, failedInsertionRecorded,
+            [NSString stringWithFormat:@"transcript with no valid target records that insertion was not attempted (%@)", failedProvenance]);
+        voiceDelegate.voiceTargetRecordingID = nil;
+        voiceDelegate.voiceTargetRecordingTab = nil;
+        voiceDelegate.voiceTargetTab = voiceTargetTab;
 
         voiceDelegate.voiceTargetTab = voiceTargetTab;
         BOOL multilineInserted = [voiceDelegate voiceController:pushToTalkProbe

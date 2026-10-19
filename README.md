@@ -66,7 +66,7 @@ The same-day iTerm2 and Wispr Flow measurements add up to about 770 MB, before a
 
 1. [Download Mica.zip](https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/Mica.zip), extract it and move Mica to Applications. This build is signed and notarized; verify the ZIP with the [SHA-256 manifest](https://github.com/megasoft1978/mica-terminal/releases/download/v0.1.0-alpha.16/SHA256SUMS.txt).
 2. Mica prepares dictation in the background on first launch and after app updates that change its speech helper. It downloads model files only if they are missing and reuses local files otherwise. If you start dictating before setup finishes, the helper loads the model on demand. This setup does not require microphone permission.
-3. Mica asks for microphone access only when you start dictating. Audio is processed locally in memory and is not saved or sent to a server.
+3. Mica asks for microphone access only when you start dictating. Dictation is processed locally. Completed recordings are also retained in the local dictation history so you can compare recognition models later; nothing is sent to a server.
 
 ## Local Android remote control
 
@@ -93,7 +93,22 @@ Create profiles in **Session → SSH Connections…** with a friendly name, Open
 
 ## Privacy and dictation
 
-Mica has no account or analytics feature. Dictation audio stays on the Mac and is not saved. The speech model downloads from [Hugging Face](https://huggingface.co/FluidInference/parakeet-ultra-coreml) during background setup; Mica does not send your transcript to a service. Programs you run in the terminal, including coding agents, may have their own network and privacy behavior.
+Mica has no account or analytics feature. Dictation history is stored locally in `~/Library/Application Support/Mica/DictationHistory/`. Each completed record keeps the microphone recording in its captured format (`microphone.caf`), the mono 16 kHz audio passed to recognition (`model-input.wav`), and metadata with the model's transcript hypothesis and processing provenance. These files can contain sensitive speech and are not encrypted by Mica; macOS account file permissions restrict access. Mica does not send the recordings or transcript to a service. Programs you run in the terminal, including coding agents, may have their own network and privacy behavior.
+
+The archive has a 2 GiB cap. When it is reached, Mica pauses new captures and keeps existing records; it never removes old records automatically. If a completed capture exceeds the cap because its final audio container or metadata adds size, Mica retains the audio captured so far, marks the record `storage_limit`, and pauses new captures until space is freed. Cancelled recordings and incomplete recordings left by a crash are removed. A recognition/helper failure is retained with its audio and a `failed` status when the recording itself completed. Use the local tool to inspect, explicitly attach the text you intended to say, or clear records:
+
+```sh
+python3 tools/dictation_history.py list
+python3 tools/dictation_history.py status
+python3 tools/dictation_history.py disable
+python3 tools/dictation_history.py enable
+python3 tools/dictation_history.py show <record-uuid>
+python3 tools/dictation_history.py annotate <record-uuid> --text 'the words I intended to dictate'
+python3 tools/dictation_history.py clear <record-uuid>
+python3 tools/dictation_history.py clear --all
+```
+
+The recognized transcript is labeled a hypothesis and is never treated as ground truth. Only text you explicitly provide with `annotate` is stored as a human reference. `disable` stops archiving while dictation continues to work; `enable` resumes it. `status` reports whether archiving is enabled, the published record count, and the size of published records. `clear --all` removes all published records and audio but preserves the enabled/disabled setting; clearing an already empty archive does not turn off future recording.
 
 Project vocabulary correction uses the project name, Git branch, tracked file names, recent visible terminal text and `~/Library/Application Support/Mica/vocabulary.txt`. The fixed 40-prompt text fixture matched 24/40 prompts raw and 34/40 after correction. It is a text-only correction fixture, not a speech-recognition benchmark; details are in [performance notes](docs/PERFORMANCE.md).
 

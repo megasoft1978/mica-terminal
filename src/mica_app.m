@@ -634,6 +634,8 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, assign) NSUInteger activityAnimationFrame;
 @property(nonatomic, strong) MicaVoiceController *voiceController;
 @property(nonatomic, strong) MicaTab *voiceTargetTab;
+@property(nonatomic, copy) NSUUID *voiceTargetRecordingID;
+@property(nonatomic, weak) MicaTab *voiceTargetRecordingTab;
 @property(nonatomic) NSInteger lastVoiceState;
 @property(nonatomic) NSTimeInterval lastVoiceAnimationAt;
 @property(nonatomic, copy) NSString *memoryLabel;
@@ -6213,7 +6215,11 @@ static BOOL MicaValidBranchName(NSString *name) {
     MicaVoiceControllerState state = self.voiceController.state;
     BOOL inProgress = state == MicaVoiceControllerStatePreparing || state == MicaVoiceControllerStateListening ||
         state == MicaVoiceControllerStateTranscribing;
-    if (!inProgress) self.voiceTargetTab = tab;
+    if (!inProgress) {
+        self.voiceTargetTab = tab;
+        self.voiceTargetRecordingID = nil;
+        self.voiceTargetRecordingTab = nil;
+    }
 
     char path[4096] = {0};
     NSString *workingDirectory = tab.cwd;
@@ -6242,10 +6248,16 @@ static BOOL MicaValidBranchName(NSString *name) {
 - (void)cancelDictation {
     [self.voiceController cancel];
     self.voiceTargetTab = nil;
+    self.voiceTargetRecordingID = nil;
+    self.voiceTargetRecordingTab = nil;
     [self.terminalView setNeedsDisplay:YES];
 }
 
 - (void)voiceControllerDidUpdate:(MicaVoiceController *)controller {
+    if (!self.voiceTargetRecordingID && controller.recordingID && self.voiceTargetTab) {
+        self.voiceTargetRecordingID = controller.recordingID;
+        self.voiceTargetRecordingTab = self.voiceTargetTab;
+    }
     // State transitions reserve or release the preview band and resize the PTY grid.
     NSInteger state = (NSInteger)controller.state;
     if (state != self.lastVoiceState) {
@@ -6264,10 +6276,27 @@ static BOOL MicaValidBranchName(NSString *name) {
 
 - (BOOL)voiceController:(MicaVoiceController *)controller
       didFinishTranscript:(NSString *)transcript {
-    (void)controller;
-    MicaTab *target = self.voiceTargetTab;
+    NSUUID *recordingID = controller.recordingID;
+    if (recordingID && !self.voiceTargetRecordingID) {
+        self.voiceTargetRecordingID = recordingID;
+        self.voiceTargetRecordingTab = self.voiceTargetTab;
+    }
+    MicaTab *target = [recordingID isEqual:self.voiceTargetRecordingID]
+        ? self.voiceTargetRecordingTab : self.voiceTargetTab;
     if (!target || ![self.tabs containsObject:target] || !target.session ||
-        !mica_session_is_running(target.session)) return NO;
+        !mica_session_is_running(target.session)) {
+        [controller updateHistoryForRecordingID:recordingID metadata:@{
+            @"provenance": @{
+                @"corrected_transcript": NSNull.null,
+                @"inserted_text": NSNull.null,
+                @"paste_succeeded": @NO,
+                @"paste_attempted": @NO,
+                @"paste_delivery": @"not_attempted",
+                @"auto_submitted": @NO,
+            },
+        }];
+        return NO;
+    }
     BOOL improve = ![[self micaDefaults] objectForKey:@"MicaDictationVocabularyEnabled"] ||
         [[self micaDefaults] boolForKey:@"MicaDictationVocabularyEnabled"];
     NSString *visibleText = target.recentVisibleText.length ? target.recentVisibleText : [self visibleTextForTab:target];
@@ -6281,10 +6310,33 @@ static BOOL MicaValidBranchName(NSString *name) {
         [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Mica/snippets.txt"]];
     NSString *insertedText = MicaApplyDictationSnippet(corrected, MicaDictationSnippetsFromFile(snippetsURL));
     NSData *bytes = [insertedText dataUsingEncoding:NSUTF8StringEncoding];
-    if (!bytes.length) return NO;
+    if (!bytes.length) {
+        [controller updateHistoryForRecordingID:recordingID metadata:@{
+            @"provenance": @{
+                @"corrected_transcript": corrected,
+                @"inserted_text": insertedText,
+                @"paste_succeeded": @NO,
+                @"paste_attempted": @NO,
+                @"paste_delivery": @"not_attempted",
+                @"auto_submitted": @NO,
+            },
+        }];
+        return NO;
+    }
     BOOL submitToAgent = MicaAgentPromptReadyForDictation(target);
     mica_session_paste(target.session, bytes.bytes, bytes.length);
     if (submitToAgent) mica_session_key(target.session, VTERM_KEY_ENTER, VTERM_MOD_NONE);
+    [controller updateHistoryForRecordingID:recordingID metadata:@{
+        @"provenance": @{
+            @"corrected_transcript": corrected,
+            @"inserted_text": insertedText,
+            // The C paste API queues input asynchronously and returns no delivery status.
+            @"paste_succeeded": NSNull.null,
+            @"paste_attempted": @YES,
+            @"paste_delivery": @"unknown",
+            @"auto_submitted": @(submitToAgent),
+        },
+    }];
     self.lastDictationText = insertedText;
     self.lastDictationRawText = transcript;
     self.lastDictationTab = target;
