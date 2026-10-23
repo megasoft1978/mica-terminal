@@ -11,5 +11,5 @@
 - One Mica process hosts every project window: each window is a `MicaAppDelegate` acting as a window controller (registry `MicaControllers()`), the first is also the NSApplication delegate, and the single menu bar retargets to the key window. Do not add state to globals that should be per window.
 
 ## Orchestration
-- Sol plans and reviews; Luna implements in parallel slices, then re-reviews (max 3 rounds). Global protocol: ~/.codex/AGENTS.md.
+- Roles: Claude plans, implements and reviews (`~/.claude-work/CLAUDE.md`); Codex only drives browser/computer-use jobs when a prompt asks (`~/.codex/AGENTS.md`).
 - Verify with `make test` (full gate `make validate`). Automated loops do not push or tag.
