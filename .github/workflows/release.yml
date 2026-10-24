@@ -31,7 +31,7 @@ jobs:
     if: needs.existing_release.outputs.exists != 'true'
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check tag matches version
         run: |
           v=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)
