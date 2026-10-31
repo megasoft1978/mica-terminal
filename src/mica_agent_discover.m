@@ -6,6 +6,8 @@
 #include <string.h>
 #include <sys/proc_info.h>
 #include <limits.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <sys/sysctl.h>
 
 static NSString *RealPath(NSString *path) {
@@ -150,10 +152,70 @@ static NSArray<NSString *> *OpenVnodePaths(pid_t pid) {
     return paths;
 }
 
-static BOOL IsCodexish(pid_t pid) {
-    char path[PROC_PIDPATHINFO_MAXSIZE];
-    if (proc_pidpath(pid, path, sizeof(path)) <= 0) return NO;
-    return strcasestr(strrchr(path, '/') ? strrchr(path, '/') + 1 : path, "codex") != NULL;
+// An agent pid is "verified" only by its executable: proc_pidpath basename equals the kind ("claude"/"codex"), or
+// (claude) argv[0] is "claude" running from a ".../claude/..." install dir (native versioned binary), or a node/bun
+// runtime whose first non-option argument is claude/claude.js/cli.js (under a claude-code package) resp. codex/codex.js.
+// Flags and the process-env config dir are only ever taken from such a pid, never from other descendants.
+static BOOL UnderPrefix(NSString *path, NSString *prefix) { return prefix.length && [path hasPrefix:[prefix hasSuffix:@"/"] ? prefix : [prefix stringByAppendingString:@"/"]]; }
+
+static BOOL VerifiedAgentPid(pid_t pid, NSString *kind, NSDictionary *args, NSString *home) {
+    char cpath[PROC_PIDPATHINFO_MAXSIZE];
+    if (proc_pidpath(pid, cpath, sizeof(cpath)) <= 0) return NO;
+    NSString *path = [NSString stringWithUTF8String:cpath];
+    NSString *base = path.lastPathComponent;
+    // The executable must live under the user's home or a standard install prefix; a binary dropped in /tmp never verifies.
+    BOOL trusted = NO;
+    for (NSString *prefix in @[home ?: @"", RealPath(home), @"/opt/homebrew", @"/usr/local", @"/Applications"]) if (UnderPrefix(path, prefix)) trusted = YES;
+    if (!trusted) return NO;
+    if ([base isEqualToString:kind]) return YES;
+    NSArray *argv = args[@"argv"];
+    if (![argv isKindOfClass:NSArray.class] || !argv.count) return NO;
+    BOOL claude = [kind isEqualToString:@"claude"];
+    if (claude && [[argv[0] lastPathComponent] isEqualToString:@"claude"] && (UnderPrefix(path, [home stringByAppendingPathComponent:@".local/share/claude/versions"]) ||
+        UnderPrefix(path, [RealPath(home) stringByAppendingPathComponent:@".local/share/claude/versions"]))) return YES;
+    if (![@[@"node", @"bun"] containsObject:base]) return NO;
+    for (NSUInteger i = 1; i < argv.count; i++) {
+        NSString *arg = argv[i];
+        if (![arg isKindOfClass:NSString.class] || [arg hasPrefix:@"-"]) continue;
+        NSString *name = arg.lastPathComponent;
+        if (claude) return [name isEqualToString:@"claude"] || [name isEqualToString:@"claude.js"] ||
+            ([name isEqualToString:@"cli.js"] && [arg containsString:@"claude-code"]);
+        return [name isEqualToString:@"codex"] || [name isEqualToString:@"codex.js"];
+    }
+    return NO;
+}
+
+// pid > 0 (verified agent): only that pid's sessions/<pid>.json counts. pid == 0: projects/*/<id>.jsonl, used only for
+// the dir named by Mica's own environment (trusted), never for dirs found via child processes.
+static NSString *ClaudeDirForAgentEnv(NSDictionary *args, NSString *home) {
+    id own = args[@"env"][@"CLAUDE_CONFIG_DIR"];
+    if ([own isKindOfClass:NSString.class] && [own length]) return [own stringByStandardizingPath];
+    return [home stringByAppendingPathComponent:@".claude"];
+}
+
+static BOOL ConfigDirHasSession(NSString *dir, NSString *sessionID, pid_t pid) {
+    if (pid > 0) {
+        NSString *file = [dir stringByAppendingFormat:@"/sessions/%d.json", (int)pid];
+        return [[MicaAgentDiscover claudeSessionIDFromFile:file cwd:nil] isEqualToString:sessionID];
+    }
+    NSString *projects = [dir stringByAppendingPathComponent:@"projects"];
+    for (NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:projects error:nil]) {
+        NSString *file = [[projects stringByAppendingPathComponent:name] stringByAppendingFormat:@"/%@.jsonl", sessionID];
+        if ([NSFileManager.defaultManager fileExistsAtPath:file]) return YES;
+    }
+    return NO;
+}
+
+// Config dir accepted only if sane, not the default ~/.claude, under the user's home, owned by this uid, not
+// group/other-writable, and containing this session. Returns the resolved (realpath) dir, else nil.
+static NSString *SafeConfigDir(NSString *dir, NSString *home, NSString *sessionID, pid_t pid) {
+    NSString *safe = MicaSanitizedConfigDir(dir, home);
+    if (!safe || !home.length) return nil;
+    NSString *real = RealPath(safe), *homeReal = RealPath(home);
+    if (![real hasPrefix:[homeReal stringByAppendingString:@"/"]]) return nil;
+    struct stat st;
+    if (stat(real.fileSystemRepresentation, &st) != 0 || st.st_uid != getuid() || (st.st_mode & (S_IWGRP | S_IWOTH))) return nil;
+    return ConfigDirHasSession(real, sessionID, pid) ? real : nil;
 }
 
 + (NSDictionary *)discoverForPids:(NSArray<NSNumber *> *)pids cwd:(NSString *)cwd home:(NSString *)home env:(NSDictionary *)env {
@@ -163,12 +225,15 @@ static BOOL IsCodexish(pid_t pid) {
 + (NSDictionary *)discoverForPids:(NSArray<NSNumber *> *)pids cwd:(NSString *)cwd home:(NSString *)home env:(NSDictionary *)env
                        excludeIDs:(NSSet<NSString *> *)exclude {
     if (!pids.count || !home.length) return nil;
-    for (NSString *dir in [self claudeConfigDirsForHome:home env:env]) {
-        for (NSNumber *pid in pids) {
-            NSString *file = [dir stringByAppendingFormat:@"/sessions/%d.json", pid.intValue];
-            NSString *identifier = [self claudeSessionIDFromFile:file cwd:cwd];
-            if (identifier) return [self resultForKind:@"claude" sessionID:identifier configDir:dir pids:pids home:home env:env];
-        }
+    for (NSNumber *pid in pids) {
+        // Only the verified agent's own env decides where its session file lives: CLAUDE_CONFIG_DIR if set, else ~/.claude.
+        // No scan of ~/.claude-*, so a planted sessions/<pid>.json in another dir is never read.
+        NSDictionary *args = [self processArgsForPid:pid.intValue];
+        if (!VerifiedAgentPid(pid.intValue, @"claude", args, home)) continue;
+        NSString *dir = ClaudeDirForAgentEnv(args, home);
+        NSString *file = [dir stringByAppendingFormat:@"/sessions/%d.json", pid.intValue];
+        NSString *identifier = [self claudeSessionIDFromFile:file cwd:cwd];
+        if (identifier) return [self resultForKind:@"claude" sessionID:identifier configDir:dir agentPid:pid.intValue home:home];
     }
     NSString *root = [self codexSessionsRootForHome:home env:env];
     NSArray<NSString *> *prefixes = @[[root stringByAppendingString:@"/"], [RealPath(root) stringByAppendingString:@"/"]];
@@ -178,19 +243,20 @@ static BOOL IsCodexish(pid_t pid) {
             for (NSString *prefix in prefixes) if ([path hasPrefix:prefix]) inside = YES;
             if (!inside) continue;
             NSString *identifier = [self codexSessionIDFromRolloutPath:path];
-            if (identifier) return [self resultForKind:@"codex" sessionID:identifier configDir:nil pids:pids home:home env:env];
+            if (identifier) return [self resultForKind:@"codex" sessionID:identifier configDir:nil agentPid:pid.intValue home:home];
         }
     }
     NSMutableSet<NSString *> *roots = [NSMutableSet set];
     NSMutableArray<NSString *> *rootList = [NSMutableArray array];
     NSTimeInterval earliest = 0;
     BOOL any = NO;
+    pid_t agentPid = 0;
     for (NSNumber *pid in pids) {
-        if (!IsCodexish(pid.intValue)) continue;
+        if (!VerifiedAgentPid(pid.intValue, @"codex", [self processArgsForPid:pid.intValue], home)) continue;
         struct proc_bsdinfo info;
         if (proc_pidinfo(pid.intValue, PROC_PIDTBSDINFO, 0, &info, sizeof(info)) != (int)sizeof(info)) continue;
         NSTimeInterval start = (NSTimeInterval)info.pbi_start_tvsec + info.pbi_start_tvusec / 1e6;
-        if (!any || start < earliest) earliest = start;
+        if (!any || start < earliest) { earliest = start; agentPid = pid.intValue; }
         any = YES;
     }
     if (!any) return nil;
@@ -203,7 +269,7 @@ static BOOL IsCodexish(pid_t pid) {
         [rootList addObject:dir];
     }
     NSString *identifier = [self codexFallbackSessionIDInRoots:rootList cwd:cwd processStart:earliest excludeIDs:exclude];
-    return identifier ? [self resultForKind:@"codex" sessionID:identifier configDir:nil pids:pids home:home env:env] : nil;
+    return identifier ? [self resultForKind:@"codex" sessionID:identifier configDir:nil agentPid:agentPid home:home] : nil;
 }
 
 + (NSDictionary *)resolveResumeForPids:(NSArray<NSNumber *> *)pids cwd:(NSString *)cwd command:(NSString *)command
@@ -237,21 +303,21 @@ static BOOL IsCodexish(pid_t pid) {
 }
 
 + (NSDictionary *)resultForKind:(NSString *)kind sessionID:(NSString *)identifier configDir:(NSString *)dir
-                           pids:(NSArray<NSNumber *> *)pids home:(NSString *)home env:(NSDictionary *)env {
+                       agentPid:(pid_t)agentPid home:(NSString *)home {
     NSMutableDictionary *result = [@{@"kind": kind, @"sessionID": identifier} mutableCopy];
-    NSString *safeDir = MicaSanitizedConfigDir(dir, home);
+    NSString *safeDir = [kind isEqualToString:@"claude"] && agentPid > 0 ? SafeConfigDir(dir, home, identifier, agentPid) : nil;
     if (safeDir) result[@"configDir"] = safeDir;
-    NSArray *flags = [self flagsFromPids:pids kind:kind];
+    NSArray *flags = [self flagsFromAgentPid:agentPid kind:kind home:home];
     if (flags.count) result[@"flags"] = flags;
     return result;
 }
 
-+ (NSArray<NSString *> *)flagsFromPids:(NSArray<NSNumber *> *)pids kind:(NSString *)kind {
-    for (NSNumber *pid in pids) {
-        NSArray *flags = [self agentFlagsForKind:kind tokens:[self processArgsForPid:pid.intValue][@"argv"]];
-        if (flags.count) return flags;
-    }
-    return @[];
+// Flags come only from the single matched agent pid, and only if its executable verifies.
++ (NSArray<NSString *> *)flagsFromAgentPid:(pid_t)pid kind:(NSString *)kind home:(NSString *)home {
+    if (pid <= 0) return @[];
+    NSDictionary *args = [self processArgsForPid:pid];
+    if (!VerifiedAgentPid(pid, kind, args, home)) return @[];
+    return [self agentFlagsForKind:kind tokens:args[@"argv"]];
 }
 
 + (NSDictionary *)parseProcArgs:(NSData *)data {
@@ -341,21 +407,39 @@ static BOOL IsCodexish(pid_t pid) {
 + (NSDictionary *)launchInfoForKind:(NSString *)kind sessionID:(NSString *)sessionID pids:(NSArray<NSNumber *> *)pids
                            command:(NSString *)command home:(NSString *)home env:(NSDictionary *)env {
     NSMutableDictionary *info = [[self launchInfoFromCommand:command kind:kind home:home] mutableCopy];
+    if (!ValidID(kind, sessionID)) return info;
+    BOOL claude = [kind isEqualToString:@"claude"];
+    // Identify the one agent pid for this session: claude = verified exe owning sessions/<pid>.json with this id;
+    // codex = verified exe holding this session's rollout open.
+    pid_t agentPid = 0;
+    NSString *agentDir = nil;
+    NSString *codexRoot = claude ? nil : [self codexSessionsRootForHome:home env:env];
+    for (NSNumber *num in pids) {
+        pid_t pid = num.intValue;
+        NSDictionary *args = [self processArgsForPid:pid];
+        if (!VerifiedAgentPid(pid, kind, args, home)) continue;
+        if (claude) {
+            NSString *dir = ClaudeDirForAgentEnv(args, home);
+            NSString *file = [dir stringByAppendingFormat:@"/sessions/%d.json", (int)pid];
+            if ([[self claudeSessionIDFromFile:file cwd:nil] isEqualToString:sessionID]) { agentPid = pid; agentDir = dir; }
+        } else {
+            for (NSString *path in OpenVnodePaths(pid)) {
+                if (([path hasPrefix:[codexRoot stringByAppendingString:@"/"]] || [path hasPrefix:[RealPath(codexRoot) stringByAppendingString:@"/"]]) &&
+                    [[self codexSessionIDFromRolloutPath:path] isEqualToString:sessionID]) { agentPid = pid; break; }
+            }
+        }
+        if (agentPid) break;
+    }
     if (!info[@"flags"]) {
-        NSArray *flags = [self flagsFromPids:pids kind:kind];
+        NSArray *flags = [self flagsFromAgentPid:agentPid kind:kind home:home];
         if (flags.count) info[@"flags"] = flags;
     }
-    if ([kind isEqualToString:@"claude"] && !info[@"configDir"]) {
-        for (NSNumber *pid in pids) {
-            NSDictionary *args = [self processArgsForPid:pid.intValue];
-            NSString *argvText = [args[@"argv"] componentsJoinedByString:@" "].lowercaseString;
-            NSString *dir = MicaSanitizedConfigDir(args[@"env"][@"CLAUDE_CONFIG_DIR"], home);
-            if (dir && [argvText containsString:@"claude"]) { info[@"configDir"] = dir; break; }
-        }
-        if (!info[@"configDir"]) {
-            NSString *dir = MicaSanitizedConfigDir([self claudeConfigDirForSessionID:sessionID home:home env:env], home);
-            if (dir) info[@"configDir"] = dir;
-        }
+    if (claude && !info[@"configDir"]) {
+        NSString *dir = agentDir ? SafeConfigDir(agentDir, home, sessionID, agentPid) : nil;
+        // Fallback: only Mica's own CLAUDE_CONFIG_DIR (trusted), never a dir discovered through scanning or children.
+        id own = env[@"CLAUDE_CONFIG_DIR"];
+        if (!dir && !agentPid && [own isKindOfClass:NSString.class]) dir = SafeConfigDir(own, home, sessionID, 0);
+        if (dir) info[@"configDir"] = dir;
     }
     return info;
 }
