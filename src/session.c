@@ -1239,6 +1239,18 @@ size_t mica_session_descendant_commands(const MicaSession *session, char *out, s
     return used;
 }
 
+size_t mica_session_descendant_pids(const MicaSession *session, int *out, size_t capacity) {
+    if (!out || !capacity || !session || session->child_pid <= 0) return 0;
+    MicaProcessIdentity *tree = NULL;
+    size_t count = snapshot_process_tree(session->child_pid, &tree), used = 0;
+    for (size_t i = 0; i < count && used < capacity; i++) {
+        if (tree[i].pid == session->child_pid) continue;
+        out[used++] = (int)tree[i].pid;
+    }
+    free(tree);
+    return used;
+}
+
 uint64_t mica_session_tree_rss(const MicaSession *session) {
     if (!session || session->child_pid <= 0) return 0;
     MicaProcessIdentity *tree = NULL;

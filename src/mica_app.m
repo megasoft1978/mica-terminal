@@ -11,6 +11,7 @@
 #import "mica_agent_state.h"
 #import "mica_attention.h"
 #import "mica_resume.h"
+#import "mica_agent_discover.h"
 #import "mica_agent_rss.h"
 #import "mica_status_context.h"
 #import "mica_ssh_profile.h"
@@ -260,8 +261,35 @@ static NSColor *MicaSecondaryLabelColor(CGFloat alpha) {
         ? MicaColor(gMicaLightTheme ? 0x595959 : 0xbdbdbd) : [NSColor.secondaryLabelColor colorWithAlphaComponent:alpha];
 }
 
+// Settings keeps a fixed window background, so refresh it whenever its appearance changes.
+static void MicaSyncSettingsBackground(NSWindow *window) {
+    if (!window) return;
+    NSAppearance *appearance = window.appearance ?: NSApp.effectiveAppearance;
+    // Resolve the dynamic color while the window's appearance is current; CGColor taken
+    // outside the block resolves against the system appearance (white controls on white).
+    __block NSColor *background;
+    __block CGColorRef layerColor = NULL;
+    [appearance performAsCurrentDrawingAppearance:^{
+        background = NSColor.windowBackgroundColor;
+        layerColor = CGColorRetain(background.CGColor);
+    }];
+    window.backgroundColor = background;
+    window.contentView.wantsLayer = YES;
+    window.contentView.layer.backgroundColor = layerColor;
+    CGColorRelease(layerColor);
+}
+
 static NSFont *MicaTerminalFont(CGFloat size) {
     NSFont *font = [NSFont fontWithName:@"JetBrainsMono-Regular" size:size];
+    // Private-use brand icons (U+E900 Claude, U+E901 OpenAI) used by status lines; macOS does not
+    // fall back to them on its own.
+    NSFont *icons = [NSFont fontWithName:@"AgentIcons" size:size];
+    if (font && icons) {
+        NSFontDescriptor *desc = [font.fontDescriptor fontDescriptorByAddingAttributes:@{
+            NSFontCascadeListAttribute: @[icons.fontDescriptor] }];
+        NSFont *cascaded = [NSFont fontWithDescriptor:desc size:size];
+        if (cascaded) return cascaded;
+    }
     return font ?: [NSFont monospacedSystemFontOfSize:size weight:NSFontWeightRegular];
 }
 
@@ -300,6 +328,11 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 @property(nonatomic, copy) NSString *agentState;
 @property(nonatomic, copy) NSString *agentStateSource;
 @property(nonatomic, copy) NSString *agentSessionID;
+@property(nonatomic, copy) NSString *agentConfigDir;
+@property(nonatomic, copy) NSArray<NSString *> *agentFlags;
+@property(nonatomic, assign) BOOL agentSessionFromHook;
+@property(nonatomic, copy) NSString *agentLaunchResolvedID;
+@property(nonatomic, assign) NSTimeInterval agentDiscoverAt;
 @property(nonatomic, copy) NSString *agentLastMessage;
 @property(nonatomic, copy) NSDate *agentUpdatedAt;
 @property(nonatomic, copy) NSDictionary *lastHookEvent;
@@ -327,6 +360,7 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 @property(nonatomic, assign) BOOL syncHeld;
 @property(nonatomic, assign) BOOL needsAttention;
 @property(nonatomic, assign) BOOL muteNotifications;
+@property(nonatomic, copy) NSString *customName;
 @property(nonatomic, assign) uint64_t commandCompletionCount;
 @property(nonatomic, assign) BOOL tracksCompletion;
 @property(nonatomic, assign) BOOL completedCommand;
@@ -335,9 +369,26 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 @property(nonatomic, copy) NSString *completionLabel;
 @property(nonatomic, assign) NSTimeInterval lastOutputReadAt;
 @property(nonatomic, assign) NSTimeInterval lastActivityScanAt;
+// Lazygit companion: a second session in the same folder that can take over the tab's view.
+@property(nonatomic, strong) MicaTab *companion;
+@property(nonatomic, assign) BOOL isCompanion;
+@property(nonatomic, assign) BOOL showingCompanion;
+@property(nonatomic, copy) NSString *companionRoot;
+@property(nonatomic, assign) NSTimeInterval companionHiddenAt;
 @end
+
+// Shown in the sidebar: a name the user set, else "folder · branch".
+// tab.name stays the layout name because agent detection and saved layouts depend on it.
+static NSString *MicaTabDisplayName(MicaTab *tab) {
+    if (tab.customName.length) return tab.customName;
+    NSString *folder = tab.cwd.lastPathComponent;
+    if (!folder.length) return tab.name.length ? tab.name : @"Terminal";
+    return tab.gitBranch.length ? [NSString stringWithFormat:@"%@ · %@", folder, tab.gitBranch] : folder;
+}
+
 @implementation MicaTab
 - (void)destroySession {
+    if (_companion) { [_companion destroySession]; _companion = nil; _showingCompanion = NO; }
     if (_ioSource) { dispatch_source_cancel(_ioSource); _ioSource = nil; }
     if (!_session) return;
     mica_session_destroy(_session);
@@ -620,6 +671,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, strong) NSImage *baseApplicationIcon;
 @property(nonatomic, copy) NSString *projectLayoutPath;
 @property(nonatomic) BOOL explicitLayoutLaunch;
+@property(nonatomic) BOOL sessionSavePending;
 @property(nonatomic, copy) NSArray<NSDictionary *> *savedTabsForWindow;
 @property(nonatomic, strong) id projectSettingsController;
 @property(nonatomic, strong) id sshProfilesController;
@@ -708,6 +760,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)newWorktreeTab:(id)sender;
 - (void)toggleMuteNotificationsForTab:(id)sender;
 - (NSMenu *)notificationMenuForTab:(MicaTab *)tab;
+- (void)renameTab:(MicaTab *)tab;
 - (NSString *)agentNotificationTitleForTab:(MicaTab *)tab waiting:(BOOL)waiting;
 - (void)startWindowWithArguments:(NSArray<NSString *> *)arguments;
 - (void)openProjectWindowWithArguments:(NSArray<NSString *> *)arguments;
@@ -740,6 +793,14 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)loadStoredThemePreference;
 - (NSURL *)sessionStateURL;
 - (void)saveSessionState;
+- (void)scheduleSessionStateSave;
+- (MicaTab *)selectedTab;
+- (BOOL)canToggleLazygitForTab:(MicaTab *)tab;
+- (void)toggleLazygit:(id)sender;
+- (void)toggleLazygitForTab:(MicaTab *)tab;
+- (void)killCompanionForTab:(MicaTab *)tab;
+- (void)pollCompanionForTab:(MicaTab *)tab;
+- (void)resolveAgentResumeForTab:(MicaTab *)tab;
 - (NSArray<NSDictionary *> *)readSessionState;
 - (void)startPushToTalk;
 - (void)finishPushToTalk;
@@ -804,15 +865,34 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
     if (message.length > 80) message = [[message substringToIndex:79] stringByAppendingString:@"…"];
     return message ?: @"";
 }
+// The small branch glyph that swaps the row's tab to lazygit.
+- (NSRect)gitGlyphRectForRowTop:(CGFloat)y { return NSMakeRect(self.bounds.size.width - 26, y + 33, 14, 12); }
+- (void)drawGitGlyphInRect:(NSRect)rect color:(NSColor *)color {
+    NSBezierPath *path = [NSBezierPath bezierPath];
+    path.lineWidth = 1.2;
+    NSPoint top = NSMakePoint(NSMinX(rect) + 3, NSMinY(rect) + 2), bottom = NSMakePoint(NSMinX(rect) + 3, NSMinY(rect) + 10),
+            side = NSMakePoint(NSMinX(rect) + 10.5, NSMinY(rect) + 4);
+    [path moveToPoint:top]; [path lineToPoint:bottom];
+    [path moveToPoint:side];
+    [path curveToPoint:NSMakePoint(top.x, NSMinY(rect) + 7.5) controlPoint1:NSMakePoint(side.x, NSMinY(rect) + 7.5)
+         controlPoint2:NSMakePoint(top.x + 3, NSMinY(rect) + 7.5)];
+    [color setStroke]; [path stroke];
+    [color setFill];
+    for (NSValue *value in @[[NSValue valueWithPoint:top], [NSValue valueWithPoint:bottom], [NSValue valueWithPoint:side]]) {
+        NSPoint center = value.pointValue;
+        [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(center.x - 1.8, center.y - 1.8, 3.6, 3.6)] fill];
+    }
+}
 - (void)refreshRows {
     NSMutableArray<NSString *> *rows = [NSMutableArray arrayWithCapacity:self.owner.tabs.count];
     for (NSUInteger i = 0; i < self.owner.tabs.count; i++) {
         MicaTab *tab = self.owner.tabs[i];
-        [rows addObject:[NSString stringWithFormat:@"%llu|%@|%@|%@|%ld|%d|%@|%@|%llu",
-            (unsigned long long)tab.identifier, tab.name ?: @"Terminal",
+        [rows addObject:[NSString stringWithFormat:@"%llu|%@|%@|%@|%ld|%d|%@|%@|%llu|%d%d",
+            (unsigned long long)tab.identifier, MicaTabDisplayName(tab),
             tab.cwd.lastPathComponent ?: @"/", tab.gitBranch ?: @"",
             (long)[self.owner.terminalView activityStateForTab:tab], tab.needsAttention,
-            MicaAgentStateForTab(tab), tab.agentLastMessage ?: @"", (unsigned long long)tab.agentRSSBytes]];
+            MicaAgentStateForTab(tab), tab.agentLastMessage ?: @"", (unsigned long long)tab.agentRSSBytes,
+            tab.showingCompanion, [self.owner canToggleLazygitForTab:tab]]];
     }
     NSString *signature = [NSString stringWithFormat:@"%ld:%@", (long)self.owner.activeIndex,
         [rows componentsJoinedByString:@"\n"]];
@@ -826,25 +906,22 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
     NSDictionary *titleAttrs = @{NSFontAttributeName:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold], NSForegroundColorAttributeName:NSColor.secondaryLabelColor};
     [@"TABS" drawAtPoint:NSMakePoint(14, 14) withAttributes:titleAttrs];
     CGFloat y = 42;
-    for (NSUInteger i = 0; i < self.owner.tabs.count; i++, y += 70) {
+    for (NSUInteger i = 0; i < self.owner.tabs.count; i++, y += 55) {
         MicaTab *tab = self.owner.tabs[i];
-        NSRect row = NSMakeRect(6, y - 5, self.bounds.size.width - 12, 65);
+        NSRect row = NSMakeRect(6, y - 5, self.bounds.size.width - 12, 50);
         BOOL selected = (NSInteger)i == self.owner.activeIndex;
         if (selected) { [NSColor.selectedContentBackgroundColor setFill]; [[NSBezierPath bezierPathWithRoundedRect:row xRadius:6 yRadius:6] fill]; }
         NSColor *fg = selected ? NSColor.selectedMenuItemTextColor : NSColor.labelColor;
         NSDictionary *nameAttrs = @{NSFontAttributeName:[NSFont systemFontOfSize:13 weight:NSFontWeightMedium], NSForegroundColorAttributeName:fg};
         NSDictionary *detailAttrs = @{NSFontAttributeName:[NSFont systemFontOfSize:10], NSForegroundColorAttributeName:selected ? fg : NSColor.secondaryLabelColor};
-        NSString *name = tab.name.length ? tab.name : @"Terminal";
+        NSString *name = MicaTabDisplayName(tab);
         [name drawInRect:NSMakeRect(14, y, self.bounds.size.width - 42, 17) withAttributes:nameAttrs];
-        NSString *folder = tab.cwd.lastPathComponent.length ? tab.cwd.lastPathComponent : @"/";
-        NSString *branch = tab.gitBranch.length ? [NSString stringWithFormat:@" · %@", tab.gitBranch] : @"";
-        [([folder stringByAppendingString:branch]) drawInRect:NSMakeRect(14, y + 20, self.bounds.size.width - 25, 15) withAttributes:detailAttrs];
         MicaTabActivityState state = [self.owner.terminalView activityStateForTab:tab];
         NSString *stateText = [self stateTextForTab:tab];
         NSColor *stateColor = state == MicaTabActivityStateWaiting ? NSColor.systemOrangeColor :
             state == MicaTabActivityStateNeedsAttention ? NSColor.systemRedColor : NSColor.secondaryLabelColor;
         CGFloat stateWidth = tab.agentRSSBytes ? self.bounds.size.width - 82 : self.bounds.size.width - 28;
-        [stateText drawInRect:NSMakeRect(14, y + 36, stateWidth, 13)
+        [stateText drawInRect:NSMakeRect(14, y + 20, stateWidth, 13)
             withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:9], NSForegroundColorAttributeName:selected ? fg : stateColor}];
         NSString *symbol = [stateText isEqualToString:@"Needs permission"] ? @"!" :
             [stateText isEqualToString:@"Needs input"] ? @"?" :
@@ -852,13 +929,22 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
             [stateText isEqualToString:@"Done"] || [stateText isEqualToString:@"Finished"] ? @"✓" :
             [stateText isEqualToString:@"Error"] ? @"×" : @"";
         if (symbol.length) [symbol drawAtPoint:NSMakePoint(self.bounds.size.width - 25, y + 1) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:12 weight:NSFontWeightBold], NSForegroundColorAttributeName:state == MicaTabActivityStateWaiting ? NSColor.systemOrangeColor : fg}];
-        if (tab.needsAttention) [@"•" drawAtPoint:NSMakePoint(self.bounds.size.width - 23, y + 20) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:14 weight:NSFontWeightBold], NSForegroundColorAttributeName:NSColor.systemRedColor}];
+        if (tab.needsAttention) [@"•" drawAtPoint:NSMakePoint(self.bounds.size.width - 37, y + 1) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:14 weight:NSFontWeightBold], NSForegroundColorAttributeName:NSColor.systemRedColor}];
         NSString *preview = [self previewForTab:tab];
-        if (preview.length) [preview drawInRect:NSMakeRect(14, y + 51, self.bounds.size.width - 28, 12)
+        NSRect glyph = [self gitGlyphRectForRowTop:y];
+        BOOL lazygitOn = tab.showingCompanion, lazygitAvailable = [self.owner canToggleLazygitForTab:tab];
+        if (lazygitOn) {
+            [[NSColor.systemGreenColor colorWithAlphaComponent:0.85] setFill];
+            [[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(glyph, -2, -1) xRadius:3 yRadius:3] fill];
+        }
+        NSColor *glyphBase = selected ? fg : NSColor.secondaryLabelColor;
+        [self drawGitGlyphInRect:glyph color:lazygitOn ? NSColor.whiteColor
+            : [glyphBase colorWithAlphaComponent:lazygitAvailable ? 0.75 : 0.28]];
+        if (preview.length) [preview drawInRect:NSMakeRect(14, y + 34, self.bounds.size.width - 46, 12)
             withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:9], NSForegroundColorAttributeName:NSColor.secondaryLabelColor}];
         if (tab.agentRSSBytes) {
             NSString *rss = [NSString stringWithFormat:@"%.1f GB", (double)tab.agentRSSBytes / (1024.0 * 1024.0 * 1024.0)];
-            [rss drawInRect:NSMakeRect(self.bounds.size.width - 58, y + 36, 48, 13)
+            [rss drawInRect:NSMakeRect(self.bounds.size.width - 58, y + 20, 48, 13)
                 withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:9], NSForegroundColorAttributeName:selected ? fg : NSColor.secondaryLabelColor}];
         }
     }
@@ -866,8 +952,27 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)mouseDown:(NSEvent *)event {
     [self.window makeFirstResponder:self];
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
-    NSInteger index = (NSInteger)floor((point.y - 42) / 70.0);
-    if (index >= 0 && index < (NSInteger)self.owner.tabs.count) [self.owner selectTabAtIndex:index];
+    NSInteger index = (NSInteger)floor((point.y - 42) / 55.0);
+    if (index >= 0 && index < (NSInteger)self.owner.tabs.count) {
+        MicaTab *clicked = self.owner.tabs[(NSUInteger)index];
+        NSRect glyph = NSInsetRect([self gitGlyphRectForRowTop:42 + index * 55.0], -4, -4);
+        if (NSPointInRect(point, glyph)) {
+            if ([self.owner canToggleLazygitForTab:clicked]) {
+                [self.owner selectTabAtIndex:index];
+                [self.owner toggleLazygitForTab:clicked];
+            }
+            return;
+        }
+        [self.owner selectTabAtIndex:index];
+        if (event.clickCount == 2) [self.owner renameTab:self.owner.tabs[(NSUInteger)index]];
+    }
+}
+- (void)rightMouseDown:(NSEvent *)event {
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    NSInteger index = (NSInteger)floor((point.y - 42) / 55.0);
+    if (index < 0 || index >= (NSInteger)self.owner.tabs.count) { [super rightMouseDown:event]; return; }
+    [self.owner selectTabAtIndex:index];
+    [NSMenu popUpContextMenu:[self.owner notificationMenuForTab:self.owner.tabs[(NSUInteger)index]] withEvent:event forView:self];
 }
 - (BOOL)acceptsFirstResponder { return YES; }
 - (void)keyDown:(NSEvent *)event {
@@ -884,8 +989,8 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
         NSString *state = [self stateTextForTab:tab];
         NSString *preview = [self previewForTab:tab];
         NSString *rss = tab.agentRSSBytes ? [NSString stringWithFormat:@", %.1f GB memory", (double)tab.agentRSSBytes / (1024.0 * 1024.0 * 1024.0)] : @"";
-        NSString *label = [NSString stringWithFormat:@"%@%@, folder %@, branch %@, %@%@%@%@", tab.name ?: @"Terminal", (NSInteger)i == self.owner.activeIndex ? @", selected" : @"", tab.cwd.lastPathComponent ?: @"/", tab.gitBranch ?: @"no branch", state, tab.needsAttention ? @", unread attention" : @"", rss, preview.length ? [@", message " stringByAppendingString:preview] : @""];
-        MicaTabAccessibilityElement *element = [MicaTabAccessibilityElement accessibilityElementWithRole:NSAccessibilityButtonRole frame:[self.window convertRectToScreen:[self convertRect:NSMakeRect(6, 37 + i * 70, self.bounds.size.width - 12, 65) toView:nil]] label:label parent:self];
+        NSString *label = [NSString stringWithFormat:@"%@%@, folder %@, branch %@, %@%@%@%@", MicaTabDisplayName(tab), (NSInteger)i == self.owner.activeIndex ? @", selected" : @"", tab.cwd.lastPathComponent ?: @"/", tab.gitBranch ?: @"no branch", state, tab.needsAttention ? @", unread attention" : @"", rss, preview.length ? [@", message " stringByAppendingString:preview] : @""];
+        MicaTabAccessibilityElement *element = [MicaTabAccessibilityElement accessibilityElementWithRole:NSAccessibilityButtonRole frame:[self.window convertRectToScreen:[self convertRect:NSMakeRect(6, 37 + i * 55, self.bounds.size.width - 12, 50) toView:nil]] label:label parent:self];
         uint64_t tabID = tab.identifier;
         __weak typeof(self) weakSelf = self; element.pressHandler = ^BOOL {
             for (NSUInteger index = 0; index < weakSelf.owner.tabs.count; index++)
@@ -1793,7 +1898,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
 }
 
 - (NSString *)labelForTab:(MicaTab *)tab {
-    return tab.name.length ? tab.name : @"Terminal";
+    return tab.customName.length ? tab.customName : tab.name.length ? tab.name : @"Terminal";
 }
 
 - (NSString *)agentStatusForTab:(MicaTab *)tab {
@@ -4074,7 +4179,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *MicaNormalizedSSHProfile
 }
 
 - (NSString *)windowTitleForTab:(MicaTab *)tab {
-    NSString *tabName = tab.name.length ? tab.name : @"Terminal";
+    NSString *tabName = tab.customName.length ? tab.customName : tab.name.length ? tab.name : @"Terminal";
     NSString *projectName = [self projectDisplayNameForTab:tab];
     if (projectName.length) return [NSString stringWithFormat:@"%@ — %@", projectName, tabName];
     return @"Mica Terminal";
@@ -4565,7 +4670,39 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
     mute.representedObject = @(tab.identifier);
     mute.state = tab.muteNotifications ? NSControlStateValueOn : NSControlStateValueOff;
     [menu addItem:mute];
+    NSMenuItem *rename = [[NSMenuItem alloc] initWithTitle:@"Rename Tab…" action:@selector(renameTabFromMenu:) keyEquivalent:@""];
+    rename.target = self;
+    rename.representedObject = @(tab.identifier);
+    [menu addItem:rename];
     return menu;
+}
+
+- (void)renameTabFromMenu:(NSMenuItem *)sender {
+    for (MicaTab *tab in self.tabs)
+        if ([sender.representedObject isKindOfClass:NSNumber.class] &&
+            tab.identifier == [sender.representedObject unsignedLongLongValue]) { [self renameTab:tab]; return; }
+}
+
+// An empty name goes back to the automatic "folder · branch" name.
+- (void)renameTab:(MicaTab *)tab {
+    if (![tab isKindOfClass:MicaTab.class]) return;
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = @"Rename Tab";
+    alert.informativeText = @"Leave empty to use the folder and branch name.";
+    [alert addButtonWithTitle:@"Rename"];
+    [alert addButtonWithTitle:@"Cancel"];
+    NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
+    field.stringValue = tab.customName ?: @"";
+    field.placeholderString = MicaTabDisplayName(tab);
+    alert.accessoryView = field;
+    alert.window.initialFirstResponder = field;
+    if ([alert runModal] != NSAlertFirstButtonReturn) return;
+    NSString *name = [field.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (name.length > 64) name = [name substringToIndex:64];
+    tab.customName = name.length ? name : nil;
+    [self updateWindowTitle];
+    [self.windowContentView.sidebarView refreshRows];
+    [self saveSessionState];
 }
 
 - (NSString *)agentNotificationTitleForTab:(MicaTab *)tab waiting:(BOOL)waiting {
@@ -4654,9 +4791,16 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionSound);
 }
 
-- (MicaTab *)activeTab {
+// The tab chosen in the sidebar.
+- (MicaTab *)selectedTab {
     if (self.activeIndex < 0 || self.activeIndex >= (NSInteger)self.tabs.count) return nil;
     return self.tabs[(NSUInteger)self.activeIndex];
+}
+
+// The tab whose session the terminal view shows: the lazygit companion while it has taken over the selected tab.
+- (MicaTab *)activeTab {
+    MicaTab *selected = [self selectedTab];
+    return selected.showingCompanion && selected.companion.session ? selected.companion : selected;
 }
 
 - (void)updateWindowTitle {
@@ -5160,11 +5304,17 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     tab.lastHookEvent = @{ @"event":eventName, @"agent":agent, @"session_id":sessionID, @"cwd":cwd,
         @"notification_type":notificationType, @"message":message, @"last_assistant_message":lastMessage, @"tool_name":tool };
     tab.receivedAgentHook = YES;
+    NSString *previousKind = tab.agentKind, *previousSessionID = tab.agentSessionID;
     if (agent.length) tab.agentKind = agent;
     [self refreshProcessAgentForTab:tab];
-    if (sessionID.length) tab.agentSessionID = sessionID;
+    if (sessionID.length) { tab.agentSessionID = sessionID; tab.agentSessionFromHook = YES; }
     NSString *next = MicaAgentStateForHookEvent(eventName, notificationType, MicaAgentStateForTab(tab));
-    if ([eventName isEqualToString:@"SessionEnd"]) { tab.agentKind = @"none"; tab.agentSessionID = nil; }
+    if ([eventName isEqualToString:@"SessionEnd"]) {
+        tab.agentKind = @"none"; tab.agentSessionID = nil; tab.agentSessionFromHook = NO;
+        tab.agentConfigDir = nil; tab.agentFlags = nil; tab.agentLaunchResolvedID = nil;
+    }
+    if (MicaStringChanged(tab.agentKind, previousKind) || MicaStringChanged(tab.agentSessionID, previousSessionID))
+        [self scheduleSessionStateSave];
     if ([eventName isEqualToString:@"Stop"] || [eventName isEqualToString:@"notify"])
         if (lastMessage.length || message.length) { NSString *value = lastMessage.length ? lastMessage : message; tab.agentLastMessage = value.length > 200 ? [value substringToIndex:200] : value; }
     if (next.length) {
@@ -5414,6 +5564,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     AddMenuItem(sessionMenu, @"New Worktree Tab…", @selector(newWorktreeTab:), @"", 0).target = self;
     AddMenuItem(sessionMenu, @"SSH Connections…", @selector(openSSHProfiles:), @"", 0).target = self;
     AddMenuItem(sessionMenu, @"Choose Tab…", @selector(toggleTabPicker), @"", 0).target = self;
+    // ⌘⇧G is Find Previous, so the lazygit swap lives on ⌥⌘G.
+    AddMenuItem(sessionMenu, @"Lazygit View", @selector(toggleLazygit:), @"g",
+                NSEventModifierFlagCommand | NSEventModifierFlagOption).target = self;
     AddMenuItem(sessionMenu, @"Jump to Next Waiting Tab", @selector(jumpToNextWaitingTab:), @"j",
                 NSEventModifierFlagCommand | NSEventModifierFlagShift).target = self;
     AddMenuItem(sessionMenu, @"Browse Scrollback", @selector(toggleScrollback), @"s",
@@ -5514,6 +5667,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         @"Drag a tab  Reorder tabs",
         @"⌘+ / ⌘− / ⌘0  Increase / decrease / reset font size",
         @"⌘F / ⌘G / ⇧⌘G  Find in scrollback, next, previous",
+        @"⌥⌘G  Swap the tab to lazygit and back",
         @"⌘N  New window",
         @"⌘K  Clear scrollback",
         @"⌘C  Copy selection; with no selection, send Ctrl-C to the program",
@@ -5643,6 +5797,24 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     [self configurePomodoro];
     NSArray<NSDictionary *> *tabSpecs = configuration[@"tabs"];
     BOOL restoringSession = NO;
+    if (!self.savedTabsForWindow.count && self.explicitLayoutLaunch &&
+        (!getenv("MICA_TEST_NO_STARTUP") || gMicaSessionStateURLOverride)) {
+        // Reopening a layout that has a saved window restores that window's tabs (and resumes its agents).
+        // Only one window per layout: a second open of the same layout starts fresh.
+        NSString *wanted = self.projectLayoutPath.stringByResolvingSymlinksInPath.stringByStandardizingPath;
+        BOOL alreadyOpen = NO;
+        for (MicaAppDelegate *other in MicaControllers())
+            if (other != self && other.projectLayoutPath.length &&
+                [other.projectLayoutPath.stringByResolvingSymlinksInPath.stringByStandardizingPath isEqualToString:wanted]) alreadyOpen = YES;
+        if (!alreadyOpen) {
+            for (NSDictionary *window in [self readSessionState]) {
+                NSString *layout = window[@"layout"];
+                if ([layout isKindOfClass:NSString.class] &&
+                    [layout.stringByResolvingSymlinksInPath.stringByStandardizingPath isEqualToString:wanted] &&
+                    [window[@"tabs"] count]) { self.savedTabsForWindow = window[@"tabs"]; break; }
+            }
+        }
+    }
     if (self.savedTabsForWindow.count) { tabSpecs = self.savedTabsForWindow; restoringSession = YES; }
     else if (!self.explicitLayoutLaunch && (!getenv("MICA_TEST_NO_STARTUP") || gMicaSessionStateURLOverride)) {
         NSArray *saved = [self readSessionState];
@@ -5662,13 +5834,18 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
                 [self openSSHProfile:profile];
                 if (self.tabs.count == before + 1 && [spec[@"muteNotifications"] isKindOfClass:NSNumber.class])
                     self.activeTab.muteNotifications = [spec[@"muteNotifications"] boolValue];
+                if (self.tabs.count == before + 1 && [spec[@"customName"] isKindOfClass:NSString.class])
+                    self.activeTab.customName = spec[@"customName"];
             } else {
                 MicaDiagnosticsLog(@"ssh", @"saved SSH profile is missing; skipping restored connection");
             }
             continue;
         }
         NSString *command = [spec[@"command"] length] ? spec[@"command"] : nil;
-        NSString *resumeCommand = restoringSession ? MicaResumeCommand(spec[@"agentKind"], spec[@"agentSessionID"]) : nil;
+        NSString *resumeCommand = restoringSession
+            ? MicaResumeCommandWithLaunch(spec[@"agentKind"], spec[@"agentSessionID"], spec[@"agentConfigDir"],
+                spec[@"agentFlags"], NSHomeDirectory())
+            : nil;
         BOOL resumeEnabled = [[self micaDefaults] boolForKey:@"MicaResumeAgentsOnRestore"];
         if (resumeCommand) command = resumeCommand;
         // Older layouts used a built-in Git view. Keep them useful by turning
@@ -5682,6 +5859,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
                    prefilled:resumeCommand ? !resumeEnabled : ([spec[@"prefilled"] boolValue] || (restoringSession && command.length > 0))];
         if (self.tabs.count && [spec[@"muteNotifications"] isKindOfClass:NSNumber.class])
             self.tabs.lastObject.muteNotifications = [spec[@"muteNotifications"] boolValue];
+        if (self.tabs.count && [spec[@"customName"] isKindOfClass:NSString.class])
+            self.tabs.lastObject.customName = spec[@"customName"];
     }
     if (self.tabs.count == 0) {
         NSString *cwd = configuration[@"cwd"] ?: NSFileManager.defaultManager.currentDirectoryPath;
@@ -5697,6 +5876,11 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
+    if (item.action == @selector(toggleLazygit:)) {
+        MicaTab *selected = [self selectedTab];
+        item.state = selected.showingCompanion ? NSControlStateValueOn : NSControlStateValueOff;
+        return [self canToggleLazygitForTab:selected];
+    }
     if (item.action == @selector(openRecentProject:)) {
         id path = item.representedObject;
         return [path isKindOfClass:NSString.class] &&
@@ -5768,6 +5952,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
                 (tab[@"muteNotifications"] &&
                     (![tab[@"muteNotifications"] isKindOfClass:NSNumber.class] ||
                      CFGetTypeID((__bridge CFTypeRef)tab[@"muteNotifications"]) != CFBooleanGetTypeID())) ||
+                (tab[@"customName"] && (![tab[@"customName"] isKindOfClass:NSString.class] ||
+                    [tab[@"customName"] length] > 64 ||
+                    [tab[@"customName"] rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound)) ||
                 (tab[@"command"] && (![tab[@"command"] isKindOfClass:NSString.class] ||
                     [tab[@"command"] length] > 4096))) continue;
             NSString *name = tab[@"name"], *cwd = tab[@"cwd"];
@@ -5793,9 +5980,16 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
                 NSString *resumeCommand = MicaResumeCommand(tab[@"agentKind"], tab[@"agentSessionID"]);
                 [cleanTab removeObjectForKey:@"agentKind"];
                 [cleanTab removeObjectForKey:@"agentSessionID"];
+                [cleanTab removeObjectForKey:@"agentConfigDir"];
+                [cleanTab removeObjectForKey:@"agentFlags"];
                 if (resumeCommand) {
                     cleanTab[@"agentKind"] = tab[@"agentKind"];
                     cleanTab[@"agentSessionID"] = tab[@"agentSessionID"];
+                    NSString *configDir = [tab[@"agentKind"] isEqual:@"claude"]
+                        ? MicaSanitizedConfigDir(tab[@"agentConfigDir"], NSHomeDirectory()) : nil;
+                    if (configDir) cleanTab[@"agentConfigDir"] = configDir;
+                    NSArray *flags = MicaSanitizedAgentFlags(tab[@"agentKind"], tab[@"agentFlags"]);
+                    if (flags.count) cleanTab[@"agentFlags"] = flags;
                 }
                 [validTabs addObject:cleanTab];
             }
@@ -5809,12 +6003,57 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     return validWindows;
 }
 
+// Fills in the agent session id (hookless discovery) and how it was launched (config dir, allowlisted flags).
+// A hook-supplied id is never replaced.
+- (void)resolveAgentResumeForTab:(MicaTab *)tab {
+    if (!tab.session || tab.remoteProfile) return;
+    BOOL hooked = tab.agentSessionFromHook && tab.agentSessionID.length;
+    if (hooked && [tab.agentLaunchResolvedID isEqualToString:tab.agentSessionID]) return;
+    NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
+    if (now - tab.agentDiscoverAt < 3.0) return;
+    tab.agentDiscoverAt = now;
+    int pids[64];
+    size_t count = mica_session_descendant_pids(tab.session, pids, 64);
+    NSMutableArray<NSNumber *> *list = [NSMutableArray arrayWithCapacity:count];
+    for (size_t i = 0; i < count; i++) [list addObject:@(pids[i])];
+    NSMutableSet<NSString *> *taken = [NSMutableSet set];
+    for (MicaAppDelegate *controller in MicaControllers())
+        for (MicaTab *other in controller.tabs)
+            if (other != tab && other.agentSessionID.length) [taken addObject:other.agentSessionID];
+    NSString *home = NSHomeDirectory();
+    NSDictionary *result = [MicaAgentDiscover resolveResumeForPids:list cwd:tab.cwd ?: home command:tab.command home:home
+        env:NSProcessInfo.processInfo.environment currentKind:tab.agentKind currentID:tab.agentSessionID
+        fromHook:hooked resolvedID:tab.agentLaunchResolvedID excludeIDs:taken];
+    NSString *action = result[@"action"];
+    if ([action isEqualToString:@"clear"]) {
+        tab.agentKind = nil; tab.agentSessionID = nil; tab.agentConfigDir = nil;
+        tab.agentFlags = nil; tab.agentLaunchResolvedID = nil;
+    } else if ([action isEqualToString:@"set"]) {
+        tab.agentKind = result[@"kind"]; tab.agentSessionID = result[@"sessionID"];
+        tab.agentConfigDir = result[@"configDir"]; tab.agentFlags = result[@"flags"];
+        if ([result[@"launchResolved"] boolValue]) tab.agentLaunchResolvedID = result[@"sessionID"];
+    }
+}
+
+- (void)scheduleSessionStateSave {
+    if (self.sessionSavePending) return;
+    self.sessionSavePending = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        MicaAppDelegate *strongSelf = weakSelf;
+        if (!strongSelf || !strongSelf.sessionSavePending) return;
+        strongSelf.sessionSavePending = NO;
+        [strongSelf saveSessionState];
+    });
+}
+
 - (void)saveSessionState {
     if (getenv("MICA_TEST_NO_STARTUP") && !gMicaSessionStateURLOverride) return;
     NSMutableArray *windows = [NSMutableArray array];
     for (MicaAppDelegate *controller in MicaControllers()) {
         NSMutableArray *tabs = [NSMutableArray array];
         for (MicaTab *tab in controller.tabs) {
+            [controller resolveAgentResumeForTab:tab];
             NSString *name = tab.name.length && tab.name.length <= 64 &&
                 [tab.name rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location == NSNotFound
                 ? tab.name : @"Terminal";
@@ -5831,6 +6070,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
             }
             NSMutableDictionary *savedTab = [@{@"name":name, @"cwd":cwd,
                 @"muteNotifications":@(tab.muteNotifications)} mutableCopy];
+            if (tab.customName.length) savedTab[@"customName"] = tab.customName;
             if (tab.remoteProfile && [[NSUUID alloc] initWithUUIDString:tab.remoteProfile[@"id"]])
                 savedTab[@"sshProfileID"] = tab.remoteProfile[@"id"];
             else if (tab.command.length && tab.command.length <= 4096)
@@ -5838,6 +6078,10 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
             if (MicaResumeCommand(tab.agentKind, tab.agentSessionID)) {
                 savedTab[@"agentKind"] = tab.agentKind;
                 savedTab[@"agentSessionID"] = tab.agentSessionID;
+                NSString *configDir = [tab.agentKind isEqual:@"claude"] ? MicaSanitizedConfigDir(tab.agentConfigDir, NSHomeDirectory()) : nil;
+                if (configDir) savedTab[@"agentConfigDir"] = configDir;
+                NSArray *flags = MicaSanitizedAgentFlags(tab.agentKind, tab.agentFlags);
+                if (flags.count) savedTab[@"agentFlags"] = flags;
             }
             [tabs addObject:savedTab];
         }
@@ -5860,6 +6104,142 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         options:NSJSONWritingSortedKeys error:nil];
     if (data.length && data.length <= 64 * 1024 && [data writeToURL:url options:NSDataWritingAtomic error:nil])
         chmod(url.fileSystemRepresentation, 0600);
+}
+
+// ---- Lazygit companion -------------------------------------------------------------------------------
+// Each tab can swap its view to a lazygit session in the same folder. The companion is not a tab: it is
+// invisible to agent detection, notifications, remote control and saved sessions, and is killed after
+// sitting hidden for kMicaLazygitIdleSeconds.
+static const NSTimeInterval kMicaLazygitIdleSeconds = 600;
+
+static NSString *MicaLazygitCommand(void) {
+    // Tests substitute a stub; the override is honoured only in the test harness.
+    const char *override = getenv("MICA_TEST_NO_STARTUP") ? getenv("MICA_TEST_LAZYGIT_COMMAND") : NULL;
+    if (override && override[0]) return @(override);
+    return @"command -v lazygit >/dev/null 2>&1 || { echo 'Mica: lazygit is not installed (brew install lazygit)'; sleep 2; exit 1; }; exec lazygit";
+}
+
+- (BOOL)canToggleLazygitForTab:(MicaTab *)tab {
+    if (!tab || tab.isCompanion || !tab.session) return NO;
+    if (tab.showingCompanion) return YES;
+    return !tab.remoteProfile && tab.projectRoot.length > 0;
+}
+
+- (void)killCompanionForTab:(MicaTab *)tab {
+    MicaTab *companion = tab.companion;
+    if (!companion) return;
+    BOOL wasShowing = tab.showingCompanion;
+    tab.showingCompanion = NO;
+    tab.companion = nil;
+    tab.companionRoot = nil;
+    if (self.voiceTargetTab == companion) [self cancelDictation];
+    [companion destroySession];
+    if (wasShowing && tab == [self selectedTab]) {
+        if (tab.session && NSApp.isActive) mica_session_focus(tab.session, true);
+        [self.terminalView clearSelection];
+        [self updateWindowTitle];
+        [self.windowContentView.sidebarView refreshRows];
+        [self resizeActiveSession];
+    }
+}
+
+- (void)installSourceForCompanionOfTab:(MicaTab *)tab {
+    MicaTab *companion = tab.companion;
+    int fd = mica_session_fd(companion.session);
+    if (fd < 0 || companion.ioSource) return;
+    companion.ioSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, (uintptr_t)fd, 0, dispatch_get_main_queue());
+    __weak typeof(self) weakSelf = self;
+    __weak MicaTab *weakTab = tab;
+    dispatch_source_set_event_handler(companion.ioSource, ^{
+        MicaAppDelegate *strongSelf = weakSelf;
+        MicaTab *strongTab = weakTab;
+        if (strongSelf && strongTab.companion) [strongSelf pollCompanionForTab:strongTab];
+    });
+    dispatch_source_set_cancel_handler(companion.ioSource, ^{});
+    dispatch_resume(companion.ioSource);
+}
+
+- (void)toggleLazygit:(id)sender {
+    (void)sender;
+    [self toggleLazygitForTab:[self selectedTab]];
+}
+
+- (void)toggleLazygitForTab:(MicaTab *)tab {
+    if (!tab || tab.isCompanion) return;
+    [self.terminalView.inputContext discardMarkedText];
+    [self.terminalView unmarkText];
+    if (tab.showingCompanion) {
+        tab.showingCompanion = NO;
+        tab.companionHiddenAt = NSProcessInfo.processInfo.systemUptime;
+        if (tab.companion.session && NSApp.isActive) mica_session_focus(tab.companion.session, false);
+    } else {
+        if (![self canToggleLazygitForTab:tab]) return;
+        if (tab.companion && (![tab.companionRoot isEqualToString:tab.projectRoot] ||
+                              !tab.companion.session || !mica_session_is_running(tab.companion.session)))
+            [self killCompanionForTab:tab];
+        if (!tab.companion) {
+            MicaTab *companion = [[MicaTab alloc] init];
+            companion.isCompanion = YES;
+            companion.identifier = gMicaNextTabIdentifier++;
+            companion.name = tab.name;
+            companion.cwd = tab.cwd;
+            companion.command = @"lazygit";
+            companion.gitBranch = tab.gitBranch;
+            companion.projectRoot = tab.projectRoot;
+            companion.session = mica_session_create(tab.cwd.fileSystemRepresentation, MicaLazygitCommand().UTF8String, 24, 80);
+            if (!companion.session) { MicaDiagnosticsLog(@"pty", @"lazygit session start failed"); return; }
+            if (gMicaLightTheme) mica_session_set_light_theme(companion.session, true);
+            companion.revision = UINT64_MAX;
+            tab.companion = companion;
+            tab.companionRoot = tab.projectRoot;
+            [self installSourceForCompanionOfTab:tab];
+        }
+        if (tab.session && NSApp.isActive) mica_session_focus(tab.session, false);
+        tab.showingCompanion = YES;
+        if (tab.companion.session && NSApp.isActive) mica_session_focus(tab.companion.session, true);
+    }
+    [self.terminalView clearSelection];
+    if (self.uiMode != MicaUIModeTab) self.uiMode = MicaUIModeNormal;
+    [self updateWindowTitle];
+    [self.windowContentView.sidebarView refreshRows];
+    [self resizeActiveSession];
+    [self.window makeFirstResponder:self.terminalView];
+}
+
+- (void)pollCompanionForTab:(MicaTab *)tab {
+    MicaTab *companion = tab.companion;
+    if (!companion.session) return;
+    NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
+    BOOL shown = tab.showingCompanion && tab == [self selectedTab];
+    mica_session_poll(companion.session, 0);
+    MicaSessionOutputMetrics metrics = {0};
+    mica_session_take_output_metrics(companion.session, &metrics);
+    char *clipboardText = mica_session_take_clipboard_write(companion.session);
+    if (clipboardText) {
+        if (shown) [self handleClipboardWrite:[NSString stringWithUTF8String:clipboardText] fromTab:companion];
+        free(clipboardText);
+    }
+    free(mica_session_take_notification(companion.session));
+    MicaDirtyRows dirtyRows = {0};
+    BOOL syncHeld = mica_session_sync_output_active(companion.session);
+    BOOL hasDirtyRows = syncHeld ? NO : mica_session_take_dirty_rows(companion.session, &dirtyRows);
+    if (syncHeld) companion.syncHeld = YES;
+    else if (companion.syncHeld) { companion.syncHeld = NO; if (shown) [self.terminalView setNeedsDisplay:YES]; }
+    uint64_t revision = mica_session_revision(companion.session);
+    if (revision != companion.revision) {
+        companion.revision = revision;
+        if (shown && hasDirtyRows) {
+            NSRect dirtyRect = [self.terminalView dirtyRectForRows:dirtyRows];
+            if (!NSIsEmptyRect(dirtyRect)) [self.terminalView setNeedsDisplayInRect:dirtyRect];
+        }
+    }
+    if (!mica_session_is_running(companion.session)) {
+        // lazygit quit: go back to the main session and forget the companion.
+        [self killCompanionForTab:tab];
+        return;
+    }
+    if (!tab.showingCompanion && tab.companionHiddenAt > 0 && now - tab.companionHiddenAt >= kMicaLazygitIdleSeconds)
+        [self killCompanionForTab:tab];
 }
 
 - (void)addTabWithName:(NSString *)name cwd:(NSString *)cwd command:(NSString *)command prefilled:(BOOL)prefilled {
@@ -6353,11 +6733,13 @@ static BOOL MicaValidBranchName(NSString *name) {
 - (void)closeActiveTab {
     if (self.tabs.count <= 1) { [self.window performClose:nil]; return; }
     MicaTab *previous = self.activeTab;
+    MicaTab *closing = [self selectedTab];
     MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"tab closed pid=%d",
         previous.session ? mica_session_pid(previous.session) : -1]);
     if (previous == self.voiceTargetTab) [self cancelDictation];
     if (previous.session && NSApp.isActive) mica_session_focus(previous.session, false);
-    [MicaAttention() clearTabID:previous.identifier];
+    [self killCompanionForTab:closing];
+    [MicaAttention() clearTabID:closing.identifier];
     NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
     self.uiMode = MicaUIModeNormal;
     [self.terminalView clearSelection];
@@ -6411,7 +6793,7 @@ static BOOL MicaValidBranchName(NSString *name) {
     if (self.uiMode != MicaUIModeTab) self.uiMode = MicaUIModeNormal;
     [self.terminalView clearSelection];
     self.activeIndex = index;
-    MicaTab *tab = self.activeTab;
+    MicaTab *tab = [self selectedTab];
     [self refreshProcessAgentForTab:tab];
     [self requestWorkingDirectoryForTab:tab];
     tab.lastSelectedAt = NSProcessInfo.processInfo.systemUptime;
@@ -6420,7 +6802,8 @@ static BOOL MicaValidBranchName(NSString *name) {
         [MicaAttention() clearTabID:tab.identifier];
         NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
     }
-    if (tab.session && NSApp.isActive) mica_session_focus(tab.session, true);
+    MicaTab *shown = self.activeTab;
+    if (shown.session && NSApp.isActive) mica_session_focus(shown.session, true);
     [self updateWindowTitle];
     [self.windowContentView.sidebarView refreshRows];
     [self resizeActiveSession];
@@ -6502,6 +6885,7 @@ static BOOL MicaValidBranchName(NSString *name) {
         controller.window.appearance = gMicaFollowSystemTheme ? nil :
             [NSAppearance appearanceNamed:light ? NSAppearanceNameAqua : NSAppearanceNameDarkAqua];
         controller.preferencesWindow.appearance = controller.window.appearance;
+        MicaSyncSettingsBackground(controller.preferencesWindow);
         [controller.terminalView setNeedsDisplay:YES];
     }
     NSMenuItem *item = [[NSApp.mainMenu itemWithTitle:@"View"].submenu itemWithTitle:@"Light Terminal Theme"];
@@ -6694,6 +7078,7 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
         [self refreshPreferencesSizeLabel];
         self.preferencesWindow.appearance = gMicaFollowSystemTheme ? nil :
             [NSAppearance appearanceNamed:gMicaLightTheme ? NSAppearanceNameAqua : NSAppearanceNameDarkAqua];
+        MicaSyncSettingsBackground(self.preferencesWindow);
         [self.preferencesWindow makeKeyAndOrderFront:nil];
         return;
     }
@@ -6704,132 +7089,126 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     window.releasedWhenClosed = NO;
     window.appearance = gMicaFollowSystemTheme ? nil :
         [NSAppearance appearanceNamed:gMicaLightTheme ? NSAppearanceNameAqua : NSAppearanceNameDarkAqua];
-    NSAppearance *settingsAppearance = window.appearance ?: NSApp.effectiveAppearance;
-    __block NSColor *settingsBackground;
-    [settingsAppearance performAsCurrentDrawingAppearance:^{ settingsBackground = NSColor.windowBackgroundColor; }];
-    window.backgroundColor = settingsBackground;
+    MicaSyncSettingsBackground(window);
     NSView *content = window.contentView;
-    NSTextField *generalTitle = [NSTextField labelWithString:@"General"];
-    generalTitle.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
-    generalTitle.frame = NSMakeRect(20, 500, 100, 18);
-    [content addSubview:generalTitle];
-    NSTextField *advancedTitle = [NSTextField labelWithString:@"Advanced"];
-    advancedTitle.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
-    advancedTitle.frame = NSMakeRect(20, 420, 100, 18);
-    [content addSubview:advancedTitle];
-    NSButton *diagnostics = [NSButton checkboxWithTitle:@"Enable diagnostic logging" target:self action:@selector(prefDiagnosticsChanged:)];
-    diagnostics.tag = 110;
-    diagnostics.state = [[self micaDefaults] boolForKey:@"MicaDiagnosticsEnabled"] ? NSControlStateValueOn : NSControlStateValueOff;
-    diagnostics.frame = NSMakeRect(122, 417, 280, 20);
-    [content addSubview:diagnostics];
+    // Top-down layout: every view is placed by its distance from the top, then flipped once the height is known.
+    NSMutableArray<NSDictionary *> *placed = [NSMutableArray array];
+    __block CGFloat top = 18;
+    const CGFloat kLabelX = 20, kLabelW = 118, kControlX = 150, kRight = 440;
+    void (^place)(NSView *, CGFloat, CGFloat, CGFloat, CGFloat) = ^(NSView *view, CGFloat x, CGFloat t, CGFloat w, CGFloat h) {
+        view.frame = NSMakeRect(x, 0, w, h);
+        [placed addObject:@{@"view": view, @"top": @(t), @"h": @(h)}];
+        [content addSubview:view];
+    };
+    void (^section)(NSString *, BOOL) = ^(NSString *title, BOOL first) {
+        if (!first) {
+            top += 8;
+            NSBox *line = [[NSBox alloc] initWithFrame:NSMakeRect(0, 0, kRight - kLabelX, 1)];
+            line.boxType = NSBoxSeparator;
+            place(line, kLabelX, top, kRight - kLabelX, 1);
+            top += 12;
+        }
+        NSTextField *heading = [NSTextField labelWithString:title];
+        heading.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
+        place(heading, kLabelX, top, 200, 18);
+        top += 26;
+    };
+    void (^row)(NSString *, NSView *, CGFloat, CGFloat) = ^(NSString *caption, NSView *control, CGFloat w, CGFloat h) {
+        if (caption.length) {
+            NSTextField *label = [NSTextField labelWithString:caption];
+            label.alignment = NSTextAlignmentRight;
+            place(label, kLabelX, top + (h - 16) / 2, kLabelW, 16);
+        }
+        place(control, kControlX, top, w, h);
+        top += MAX(h, 22) + 8;
+    };
+    void (^hint)(NSString *) = ^(NSString *text) {
+        NSTextField *label = [NSTextField labelWithString:text];
+        label.textColor = NSColor.secondaryLabelColor;
+        label.font = [NSFont systemFontOfSize:11];
+        place(label, kControlX, top - 4, kRight - kControlX, 14);
+        top += 20;
+    };
+    NSPopUpButton * (^popup)(NSArray<NSString *> *, NSInteger, NSInteger, SEL) = ^(NSArray<NSString *> *items, NSInteger index, NSInteger tag, SEL action) {
+        NSPopUpButton *button = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0, 0, 200, 26) pullsDown:NO];
+        [button addItemsWithTitles:items];
+        [button selectItemAtIndex:index];
+        button.tag = tag; button.target = self; button.action = action;
+        return button;
+    };
+    NSControlStateValue (^on)(NSString *, BOOL) = ^NSControlStateValue(NSString *key, BOOL fallback) {
+        id value = [[self micaDefaults] objectForKey:key];
+        return (value ? [[self micaDefaults] boolForKey:key] : fallback) ? NSControlStateValueOn : NSControlStateValueOff;
+    };
+
+    section(@"General", YES);
     NSButton *resumeAgents = [NSButton checkboxWithTitle:@"Resume agents when restoring windows" target:self action:@selector(prefResumeAgentsChanged:)];
     resumeAgents.tag = 112;
-    resumeAgents.frame = NSMakeRect(122, 470, 320, 20);
     resumeAgents.state = [[self micaDefaults] boolForKey:@"MicaResumeAgentsOnRestore"] ? NSControlStateValueOn : NSControlStateValueOff;
-    [content addSubview:resumeAgents];
-    NSTextField *memoryWarningCaption = [NSTextField labelWithString:@"Agent memory warning"];
-    memoryWarningCaption.alignment = NSTextAlignmentRight;
-    memoryWarningCaption.frame = NSMakeRect(8, 442, 104, 18);
-    [content addSubview:memoryWarningCaption];
-    NSPopUpButton *memoryWarning = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 437, 160, 26) pullsDown:NO];
-    [memoryWarning addItemsWithTitles:@[@"Never", @"2 GB", @"4 GB", @"8 GB", @"16 GB"]];
-    NSInteger warningGB = MicaAgentRSSWarningGB([self micaDefaults]);
-    [memoryWarning selectItemAtIndex:warningGB == 0 ? 0 : warningGB == 2 ? 1 : warningGB == 4 ? 2 : warningGB == 8 ? 3 : 4];
-    memoryWarning.tag = 114;
-    memoryWarning.target = self; memoryWarning.action = @selector(prefAgentRSSWarningChanged:);
-    [content addSubview:memoryWarning];
-    content.wantsLayer = YES;
-    content.layer.backgroundColor = settingsBackground.CGColor;
-    NSArray<NSString *> *labels = @[@"Theme", @"Cursor", @"Text size"];
-    for (NSUInteger i = 0; i < labels.count; i++) {
-        NSTextField *caption = [NSTextField labelWithString:labels[i]];
-        caption.alignment = NSTextAlignmentRight;
-        caption.frame = NSMakeRect(20, 330 - 40 * i, 90, 18);
-        [content addSubview:caption];
-    }
-    NSPopUpButton *theme = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 325, 200, 26) pullsDown:NO];
-    [theme addItemsWithTitles:@[@"Dark", @"Light", @"System"]];
-    [theme selectItemAtIndex:gMicaFollowSystemTheme ? 2 : (gMicaLightTheme ? 1 : 0)];
-    theme.tag = 102;
-    theme.target = self; theme.action = @selector(prefThemeChanged:);
-    [content addSubview:theme];
-    NSPopUpButton *cursor = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 285, 200, 26) pullsDown:NO];
-    [cursor addItemsWithTitles:@[@"Block", @"Bar", @"Underline"]];
-    [cursor selectItemAtIndex:gMicaCursorStyle];
-    cursor.tag = 103;
-    cursor.target = self; cursor.action = @selector(prefCursorChanged:);
-    [content addSubview:cursor];
+    row(@"", resumeAgents, kRight - kControlX, 20);
+    NSButton *shortcut = [NSButton checkboxWithTitle:@"Global shortcut to show Mica (⌃⌥Space)" target:self action:@selector(prefShortcutChanged:)];
+    shortcut.tag = 105;
+    shortcut.state = [[self micaDefaults] boolForKey:@"MicaGlobalShortcut"] ? NSControlStateValueOn : NSControlStateValueOff;
+    row(@"", shortcut, kRight - kControlX, 20);
+    NSButton *menuBarTimer = [NSButton checkboxWithTitle:@"Show the focus timer in the menu bar" target:self action:@selector(prefMenuBarTimerChanged:)];
+    menuBarTimer.tag = 109;
+    menuBarTimer.state = on(@"MicaMenuBarTimer", YES);
+    row(@"", menuBarTimer, kRight - kControlX, 20);
+    hint(@"Compact countdown; click it for timer controls.");
+
+    section(@"Appearance", NO);
+    row(@"Theme", popup(@[@"Dark", @"Light", @"System"], gMicaFollowSystemTheme ? 2 : (gMicaLightTheme ? 1 : 0), 102, @selector(prefThemeChanged:)), 200, 26);
+    row(@"Cursor", popup(@[@"Block", @"Bar", @"Underline"], gMicaCursorStyle, 103, @selector(prefCursorChanged:)), 200, 26);
+    NSView *sizeRow = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 120, 26)];
     NSTextField *sizeValue = [NSTextField labelWithString:@""];
     sizeValue.tag = 104;
     sizeValue.font = [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightRegular];
-    sizeValue.frame = NSMakeRect(122, 250, 44, 18);
-    [content addSubview:sizeValue];
-    NSStepper *stepper = [[NSStepper alloc] initWithFrame:NSMakeRect(168, 245, 19, 27)];
+    sizeValue.frame = NSMakeRect(0, 4, 56, 18);
+    [sizeRow addSubview:sizeValue];
+    NSStepper *stepper = [[NSStepper alloc] initWithFrame:NSMakeRect(60, 0, 19, 26)];
     stepper.minValue = 8; stepper.maxValue = 28; stepper.increment = 1;
     stepper.doubleValue = self.terminalView.terminalFont.pointSize;
     stepper.tag = 101;
     stepper.target = self; stepper.action = @selector(prefFontSizeChanged:);
-    [content addSubview:stepper];
-    NSTextField *sizeHint = [NSTextField labelWithString:@"Also ⌘+  ⌘−  ⌘0 in a terminal."];
-    sizeHint.textColor = MicaSecondaryLabelColor(1.0);
-    sizeHint.font = [NSFont systemFontOfSize:11];
-    sizeHint.frame = NSMakeRect(122, 226, 320, 14);
-    [content addSubview:sizeHint];
-    NSTextField *scrollbackCaption = [NSTextField labelWithString:@"Scrollback"];
-    scrollbackCaption.alignment = NSTextAlignmentRight;
-    scrollbackCaption.frame = NSMakeRect(20, 194, 90, 18);
-    [content addSubview:scrollbackCaption];
-    NSPopUpButton *scrollback = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 189, 200, 26) pullsDown:NO];
-    [scrollback addItemsWithTitles:@[@"650 lines · about 5 MB", @"2,000 lines · about 16 MB", @"5,000 lines · about 40 MB", @"20,000 lines · about 160 MB"]];
-    [scrollback selectItemAtIndex:[MicaAppDelegate scrollbackIndexForLines:[self storedScrollbackLines]]];
-    scrollback.tag = 106;
-    scrollback.frame = NSMakeRect(122, 189, 260, 26);
-    scrollback.target = self; scrollback.action = @selector(prefScrollbackChanged:);
-    [content addSubview:scrollback];
-    NSButton *shortcut = [NSButton checkboxWithTitle:@"Show Mica with a global shortcut (⌃⌥Space)" target:self
-                                              action:@selector(prefShortcutChanged:)];
-    NSButton *menuBarTimer = [NSButton checkboxWithTitle:@"Show the focus timer in the menu bar" target:self
-                                                   action:@selector(prefMenuBarTimerChanged:)];
-    menuBarTimer.frame = NSMakeRect(120, 84, 340, 20);
-    menuBarTimer.tag = 109;
-    menuBarTimer.state = (![[self micaDefaults] objectForKey:@"MicaMenuBarTimer"] ||
-        [[self micaDefaults] boolForKey:@"MicaMenuBarTimer"]) ? NSControlStateValueOn : NSControlStateValueOff;
-    [content addSubview:menuBarTimer];
-    NSTextField *timerHint = [NSTextField labelWithString:@"Compact countdown; click it for timer controls."];
-    timerHint.textColor = MicaSecondaryLabelColor(1.0);
-    timerHint.font = [NSFont systemFontOfSize:10.5];
-    timerHint.frame = NSMakeRect(120, 68, 310, 13);
-    [content addSubview:timerHint];
+    [sizeRow addSubview:stepper];
+    row(@"Text size", sizeRow, 120, 26);
+    hint(@"Also ⌘+  ⌘−  ⌘0 in a terminal.");
+    row(@"Scrollback", popup(@[@"650 lines · about 5 MB", @"2,000 lines · about 16 MB", @"5,000 lines · about 40 MB", @"20,000 lines · about 160 MB"],
+        [MicaAppDelegate scrollbackIndexForLines:[self storedScrollbackLines]], 106, @selector(prefScrollbackChanged:)), 260, 26);
+
+    section(@"Dictation", NO);
+    row(@"Mode", popup(@[@"Hold", @"Toggle"], self.dictationToggleMode ? 1 : 0, 107, @selector(prefDictationModeChanged:)), 200, 26);
     NSButton *vocabulary = [NSButton checkboxWithTitle:@"Improve dictation with project vocabulary" target:self action:@selector(prefVocabularyChanged:)];
-    vocabulary.frame = NSMakeRect(120, 158, 330, 20);
-    vocabulary.state = (![[self micaDefaults] objectForKey:@"MicaDictationVocabularyEnabled"] ||
-        [[self micaDefaults] boolForKey:@"MicaDictationVocabularyEnabled"]) ? NSControlStateValueOn : NSControlStateValueOff;
-    vocabulary.tag = 108; [content addSubview:vocabulary];
+    vocabulary.state = on(@"MicaDictationVocabularyEnabled", YES);
+    vocabulary.tag = 108;
+    row(@"", vocabulary, kRight - kControlX, 20);
     NSButton *editVocabulary = [NSButton buttonWithTitle:@"Edit Vocabulary…" target:self action:@selector(editVocabulary:)];
-    editVocabulary.frame = NSMakeRect(120, 128, 170, 24); [content addSubview:editVocabulary];
-    shortcut.frame = NSMakeRect(120, 107, 320, 20);
-    shortcut.tag = 105;
-    shortcut.state = [[self micaDefaults] boolForKey:@"MicaGlobalShortcut"] ? NSControlStateValueOn : NSControlStateValueOff;
-    [content addSubview:shortcut];
-    NSTextField *dictationCaption = [NSTextField labelWithString:@"Dictation"];
-    dictationCaption.alignment = NSTextAlignmentRight;
-    dictationCaption.frame = NSMakeRect(20, 62, 90, 18);
-    [content addSubview:dictationCaption];
-    NSPopUpButton *dictationMode = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(122, 57, 200, 26) pullsDown:NO];
-    [dictationMode addItemsWithTitles:@[@"Hold", @"Toggle"]];
-    [dictationMode selectItemAtIndex:self.dictationToggleMode ? 1 : 0];
-    dictationMode.tag = 107; dictationMode.target = self; dictationMode.action = @selector(prefDictationModeChanged:);
-    [content addSubview:dictationMode];
-    NSBox *rule = [[NSBox alloc] initWithFrame:NSMakeRect(20, 42, 420, 1)];
-    rule.boxType = NSBoxSeparator;
-    [content addSubview:rule];
+    row(@"", editVocabulary, 150, 24);
+
+    section(@"Advanced", NO);
+    NSInteger warningGB = MicaAgentRSSWarningGB([self micaDefaults]);
+    row(@"Memory warning", popup(@[@"Never", @"2 GB", @"4 GB", @"8 GB", @"16 GB"],
+        warningGB == 0 ? 0 : warningGB == 2 ? 1 : warningGB == 4 ? 2 : warningGB == 8 ? 3 : 4, 114, @selector(prefAgentRSSWarningChanged:)), 160, 26);
+    hint(@"Warn when an agent process exceeds this footprint.");
+    NSButton *diagnostics = [NSButton checkboxWithTitle:@"Enable diagnostic logging" target:self action:@selector(prefDiagnosticsChanged:)];
+    diagnostics.tag = 110;
+    diagnostics.state = [[self micaDefaults] boolForKey:@"MicaDiagnosticsEnabled"] ? NSControlStateValueOn : NSControlStateValueOff;
+    row(@"", diagnostics, kRight - kControlX, 20);
+
+    top += 4;
     NSButton *project = [NSButton buttonWithTitle:@"Project Settings…" target:self action:@selector(openProjectSettings:)];
-    project.frame = NSMakeRect(20, 28, 200, 30);
     project.enabled = self.projectLayoutPath.length > 0;
     NSButton *timer = [NSButton buttonWithTitle:@"Timer Settings…" target:self action:@selector(openPomodoroSettings:)];
-    timer.frame = NSMakeRect(240, 28, 200, 30);
-    [content addSubview:project];
-    [content addSubview:timer];
+    place(project, kLabelX, top, 200, 30);
+    place(timer, 240, top, 200, 30);
+    top += 30 + 18;
+    [window setContentSize:NSMakeSize(460, top)];
+    for (NSDictionary *item in placed) {
+        NSView *view = item[@"view"];
+        NSRect frame = view.frame;
+        frame.origin.y = top - [item[@"top"] doubleValue] - [item[@"h"] doubleValue];
+        view.frame = frame;
+    }
     self.preferencesWindow = window;
     [self refreshPreferencesSizeLabel];
     [window center];
@@ -7093,6 +7472,8 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
             }
         }
     }
+    if (!self.dispatchPollTab)
+        for (MicaTab *tab in [self.tabs copy]) if (tab.companion) [self pollCompanionForTab:tab];
     NSMutableArray<MicaTab *> *exitedTabs = [NSMutableArray array];
     for (MicaTab *tab in self.tabs)
         if (tab.session && !mica_session_is_running(tab.session)) [exitedTabs addObject:tab];
@@ -7109,6 +7490,7 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
         if ((NSInteger)index == self.activeIndex) {
             [self closeActiveTab];
         } else {
+            [self killCompanionForTab:tab];
             [self.tabs removeObjectAtIndex:index];
             if ((NSInteger)index < self.activeIndex) self.activeIndex--;
             [self updateWindowTitle];
@@ -7198,6 +7580,8 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     (void)sender;
     if (self.terminationCleanupStarted) return NSTerminateLater;
     if (![self confirmEndingRunningCommandsFor:@"Quit Mica"]) return NSTerminateCancel;
+    for (MicaAppDelegate *controller in MicaControllers()) controller.sessionSavePending = NO;
+    self.sessionSavePending = NO;
     [self saveSessionState];
     self.terminationCleanupStarted = YES;
     MicaDiagnosticsLog(@"app", @"application termination requested");
@@ -7239,6 +7623,14 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
             mica_session_pid(tab.session)]);
         [sessions addObject:[NSValue valueWithPointer:tab.session]];
         tab.session = NULL;
+    }
+    for (MicaTab *tab in self.tabs) {
+        MicaTab *companion = tab.companion;
+        if (!companion) continue;
+        if (companion.ioSource) { dispatch_source_cancel(companion.ioSource); companion.ioSource = nil; }
+        if (companion.session) { [sessions addObject:[NSValue valueWithPointer:companion.session]]; companion.session = NULL; }
+        tab.showingCompanion = NO;
+        tab.companion = nil;
     }
     return sessions;
 }
@@ -7289,6 +7681,7 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
     (void)notification;
+    self.sessionSavePending = NO;
     [self saveSessionState];
     MicaDiagnosticsLog(@"app", @"application is terminating");
     [MicaHookServer.sharedServer stop];

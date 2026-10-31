@@ -253,10 +253,28 @@ static void test_descendant_agent_detection(void) {
     assert(rmdir(dir) == 0);
 }
 
+static void test_descendant_pids(void) {
+    MicaSession *session = mica_session_create("/tmp", "sh -c 'sleep 5'", 8, 80);
+    assert(session);
+    int pids[16];
+    size_t n = 0;
+    for (int attempt = 0; attempt < 100 && n == 0; attempt++) {
+        mica_session_poll(session, 10);
+        n = mica_session_descendant_pids(session, pids, 16);
+    }
+    assert(n > 0 && n <= 16);
+    for (size_t i = 0; i < n; i++) assert(pids[i] > 0 && pids[i] != mica_session_pid(session));
+    assert(mica_session_descendant_pids(session, pids, 1) <= 1);
+    assert(mica_session_descendant_pids(session, NULL, 16) == 0);
+    assert(mica_session_descendant_pids(NULL, pids, 16) == 0);
+    mica_session_destroy(session);
+}
+
 int main(void) {
     setenv("MICA_TEST_NO_STARTUP", "1", 1);
     test_remote_screen_snapshot();
     test_descendant_agent_detection();
+    test_descendant_pids();
     MicaSession *cwd_session = mica_session_create("/tmp", "cd /; sleep 2", 6, 80);
     assert(cwd_session != NULL);
     char working_directory[PATH_MAX];

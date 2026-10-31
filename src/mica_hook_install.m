@@ -102,33 +102,67 @@ static NSString *const MicaHookMarker = @"mica-hook";
     return value;
 }
 
-+ (NSDictionary *)previewForHome:(NSString *)home error:(NSError **)error {
-    NSString *claude = [home stringByAppendingPathComponent:@".claude/settings.json"];
-    NSString *codex = [home stringByAppendingPathComponent:@".codex/config.toml"];
-    id c = [self jsonAt:claude missing:@{} error:error]; if (!c) return nil;
-    NSArray *events = @[@"Notification", @"Stop", @"PermissionRequest", @"SessionStart", @"SessionEnd", @"UserPromptSubmit"];
-    NSMutableDictionary *nextC = [c mutableCopy]; NSMutableDictionary *hooks = [nextC[@"hooks"] isKindOfClass:NSDictionary.class] ? [nextC[@"hooks"] mutableCopy] : [NSMutableDictionary dictionary];
-    for (NSString *event in events) {
-        NSMutableArray *groups = [hooks[event] isKindOfClass:NSArray.class] ? [hooks[event] mutableCopy] : [NSMutableArray array];
-        BOOL exists = NO; for (NSDictionary *g in groups) for (NSDictionary *h in g[@"hooks"]) if ([h[@"command"] containsString:MicaHookMarker]) exists = YES;
-        if (!exists) [groups addObject:@{@"hooks":@[@{@"type":@"command", @"command":[NSString stringWithFormat:@"%@ %@", self.helperPath,event]}]}];
-        hooks[event] = groups;
+// src/mica_agent_discover.m has a parallel helper for discovery; it must tolerate dirs without settings.json. Keep both.
++ (NSArray<NSString *> *)claudeConfigDirsForHome:(NSString *)home env:(NSDictionary *)env {
+    NSMutableOrderedSet<NSString *> *dirs = [NSMutableOrderedSet orderedSet];
+    id configured = env[@"CLAUDE_CONFIG_DIR"];
+    if ([configured isKindOfClass:NSString.class] && [configured length]) {
+        NSString *override = [[configured stringByExpandingTildeInPath] stringByStandardizingPath];
+        BOOL isDir = NO;
+        if ([[NSFileManager defaultManager] fileExistsAtPath:override isDirectory:&isDir] && isDir) [dirs addObject:override];
     }
-    nextC[@"hooks"] = hooks;
-    NSData *cd = [NSJSONSerialization dataWithJSONObject:nextC options:NSJSONWritingPrettyPrinted error:error]; if (!cd) return nil;
+    [dirs addObject:[[home stringByAppendingPathComponent:@".claude"] stringByStandardizingPath]];
+    NSArray *names = [[[NSFileManager defaultManager] contentsOfDirectoryAtPath:home error:nil] sortedArrayUsingSelector:@selector(compare:)];
+    for (NSString *name in names) {
+        if (![name hasPrefix:@".claude-"]) continue;
+        NSString *dir = [[home stringByAppendingPathComponent:name] stringByStandardizingPath];
+        BOOL isDir = NO;
+        if ([[NSFileManager defaultManager] fileExistsAtPath:dir isDirectory:&isDir] && isDir &&
+            [[NSFileManager defaultManager] fileExistsAtPath:[dir stringByAppendingPathComponent:@"settings.json"]])
+            [dirs addObject:dir];
+    }
+    return dirs.array;
+}
+
++ (NSDictionary *)previewForHome:(NSString *)home error:(NSError **)error {
+    return [self previewForHome:home env:NSProcessInfo.processInfo.environment error:error];
+}
+
++ (NSDictionary *)previewForHome:(NSString *)home env:(NSDictionary *)env error:(NSError **)error {
+    NSString *codex = [home stringByAppendingPathComponent:@".codex/config.toml"];
+    NSMutableArray *targets = [NSMutableArray array];
+    for (NSString *dir in [self claudeConfigDirsForHome:home env:env]) {
+        NSString *claude = [dir stringByAppendingPathComponent:@"settings.json"];
+        id c = [self jsonAt:claude missing:@{} error:error]; if (!c) return nil;
+        NSArray *events = @[@"Notification", @"Stop", @"PermissionRequest", @"SessionStart", @"SessionEnd", @"UserPromptSubmit"];
+        NSMutableDictionary *nextC = [c mutableCopy]; NSMutableDictionary *hooks = [nextC[@"hooks"] isKindOfClass:NSDictionary.class] ? [nextC[@"hooks"] mutableCopy] : [NSMutableDictionary dictionary];
+        for (NSString *event in events) {
+            NSMutableArray *groups = [hooks[event] isKindOfClass:NSArray.class] ? [hooks[event] mutableCopy] : [NSMutableArray array];
+            BOOL exists = NO; for (NSDictionary *g in groups) for (NSDictionary *h in g[@"hooks"]) if ([h[@"command"] containsString:MicaHookMarker]) exists = YES;
+            if (!exists) [groups addObject:@{@"hooks":@[@{@"type":@"command", @"command":[NSString stringWithFormat:@"%@ %@", self.helperPath,event]}]}];
+            hooks[event] = groups;
+        }
+        nextC[@"hooks"] = hooks;
+        NSData *cd = [NSJSONSerialization dataWithJSONObject:nextC options:NSJSONWritingPrettyPrinted error:error]; if (!cd) return nil;
+        [targets addObject:@{@"path":claude, @"preview":[[NSString alloc] initWithData:cd encoding:NSUTF8StringEncoding]}];
+    }
     NSData *xd=[NSData dataWithContentsOfFile:codex]; NSString *xt=xd ? [[NSString alloc] initWithData:xd encoding:NSUTF8StringEncoding] : @"";
     if (xd.length>262144 || (xd && !xt)) { if(error)*error=[NSError errorWithDomain:NSCocoaErrorDomain code:NSFileReadInapplicableStringEncodingError userInfo:@{NSLocalizedDescriptionKey:@"Codex config.toml is invalid UTF-8 or exceeds 256 KiB."}]; return nil; }
     NSArray *xl=[(xt ?: @"") componentsSeparatedByString:@"\n"]; NSUInteger top=xl.count; NSRegularExpression *table=[NSRegularExpression regularExpressionWithPattern:@"^\\s*\\[\\[?.+\\]\\]?\\s*(?:#.*)?$" options:0 error:nil]; for(NSUInteger i=0;i<xl.count;i++) if([table numberOfMatchesInString:xl[i] options:0 range:NSMakeRange(0,[xl[i] length])]){top=i;break;}
     NSRegularExpression *re=[NSRegularExpression regularExpressionWithPattern:@"^\\s*notify\\s*=" options:0 error:nil]; BOOL own=NO,mica=NO;
     for(NSUInteger i=0;i<top;i++) if([re numberOfMatchesInString:xl[i] options:0 range:NSMakeRange(0,[xl[i] length])]) {own=YES;if([xl[i] containsString:@"# mica-hook"])mica=YES;}
     NSString *note=own&&!mica ? @"Codex already has a notify command; Mica left it unchanged" : mica ? @"Codex Mica notify is already installed" : self.codexLine;
-    return @{@"claudePath":claude,@"claudePreview":[[NSString alloc] initWithData:cd encoding:NSUTF8StringEncoding],@"codexPath":codex,@"codexPreview":note,@"codexLine":self.codexLine,@"codexUnchanged":@(own&&!mica)};
+    return @{@"claudePath":targets[0][@"path"],@"claudePreview":targets[0][@"preview"],@"claudeTargets":targets,@"codexPath":codex,@"codexPreview":note,@"codexLine":self.codexLine,@"codexUnchanged":@(own&&!mica)};
 }
 
 + (BOOL)applyForHome:(NSString *)home remove:(BOOL)remove error:(NSError **)error {
-    NSDictionary *p = [self previewForHome:home error:error]; if (!p) return NO;
-    for (NSString *key in @[@"claudePath"]) {
-        NSString *path=p[key]; NSData *raw=[NSData dataWithContentsOfFile:path]; if (!raw && remove) continue;
+    return [self applyForHome:home env:NSProcessInfo.processInfo.environment remove:remove error:error];
+}
+
++ (BOOL)applyForHome:(NSString *)home env:(NSDictionary *)env remove:(BOOL)remove error:(NSError **)error {
+    NSDictionary *p = [self previewForHome:home env:env error:error]; if (!p) return NO;
+    for (NSDictionary *target in p[@"claudeTargets"]) {
+        NSString *path=target[@"path"]; NSData *raw=[NSData dataWithContentsOfFile:path]; if (!raw && remove) continue;
         if (remove) {
             id root=[self jsonAt:path missing:@{} error:error]; if (!root) return NO;
             NSMutableDictionary *out=[root mutableCopy]; NSMutableDictionary *hooks=[out[@"hooks"] mutableCopy];
@@ -144,7 +178,7 @@ static NSString *const MicaHookMarker = @"mica-hook";
             NSData *d=[NSJSONSerialization dataWithJSONObject:out options:NSJSONWritingPrettyPrinted error:error]; if (!d) return NO;
             if (raw && ![self write:d path:path error:error]) return NO;
         } else {
-            NSString *preview=p[[key isEqualToString:@"claudePath"]?@"claudePreview":@"codexPreview"];
+            NSString *preview=target[@"preview"];
             if (![self write:[preview dataUsingEncoding:NSUTF8StringEncoding] path:path error:error]) return NO;
         }
     }
@@ -154,9 +188,15 @@ static NSString *const MicaHookMarker = @"mica-hook";
 + (void)presentFromWindow:(NSWindow *)window {
     NSError *error=nil; NSDictionary *p=[self previewForHome:NSHomeDirectory() error:&error];
     NSAlert *alert=[NSAlert new]; alert.messageText=@"Set Up Agent Hooks";
-    alert.informativeText=p ? [NSString stringWithFormat:@"Install changes these files. Existing keys and hooks are preserved.\n\n%@\n\n%@\n\nCodex: %@",p[@"claudePath"],p[@"codexPath"],p[@"codexPreview"]] : [NSString stringWithFormat:@"Cannot preview hook changes: %@",error.localizedDescription];
+    NSArray *paths = [p[@"claudeTargets"] valueForKey:@"path"];
+    alert.informativeText=p ? [NSString stringWithFormat:@"Install changes these files. Existing keys and hooks are preserved.\n\n%@\n\n%@\n\nCodex: %@",[paths componentsJoinedByString:@"\n"],p[@"codexPath"],p[@"codexPreview"]] : [NSString stringWithFormat:@"Cannot preview hook changes: %@",error.localizedDescription];
     NSTextView *text=[[NSTextView alloc] initWithFrame:NSMakeRect(0,0,620,300)]; text.editable=NO; text.font=[NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightRegular];
-    if (p) text.string=[NSString stringWithFormat:@"--- %@ (complete resulting JSON) ---\n%@\n\n--- %@ (Codex config.toml) ---\n%@\n",p[@"claudePath"],p[@"claudePreview"],p[@"codexPath"],p[@"codexPreview"]];
+    if (p) {
+        NSMutableString *contents=[NSMutableString string];
+        for (NSDictionary *target in p[@"claudeTargets"]) [contents appendFormat:@"--- %@ (complete resulting JSON) ---\n%@\n\n",target[@"path"],target[@"preview"]];
+        [contents appendFormat:@"--- %@ (Codex config.toml) ---\n%@\n",p[@"codexPath"],p[@"codexPreview"]];
+        text.string=contents;
+    }
     else text.string=alert.informativeText;
     NSScrollView *scroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(0,0,620,300)]; scroll.hasVerticalScroller=YES; scroll.documentView=text; alert.accessoryView=scroll;
     [alert addButtonWithTitle:@"Install"]; [alert addButtonWithTitle:@"Remove"]; [alert addButtonWithTitle:@"Cancel"];

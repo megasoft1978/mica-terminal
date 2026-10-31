@@ -3196,6 +3196,40 @@ static int MicaRunUISelfTest(void) {
                 controller.window.delegate = nil; [controller.window orderOut:nil]; [controller.window close];
             }
             [MicaControllers() removeAllObjects];
+            {
+                // Reopening a layout with a saved window restores that window's tabs, once.
+                NSDictionary *reopenState = @{@"version":@1, @"windows":@[
+                    @{@"layout":layoutA, @"projectName":@"Project A", @"tabs":@[@{@"name":@"Saved A1", @"cwd":stateDirectory},
+                                                                                  @{@"name":@"Saved A2", @"cwd":stateDirectory}]},
+                    savedWindow(layoutB, @"Project B")]};
+                [[NSJSONSerialization dataWithJSONObject:reopenState options:0 error:nil] writeToFile:statePath atomically:YES];
+                MicaAppDelegate *reopened = [MicaAppDelegate new];
+                reopened.tabs = [NSMutableArray array]; reopened.activeIndex = 0;
+                [reopened loadLaunchConfigurationFromArguments:@[@"mica", @"--layout", layoutA] bundleInfo:@{}];
+                BOOL restoresSavedTabs = reopened.tabs.count == 2 && [reopened.tabs[0].name isEqualToString:@"Saved A1"] &&
+                    [reopened.projectName isEqualToString:@"Project A"];
+                [MicaControllers() addObject:reopened];
+                MicaAppDelegate *second = [MicaAppDelegate new];
+                second.tabs = [NSMutableArray array]; second.activeIndex = 0;
+                [second loadLaunchConfigurationFromArguments:@[@"mica", @"--layout", layoutA] bundleInfo:@{}];
+                BOOL secondOpenIsFresh = second.tabs.count == 1 && [second.tabs[0].name isEqualToString:@"Project A tab"];
+                [MicaControllers() removeAllObjects];
+                for (MicaAppDelegate *owner in @[reopened, second])
+                    for (NSValue *value in [owner detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
+                [pendingLayouts removeAllObjects]; [pendingLayouts addObject:[NSURL fileURLWithPath:layoutA]];
+                MicaAppDelegate *launchWithFile = [MicaAppDelegate new];
+                [launchWithFile applicationDidFinishLaunching:nil];
+                BOOL launchHasNoDuplicate = MicaControllers().count == 1 && launchWithFile.tabs.count == 2 &&
+                    [launchWithFile.tabs[1].name isEqualToString:@"Saved A2"];
+                for (MicaAppDelegate *controller in [MicaControllers() copy]) {
+                    for (NSValue *value in [controller detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
+                    controller.window.delegate = nil; [controller.window orderOut:nil]; [controller.window close];
+                }
+                [MicaControllers() removeAllObjects];
+                MicaUITestRecord(report, &allPassed, restoresSavedTabs && secondOpenIsFresh && launchHasNoDuplicate,
+                    [NSString stringWithFormat:@"opening a layout restores its saved window's tabs once, without a duplicate window (restored=%d secondFresh=%d launch=%d)",
+                        restoresSavedTabs, secondOpenIsFresh, launchHasNoDuplicate]);
+            }
             [MicaControllers() addObjectsFromArray:savedControllers];
             [pendingLayouts removeAllObjects]; [pendingLayouts addObjectsFromArray:oldPendingLayouts];
             gMicaDefaultsOverride = oldDefaultsOverride;
@@ -3315,6 +3349,61 @@ static int MicaRunUISelfTest(void) {
             BOOL resumeOnRan = [capturedArgs isEqualToString:@"--resume session-1234\n"];
             for (NSValue *value in [resumeOn detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
 
+            {
+                // Resume reproduces the launch: config dir + allowlisted flags; hostile values are dropped on read.
+                NSString *configDir = [stateDirectory stringByAppendingPathComponent:@"claude-work"];
+                [NSFileManager.defaultManager createDirectoryAtPath:configDir withIntermediateDirectories:YES attributes:nil error:nil];
+                NSString *safeDir = MicaSanitizedConfigDir(configDir, NSHomeDirectory());
+                NSDictionary *launchFixture = @{@"version":@1, @"windows":@[@{@"tabs":@[
+                    @{@"name":@"C", @"cwd":safeTempFolder, @"agentKind":@"claude", @"agentSessionID":@"session-1234",
+                      @"agentConfigDir":configDir, @"agentFlags":@[@"--dangerously-skip-permissions", @"--evil"]},
+                    @{@"name":@"X", @"cwd":safeTempFolder, @"agentKind":@"codex", @"agentSessionID":@"codex-1234",
+                      @"agentConfigDir":@"/definitely/missing", @"agentFlags":@[@"--sandbox", @"danger-full-access", @"--ask-for-approval", @"never", @"; rm"]}]}]};
+                [[NSJSONSerialization dataWithJSONObject:launchFixture options:0 error:nil] writeToFile:statePath atomically:YES];
+                MicaAppDelegate *launchOwner = [MicaAppDelegate new]; launchOwner.tabs = [NSMutableArray array]; launchOwner.activeIndex = 0;
+                NSArray *readBack = [launchOwner readSessionState].firstObject[@"tabs"];
+                BOOL readValidated = readBack.count == 2 && [readBack[0][@"agentConfigDir"] isEqual:safeDir] &&
+                    [readBack[0][@"agentFlags"] isEqual:@[@"--dangerously-skip-permissions"]] && !readBack[1][@"agentConfigDir"] &&
+                    [readBack[1][@"agentFlags"] isEqual:@[@"--sandbox", @"danger-full-access", @"--ask-for-approval", @"never"]];
+                [resumeDefaults setBool:NO forKey:@"MicaResumeAgentsOnRestore"];
+                [launchOwner loadLaunchConfigurationFromArguments:@[@"mica"] bundleInfo:@{}];
+                NSString *claudeLine = [NSString stringWithFormat:@"CLAUDE_CONFIG_DIR='%@' claude --dangerously-skip-permissions --resume session-1234", safeDir];
+                NSString *codexLine = @"codex resume codex-1234 --sandbox danger-full-access --ask-for-approval never";
+                BOOL claudeShown = NO, codexShown = NO;
+                for (int attempt = 0; attempt < 200 && !(claudeShown && codexShown); attempt++) {
+                    [launchOwner pollSessions:nil];
+                    claudeShown = launchOwner.tabs.count > 0 && MicaUITestFindTextAcrossWrappedRows(launchOwner.tabs[0].session, claudeLine);
+                    codexShown = launchOwner.tabs.count > 1 && MicaUITestFindTextAcrossWrappedRows(launchOwner.tabs[1].session, codexLine);
+                    usleep(10000);
+                }
+                // saving round-trips the launch info and never replaces a hook-supplied id
+                MicaTab *hooked = launchOwner.tabs.firstObject;
+                hooked.agentKind = @"claude"; hooked.agentSessionID = @"hook-id-1234"; hooked.agentSessionFromHook = YES;
+                hooked.agentConfigDir = configDir; hooked.agentFlags = @[@"--dangerously-skip-permissions"];
+                hooked.agentLaunchResolvedID = @"hook-id-1234";
+                [MicaControllers() removeAllObjects]; [MicaControllers() addObject:launchOwner];
+                [launchOwner saveSessionState];
+                NSDictionary *savedLaunch = [launchOwner readSessionState].firstObject[@"tabs"][0];
+                BOOL saveKeepsLaunch = [savedLaunch[@"agentSessionID"] isEqual:@"hook-id-1234"] &&
+                    [savedLaunch[@"agentConfigDir"] isEqual:safeDir] && [savedLaunch[@"agentFlags"] isEqual:@[@"--dangerously-skip-permissions"]];
+                hooked.agentLaunchResolvedID = nil; hooked.agentDiscoverAt = 0;
+                [launchOwner saveSessionState];
+                BOOL hookIDKept = [hooked.agentSessionID isEqual:@"hook-id-1234"];
+                // a discovered (non-hook) id whose agent processes are gone is cleared, not kept stale
+                MicaTab *stale = launchOwner.tabs.count > 1 ? launchOwner.tabs[1] : nil;
+                stale.agentKind = @"claude"; stale.agentSessionID = @"stale-id-1234"; stale.agentSessionFromHook = NO;
+                stale.agentLaunchResolvedID = @"stale-id-1234"; stale.agentDiscoverAt = 0;
+                [MicaControllers() removeAllObjects]; [MicaControllers() addObject:launchOwner];
+                [launchOwner resolveAgentResumeForTab:stale];
+                BOOL staleKept = stale.agentSessionID.length > 0;   // shell child may still exist; only assert no wrong replacement
+                if (!staleKept) hookIDKept = hookIDKept && !stale.agentKind && !stale.agentLaunchResolvedID;
+                [MicaControllers() removeAllObjects];
+                for (NSValue *value in [launchOwner detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
+                [resumeDefaults setBool:YES forKey:@"MicaResumeAgentsOnRestore"];
+                MicaUITestRecord(report, &allPassed, readValidated && claudeShown && codexShown && saveKeepsLaunch && hookIDKept,
+                    [NSString stringWithFormat:@"resume reproduces the config dir and allowlisted flags, validates them on read, and keeps hook ids (read=%d claude=%d codex=%d save=%d hook=%d)",
+                        readValidated, claudeShown, codexShown, saveKeepsLaunch, hookIDKept]);
+            }
             NSString *sshProfileID = @"A514442E-F80A-4B4E-A83B-98A335BD1942";
             NSDictionary *sshProfile = @{@"id":sshProfileID, @"name":@"Test Mac", @"destination":@"test-mac",
                 @"remoteDirectory":@"~/Projects/Mica"};
@@ -3370,6 +3459,73 @@ static int MicaRunUISelfTest(void) {
             NSString *codexArgs = [NSString stringWithContentsOfFile:capture encoding:NSUTF8StringEncoding error:nil];
             BOOL codexResumeRan = [codexArgs isEqualToString:@"resume codex-1234\n"];
             for (NSValue *value in [codexResume detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
+            {
+                setenv("MICA_TEST_LAZYGIT_COMMAND", "printf LAZYGIT_STUB; exec sleep 30", 1);
+                MicaAppDelegate *lg = [MicaAppDelegate new]; lg.tabs = [NSMutableArray array]; lg.activeIndex = 0;
+                [lg addTabWithName:@"Main" cwd:safeTempFolder command:nil prefilled:NO];
+                MicaTab *mainTab = lg.tabs.firstObject;
+                BOOL disabledOutsideRepo = ![lg canToggleLazygitForTab:mainTab];
+                [lg toggleLazygitForTab:mainTab];
+                disabledOutsideRepo = disabledOutsideRepo && !mainTab.companion && !mainTab.showingCompanion;
+                mainTab.projectRoot = safeTempFolder;
+                [lg toggleLazygitForTab:mainTab];
+                MicaTab *firstCompanion = mainTab.companion;
+                BOOL swapped = mainTab.showingCompanion && lg.activeTab == firstCompanion && lg.selectedTab == mainTab && lg.tabs.count == 1;
+                BOOL stubShown = NO;
+                for (int attempt = 0; attempt < 300 && !stubShown; attempt++) {
+                    [lg pollSessions:nil];
+                    stubShown = MicaUITestFindText(firstCompanion.session, @"LAZYGIT_STUB", NULL, NULL);
+                    usleep(10000);
+                }
+                [lg toggleLazygitForTab:mainTab];
+                BOOL swappedBack = !mainTab.showingCompanion && lg.activeTab == mainTab && mainTab.companion == firstCompanion &&
+                    mica_session_is_running(firstCompanion.session);
+                [lg toggleLazygitForTab:mainTab];
+                BOOL reused = mainTab.showingCompanion && mainTab.companion == firstCompanion;
+                [lg toggleLazygitForTab:mainTab];
+                // a repo-root change respawns on the next toggle
+                mainTab.projectRoot = @"/private/var";
+                [lg toggleLazygitForTab:mainTab];
+                MicaTab *respawned = mainTab.companion;
+                BOOL respawnedOnRootChange = respawned && respawned != firstCompanion && [mainTab.companionRoot isEqualToString:@"/private/var"];
+                [lg toggleLazygitForTab:mainTab];
+                // hidden companions die after ten idle minutes
+                mainTab.companionHiddenAt = NSProcessInfo.processInfo.systemUptime - 601;
+                [lg pollSessions:nil];
+                BOOL idleKilled = mainTab.companion == nil && !mainTab.showingCompanion;
+                // lazygit exiting swaps back automatically
+                setenv("MICA_TEST_LAZYGIT_COMMAND", "printf BYE; exit 0", 1);
+                [lg toggleLazygitForTab:mainTab];
+                BOOL exitedSwapsBack = NO;
+                for (int attempt = 0; attempt < 300 && !exitedSwapsBack; attempt++) {
+                    [lg pollSessions:nil];
+                    exitedSwapsBack = mainTab.companion == nil && !mainTab.showingCompanion && lg.activeTab == mainTab;
+                    usleep(10000);
+                }
+                // the companion never reaches saved state, and the tab list stays one entry
+                [MicaControllers() removeAllObjects]; [MicaControllers() addObject:lg];
+                setenv("MICA_TEST_LAZYGIT_COMMAND", "printf LAZYGIT_STUB; exec sleep 30", 1);
+                [lg toggleLazygitForTab:mainTab];
+                [lg saveSessionState];
+                NSString *rawLazygitState = [NSString stringWithContentsOfFile:statePath encoding:NSUTF8StringEncoding error:nil];
+                BOOL companionNotSaved = lg.tabs.count == 1 && [[lg readSessionState].firstObject[@"tabs"] count] == 1 &&
+                    ![rawLazygitState containsString:@"LAZYGIT"] && ![rawLazygitState containsString:@"lazygit"];
+                MicaAgentSidebarView *sidebar = [MicaAgentSidebarView new]; sidebar.owner = lg;
+                sidebar.frame = NSMakeRect(0, 0, 220, 300);
+                NSRect glyphRect = [sidebar gitGlyphRectForRowTop:42];
+                [sidebar refreshRows];
+                NSString *activeSignature = sidebar.lastRowsSignature;
+                [lg toggleLazygitForTab:mainTab]; [sidebar refreshRows];
+                BOOL sidebarIndicator = glyphRect.size.width > 0 && ![activeSignature isEqualToString:sidebar.lastRowsSignature];
+                [MicaControllers() removeAllObjects];
+                for (NSValue *value in [lg detachSessionsForTermination]) mica_session_destroy(value.pointerValue);
+                unsetenv("MICA_TEST_LAZYGIT_COMMAND");
+                MicaUITestRecord(report, &allPassed, disabledOutsideRepo && swapped && stubShown && swappedBack && reused &&
+                    respawnedOnRootChange && idleKilled && exitedSwapsBack && companionNotSaved && sidebarIndicator,
+                    [NSString stringWithFormat:@"lazygit view swaps per tab with a stub: disabled=%d swap=%d stub=%d back=%d reuse=%d respawn=%d idle=%d exit=%d unsaved=%d indicator=%d",
+                        disabledOutsideRepo, swapped, stubShown, swappedBack, reused, respawnedOnRootChange, idleKilled,
+                        exitedSwapsBack, companionNotSaved, sidebarIndicator]);
+            }
             NSString *pwned = [stateDirectory stringByAppendingPathComponent:@"pwned"];
             NSDictionary *tampered = @{ @"version":@1, @"windows":@[@{@"tabs":@[@{
                 @"name":@"Tampered", @"cwd":safeTempFolder, @"agentKind":@"claude",

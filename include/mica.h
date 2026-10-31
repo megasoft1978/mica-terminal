@@ -7,8 +7,8 @@
 #include <sys/types.h>
 #include <vterm.h>
 
-#define MICA_VERSION "0.1.0-alpha.17"
-#define MICA_REVISION "0.1.0-alpha.17"
+#define MICA_VERSION "0.1.0-alpha.18"
+#define MICA_REVISION "0.1.0-alpha.18"
 #define MICA_HISTORY_LIMIT_BYTES (2u * 1024u * 1024u)
 
 typedef struct MicaSession MicaSession;
@@ -126,6 +126,7 @@ bool mica_session_take_dirty_rows(MicaSession *session, MicaDirtyRows *rows);
 uint64_t mica_session_attention_count(const MicaSession *session);
 pid_t mica_session_pid(const MicaSession *session);
 size_t mica_session_descendant_commands(const MicaSession *session, char *out, size_t capacity);
+size_t mica_session_descendant_pids(const MicaSession *session, int *out, size_t capacity);
 uint64_t mica_session_tree_rss(const MicaSession *session);
 pid_t mica_session_root_pid(const MicaSession *session);
 uint64_t mica_process_tree_rss(pid_t rootPid);

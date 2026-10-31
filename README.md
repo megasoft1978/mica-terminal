@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.17"><img src="https://img.shields.io/badge/release-0.1.0--alpha.17-blue" alt="Release 0.1.0 alpha 17"></a>
+  <a href="https://github.com/megasoft1978/mica-terminal/releases/tag/v0.1.0-alpha.17"><img src="https://img.shields.io/badge/release-0.1.0--alpha.18-blue" alt="Release 0.1.0 alpha 18"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B%20%C2%B7%20Apple%20silicon-555" alt="macOS 14 or later, Apple silicon">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
 </p>
@@ -46,6 +46,7 @@
 - **Finds actions and text.** The Command Palette (<kbd>⌘⇧P</kbd>) searches menu actions and project tabs. Quick Select (<kbd>⌘⇧U</kbd>) labels visible URLs, existing file paths and Git hashes; type a label to copy, or hold <kbd>⌥</kbd> to open or reveal it. Prompt landmarks and last-command output are available with <kbd>⌘↑</kbd>/<kbd>⌘↓</kbd> and the Edit menu.
 - **Dictates on your Mac.** Speak, review the transcript and edit it before pressing Return. Recognition uses Moondream’s Parakeet Ultra, based on NVIDIA Parakeet TDT 0.6B v3, converted to Core ML by FluidInference. Project vocabulary correction is local and can be undone to restore the raw transcript.
 - **Adds a focus timer.** One timer is shared by every Mica window. Show its phase and countdown in the macOS menu bar, then start, pause, resume or end a phase from its menu or Mica’s Focus menu.
+- **Swaps a tab to lazygit.** <kbd>⌥⌘G</kbd> or the branch glyph on a tab's sidebar row replaces the view with lazygit in the same folder and back; the lazygit session stays alive while hidden and is closed after 10 idle minutes.
 - **Connects through OpenSSH.** Save a host or `~/.ssh/config` alias and an optional remote folder. Mica opens a fresh interactive SSH tab using macOS OpenSSH and your existing keys, agent and host-key checks. It stores no SSH passwords or private keys.
 
 ## Memory snapshot
@@ -123,6 +124,7 @@ Project vocabulary correction uses the project name, Git branch, tracked file na
 | Previous / next prompt | <kbd>⌘↑</kbd> / <kbd>⌘↓</kbd> |
 | Dictate | Hold left <kbd>⌥</kbd> (or click the microphone) |
 | Change theme | <kbd>⌥⌘L</kbd> |
+| Swap the tab to lazygit and back | <kbd>⌥⌘G</kbd> |
 | Clear scrollback | <kbd>⌘K</kbd> |
 | Show all shortcuts | <kbd>⌘/</kbd> |
 
