@@ -418,7 +418,8 @@ static int MicaRunUISelfTest(void) {
         MicaUITestRecord(report, &allPassed, imePromptReady && optionCompositionReachesShell,
             [NSString stringWithFormat:@"Option-composed punctuation reaches the shell as typed text (ready=%d buffer=%@)",
                 imePromptReady, optionComposedBuffer ?: @"<missing>"]);
-        if (imeTab.session) mica_session_write(imeTab.session, "\x03", 1);
+        // Ctrl-U clears the line without SIGINT, which could flush the queued `exit`.
+        if (imeTab.session) mica_session_write(imeTab.session, "\x15", 1);
         BOOL imeSessionStopped = MicaUITestExitTabs(imeDelegate.tabs);
         MicaUITestRecord(report, &allPassed, imeSessionStopped, @"composed-input test shell exits cleanly");
         imeDelegate.tabs = [NSMutableArray array];
