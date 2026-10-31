@@ -14,11 +14,6 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Cache Swift build
-        uses: actions/cache@v4
-        with:
-          path: build/swift-build
-          key: swift-${{ runner.os }}-${{ hashFiles('voice/Package.resolved') }}
       - name: Validate tests and app bundle
         run: make validate
       - name: Sanitizer, fuzz and UI stress tests

@@ -5,9 +5,6 @@ This roadmap tracks open work only. Shipped features are summarized below so the
 ## Shipped
 
 - The Command Palette (<kbd>⌘⇧P</kbd>) searches the menu action tree, displays current menu shortcuts and switches among tabs with folder, branch and activity context. It also exposes per-tab notification mute controls.
-- Dictation supports Hold (default) and Toggle modes. Edit → Undo Last Dictation removes the latest inserted transcript only while no later prompt text has been typed.
-- A microphone control in the status bar starts and finishes dictation by click, including when remote desktop software cannot send the keyboard shortcut.
-- Local deterministic dictation correction uses the user's vocabulary file, project name, Git branch and tracked file names, and recently visible terminal text. It is enabled by default, can be switched off from Edit, and Undo Last Dictation restores the raw transcript after correction. Boosting was measured (see [build/boost-measurements.md](../build/boost-measurements.md)): it inserted wrong words in unrelated places, added 59 MB of peak memory and a 98 MB download, so it was removed in favour of the deterministic corrector.
 - Quick Select (<kbd>⌘⇧U</kbd>) labels visible URLs, existing file paths and git hashes. Typing a label copies it; holding Option opens a URL or reveals a file.
 - OSC 133 A/B/C/D shell markers are emitted by Mica's zsh integration and recognized by the session parser. Per-row landmarks, failed-command markers, ⌘↑/⌘↓ prompt navigation, and last-command output selection/copy are shipped.
 - Agent notifications distinguish “needs input” from “finished”, use no sound, and can be muted per tab. Mica handles terminal notification sequences and clicking a notification returns to its window and tab.
@@ -18,13 +15,11 @@ This roadmap tracks open work only. Shipped features are summarized below so the
 - SSH connection profiles save a friendly name, OpenSSH destination and remote starting folder. They use the macOS `ssh` client and existing OpenSSH configuration/authentication, restore as new connections, and can be included in `.mica` project layouts. Profile records contain no credentials.
 - The focus timer is shared across windows, with labeled focus/break/paused states, Start/Pause/Resume controls, accessible actions, completion notifications and independent auto-start settings.
 - Scrollback stores only meaningful row prefixes within a fixed history limit. Search supports Unicode text; wrapped URLs work at retained physical widths. Full column-width reflow remains open.
-- The app includes system-following appearance, an opt-in global shortcut, denied-microphone Settings access, and per-window project windows hosted by one process.
 
 ## Open, ranked
 
 | # | Work | Current gap | Effort |
 | --- | --- | --- | --- |
-| 1 | Speech capture and prediction overlay | Move live dictation out of the terminal status strip into a compact, non-blocking native overlay with room for multi-line transcript preview. | Medium |
 | 2 | Trustworthy command status | Keep the status strip useful during commands with concise states based on reliable hooks, and a neutral fallback when Mica cannot identify meaningful activity. | Medium |
 | 3 | Tool-specific status adapters | Add focused, tested status mappings for Claude Code, Codex and selected interactive tools such as lazygit; do not infer detailed activity from incidental screen words. | Medium |
 | 4 | Retained-history column reflow | Reflow retained rows across width changes while preserving links, cell attributes, search and selection anchors within the per-session history cap. | Large |
@@ -36,14 +31,12 @@ This roadmap tracks open work only. Shipped features are summarized below so the
 ## Deferred
 
 - Timer session labels, daily goal and local history; menu-bar timer extra.
-- Dictation snippets and a review-before-insert draft.
 - Worktree picker and cleanup.
 - Bounded scrollback restore; changed-files summary.
 - Quick-terminal drop-down; Liquid Glass on the tab strip.
 
 ## Known limits
 
-- The first build needs a Swift 6 toolchain and network access for the speech package. Dictation downloads its model on first use/setup and processes audio locally.
 - Agent activity may still be inferred from visible terminal text when no hook event is available, and can misread ordinary output. Detailed status should remain conservative without authoritative evidence.
 - A single Dock icon serves all project windows. Its mark follows the front project; use the Dock menu for full project and tab names.
 - History rows retain their original physical width when moved by libvterm resize callbacks. Wrapped-link detection is conservative across different widths; full retained-history reflow must preserve links, cell attributes, search and selection anchors within the per-session history cap.

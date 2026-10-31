@@ -1,5 +1,5 @@
 // App-level stress test: drives the real AppKit view with thousands of random user actions (tabs, keys,
-// mouse, resize, find, clear, theme, settings, paste, dictation state) and expects no crash or sanitizer
+// mouse, resize, find, clear, theme, settings, paste) and expects no crash or sanitizer
 // report. Build and run with `make stress` (AddressSanitizer + UBSan).
 #define MICA_APP_NO_MAIN 1
 #import "../src/mica_app.m"
@@ -34,7 +34,8 @@ static NSMutableArray<MicaAppDelegate *> *gWindows;
 static void Act(MicaAppDelegate *delegate) {
     MicaTerminalView *view = delegate.terminalView;
     NSSize size = view.bounds.size;
-    int chosen = Between(0, 37);
+    int chosen = Between(0, 36);
+    if (chosen >= 27) chosen++;
     const char *only = getenv("STRESS_ONLY");
     if (only && chosen != atoi(only)) return;
     switch (chosen) {
@@ -115,25 +116,6 @@ static void Act(MicaAppDelegate *delegate) {
             for (MicaAppDelegate *other in gWindows) [other takeMenuOwnership];
         }
         break;
-    case 27: {   // dictation strip in every state, with awkward transcripts and levels
-        MicaVoiceController *voice = delegate.voiceController;
-        static NSString *const transcripts[] = { @"", @"hello", @"the quick brown fox jumps over the lazy dog again and again and again",
-            @"emoji 🎤🎧 and ünïcödé and 日本語のテキスト mixed", @"a  b   c\n\td", @"supercalifragilisticexpialidocious_supercalifragilisticexpialidocious_supercalifragilistic" };
-        static NSString *const statuses[] = { @"", @"Downloading speech model", @"Checking speech model files…",
-            @"Microphone access is off. Enable Mica in System Settings → Privacy & Security → Microphone." };
-        [voice setValue:@(Between(0, 4)) forKey:@"state"];
-        [voice setValue:transcripts[Between(0, 5)] forKey:@"transcript"];
-        [voice setValue:statuses[Between(0, 3)] forKey:@"statusText"];
-        [voice setValue:@(Between(0, 1)) forKey:@"hasProgress"];
-        [voice setValue:@(Between(0, 100) / 100.0) forKey:@"progress"];
-        [voice setValue:@(Between(0, 100) / 100.0f) forKey:@"audioLevel"];
-        [voice setValue:@(Between(0, 700)) forKey:@"elapsedSeconds"];
-        [voice setValue:@(Between(0, 100) / 100.0) forKey:@"prefetchFraction"];
-        [voice setValue:Between(0, 1) ? @"Downloading speech model" : nil forKey:@"prefetchStatus"];
-        [delegate voiceControllerDidUpdate:voice];
-        [view displayIfNeeded];
-        break;
-    }
     case 28: {   // left Option holds, taps and Option-composed characters (Italian, German, US layouts)
         static NSString *const composed[][2] = { {@"@", @"\u00f2"}, {@"#", @"\u00e0"}, {@"[", @"\u00e8"}, {@"{", @"\u00e8"},
             {@"~", @"n"}, {@"\u00e9", @"e"}, {@"\u03c0", @"p"}, {@"|", @"7"} };

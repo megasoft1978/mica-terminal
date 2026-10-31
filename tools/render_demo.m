@@ -405,19 +405,6 @@ int main(int argc, const char *argv[]) {
         if (!session) return 1;
         owner.activeTab.session = session;
         for (int attempt = 0; attempt < 100; attempt++) PollDemo(owner);
-        NSString *rawTranscript = @"Open Mica Terminal";
-        NSString *correctedTranscript = MicaCorrectTranscript(rawTranscript, @[@"MicaTerminal"]);
-        const char *vocabSetup = "PROMPT='demo> '; RPROMPT=''; clear\n";
-        mica_session_write(session, vocabSetup, strlen(vocabSetup));
-        for (int attempt = 0; attempt < 80; attempt++) PollDemo(owner);
-        NSString *correction = [NSString stringWithFormat:@"clear; printf 'Fake transcript (no microphone)\\nraw: %@\\ncorrected: %@\\nEdit Vocabulary… · Undo restores raw\\n'\n", rawTranscript, correctedTranscript];
-        mica_session_write(session, correction.UTF8String, strlen(correction.UTF8String));
-        for (int attempt = 0; attempt < 50; attempt++) PollDemo(owner);
-        NSBitmapImageRep *vocabBitmap = [owner.terminalView bitmapImageRepForCachingDisplayInRect:owner.terminalView.bounds];
-        [owner.terminalView cacheDisplayInRect:owner.terminalView.bounds toBitmapImageRep:vocabBitmap];
-        NSData *vocabPNG = [vocabBitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
-        if (!vocabPNG || ![vocabPNG writeToFile:[directory stringByAppendingPathComponent:@"vocabulary-correction-demo.png"] atomically:YES]) return 1;
-
         // Capture the shipped SSH profile manager with fictional destinations. No SSH connection is started.
         NSString *suiteName = [NSString stringWithFormat:@"mica-demo-ssh-%d", getpid()];
         NSUserDefaults *demoDefaults = [[NSUserDefaults alloc] initWithSuiteName:suiteName];
@@ -445,10 +432,9 @@ int main(int argc, const char *argv[]) {
         NSImage *darkWindowImage = [[NSImage alloc] initWithContentsOfFile:darkWindowPath];
         NSImage *paletteImage = ImageForView(palette);
         NSImage *quickImage = [[NSImage alloc] initWithContentsOfFile:[directory stringByAppendingPathComponent:@"quick-select-demo.png"]];
-        NSImage *dictationImage = [[NSImage alloc] initWithContentsOfFile:[directory stringByAppendingPathComponent:@"vocabulary-correction-demo.png"]];
         NSImage *timerImage = [[NSImage alloc] initWithContentsOfFile:[directory stringByAppendingPathComponent:@"timer-menu-bar-demo.png"]];
         NSImage *sshImage = [[NSImage alloc] initWithContentsOfFile:[directory stringByAppendingPathComponent:@"ssh-profiles-demo.png"]];
-        BOOL savedFeatureCards = darkWindowImage && paletteImage && quickImage && dictationImage && timerImage && sshImage &&
+        BOOL savedFeatureCards = darkWindowImage && paletteImage && quickImage && timerImage && sshImage &&
             SaveFeatureStoryCard(darkWindowImage, @"Keep terminal work in named tabs.",
                 @"Shell, Claude Code, Codex and other tools share a project window.",
                 [directory stringByAppendingPathComponent:@"feature-tabs.png"]) &&
@@ -458,9 +444,6 @@ int main(int argc, const char *argv[]) {
             SaveFeatureStoryCard(quickImage, @"Pick a link, existing file or Git hash.",
                 @"Quick Select labels items you can reach in the terminal.",
                 [directory stringByAppendingPathComponent:@"feature-quick-select.png"]) &&
-            SaveFeatureStoryCard(dictationImage, @"Dictate, review and correct locally.",
-                @"Illustrative text only. The demo records no speech.",
-                [directory stringByAppendingPathComponent:@"feature-dictation.png"]) &&
             SaveFeatureStoryCard(timerImage, @"Keep a focus timer in the menu bar.",
                 @"See the active phase and countdown across Mica windows.",
                 [directory stringByAppendingPathComponent:@"feature-focus-timer.png"]) &&

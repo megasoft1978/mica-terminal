@@ -105,12 +105,6 @@ int main(int argc, const char *argv[]) {
         if (!session) return 1;
         delegate.activeTab.session = session;
         for (int i = 0; i < 20; i++) { [delegate pollSessions:nil]; RunLoopFor(0.03); }
-        NSString *rawTranscript = @"Open Mica Terminal";
-        NSString *correctedTranscript = MicaCorrectTranscript(rawTranscript, @[@"MicaTerminal"]);
-        NSString *fakeTranscript = [NSString stringWithFormat:@"clear; printf 'Fake transcript (no microphone)\\nraw: %@\\ncorrected: %@\\nEdit Vocabulary… · Undo restores raw\\n'\n", rawTranscript, correctedTranscript];
-        mica_session_write(session, fakeTranscript.UTF8String, strlen(fakeTranscript.UTF8String));
-        for (int i = 0; i < 40; i++) { [delegate pollSessions:nil]; RunLoopFor(0.03); }
-        SaveView(delegate, [outputDirectory stringByAppendingPathComponent:@"vocabulary-correction-demo.png"]);
         [delegate setLightTheme:YES];
         RunLoopFor(0.3);
         type(@"clear; printf 'git status --short\\n M Sources/Fieldnote.swift\\n\\nmake test\\n✓ 42 tests passed\\n'");

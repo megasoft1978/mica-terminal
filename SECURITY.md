@@ -1,6 +1,6 @@
 # Security
 
-Mica runs interactive shells and, only when you start dictation, uses the microphone. Speech recognition runs locally after the first model download.
+Mica runs interactive shells.
 
 ## Reporting a vulnerability
 

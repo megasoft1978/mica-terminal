@@ -9,7 +9,7 @@ Reviewed 2026-09-29 against the current code (`src/mica_app.m`), the offscreen r
 | Title bar | Standard opaque title bar showing the window title | Wastes a row above a second custom row; looks like two stacked bars |
 | Tab strip | Custom-drawn 28 pt row inside the content view | Not native tabs, no drag-out, no tab overview, hand-rolled accessibility |
 | Terminal area | Cells start at x = 0 | No padding, so text touches the window edge and the rounded corners |
-| Status strip | Custom-drawn 32 pt row: mode badge, timer, context, hints, dictation | Dense; hints and timer compete; small type (now 11.5 pt) |
+| Status strip | Custom-drawn 32 pt row: mode badge, timer, context and hints | Dense; hints and timer compete; small type (now 11.5 pt) |
 | Project badge | Text at the right end of the tab strip | Easy to miss; duplicates the title |
 | Materials | Solid `#1E1E1E` (or white in the light theme) | No translucency, no Liquid Glass, no vibrancy |
 | Settings | Sheets for project tabs and timer only | No preferences for font, size, theme, cursor, opacity |
@@ -32,8 +32,8 @@ Make Mica look like a Tahoe-native terminal: content edge to edge, controls floa
 ### Stage 2: native structure (a few days)
 
 6. **Native window tabs or a native segmented tab control.** Either adopt `NSWindow` tabbing (free tab overview, drag-out, standard shortcuts) or keep the custom strip but build it from real `NSView`s so hit-testing, accessibility, focus rings and drag reordering come from AppKit rather than hand-written code.
-7. **Real toolbar for the actions** (new tab, find, timer, dictation). On macOS 26 `NSToolbar` groups items on glass automatically; use `isBordered = false` for the non-interactive title/status items so they do not get glass.
-8. **Preferences window (⌘,).** Font and size, theme (dark, light, follow system), cursor, padding, opacity, notifications, timer, dictation. Replace the one-off sheets.
+7. **Real toolbar for the actions** (new tab, find and timer). On macOS 26 `NSToolbar` groups items on glass automatically; use `isBordered = false` for the non-interactive title/status items so they do not get glass.
+8. **Preferences window (⌘,).** Font and size, theme (dark, light, follow system), cursor, padding, opacity, notifications and timer. Replace the one-off sheets.
 9. **Status strip becomes a slim, single-purpose bar.** Left: folder or mode. Center: nothing. Right: the timer as a small capsule. Move the shortcut hints to the Help menu and an on-demand ⌘/ card; they are noise for people who already know the keys.
 
 ### Stage 3: Tahoe polish (larger)
@@ -52,7 +52,7 @@ Make Mica look like a Tahoe-native terminal: content edge to edge, controls floa
 
 ## Suggested first slice
 
-Stage 1 items 1–3 plus the dictation-strip and tab-title fixes already made: terminal padding, transparent full-size title bar with the tab strip in it, and the unfocused state. It changes the whole feel with modest risk. Tests that assert exact cell geometry (`cellRectAtRow`, header and status heights) will need updating.
+Stage 1 items 1–3 plus the tab-title fixes already made: terminal padding, transparent full-size title bar with the tab strip in it, and the unfocused state. It changes the whole feel with modest risk. Tests that assert exact cell geometry (`cellRectAtRow`, header and status heights) will need updating.
 
 ## Sources
 

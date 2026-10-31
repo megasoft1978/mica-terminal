@@ -32,9 +32,6 @@ def make_base_app(path: Path) -> None:
     (path / "Contents/Resources").mkdir()
     (path / "Contents/Helpers").mkdir()
     (path / "Contents/MacOS/Mica").write_bytes(b"shared-mica-executable")
-    helper = path / "Contents/Helpers/mica-voice"
-    helper.write_bytes(b"local-voice-helper")
-    helper.chmod(0o755)
     icon_path = Path(os.environ.get(
         "MICA_TEST_APP_ICON", ROOT / "build/Mica.app/Contents/Resources/Mica.icns"
     ))
@@ -42,7 +39,6 @@ def make_base_app(path: Path) -> None:
     (path / "Contents/Resources/THIRD_PARTY_NOTICES.md").write_text("model and runtime credits\n", encoding="utf-8")
     (path / "Contents/Resources/ThirdPartyLicenses").mkdir()
     (path / "Contents/Resources/ThirdPartyLicenses/example.txt").write_text("test license\n", encoding="utf-8")
-    (path / "Contents/Resources/LICENSE-FluidAudio.txt").write_text("Apache License\n", encoding="utf-8")
     write_plist(path / "Contents/Info.plist", {
         "CFBundleDisplayName": "Mica Terminal",
         "CFBundleExecutable": "Mica",
@@ -50,7 +46,6 @@ def make_base_app(path: Path) -> None:
         "CFBundleName": "Mica",
         "CFBundlePackageType": "APPL",
         "LSMinimumSystemVersion": "14.0",
-        "NSMicrophoneUsageDescription": "Dictation microphone test notice",
         "NSDesktopFolderUsageDescription": "Project folder access test notice",
         "NSDocumentsFolderUsageDescription": "Project folder access test notice",
         "NSPrincipalClass": "NSApplication",
@@ -232,7 +227,6 @@ def main() -> None:
         assert alpha_info["CFBundleIdentifier"] != beta_info["CFBundleIdentifier"]
         assert alpha_info["CFBundleIconFile"] == "Mica.icns"
         assert beta_info["CFBundleIconFile"] == "Mica.icns"
-        assert alpha_info["NSMicrophoneUsageDescription"] == "Dictation microphone test notice"
         assert alpha_info["NSDesktopFolderUsageDescription"] == "Project folder access test notice"
         assert alpha_info["NSDocumentsFolderUsageDescription"] == "Project folder access test notice"
         assert alpha_info["MicaProjectName"] == "Alpha Project"

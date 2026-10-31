@@ -1,8 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #import "mica.h"
 #import "mica_diagnostics.h"
-#import "mica_voice_controller.h"
-#import "mica_vocabulary.h"
 #import "mica_pomodoro.h"
 #import "mica_status_item.h"
 #import "mica_hook_server.h"
@@ -15,11 +13,9 @@
 #import "mica_agent_rss.h"
 #import "mica_status_context.h"
 #import "mica_ssh_profile.h"
-#import "mica_remote_server.h"
 #import "mica_project_history.h"
 #import <UserNotifications/UserNotifications.h>
 #import <Carbon/Carbon.h>
-#import <CoreImage/CoreImage.h>
 
 #import <CommonCrypto/CommonDigest.h>
 #import <fcntl.h>
@@ -32,9 +28,22 @@
 #include <errno.h>
 #include <unistd.h>
 
+static NSURL *MicaGitExecutableURL(void) {
+    NSMutableArray<NSString *> *directories = [NSMutableArray array];
+    NSString *path = NSProcessInfo.processInfo.environment[@"PATH"] ?: @"";
+    for (NSString *directory in [path componentsSeparatedByString:@":"])
+        if (directory.length) [directories addObject:directory];
+    [directories addObjectsFromArray:@[@"/usr/bin", @"/opt/homebrew/bin", @"/usr/local/bin"]];
+    NSFileManager *files = NSFileManager.defaultManager;
+    for (NSString *directory in directories) {
+        NSString *candidate = [directory stringByAppendingPathComponent:@"git"];
+        if ([files isExecutableFileAtPath:candidate]) return [NSURL fileURLWithPath:candidate];
+    }
+    return nil;
+}
+
 static const CGFloat kHeaderHeight = 28.0;
 static const CGFloat kStatusHeight = 32.0;
-static const CGFloat kDictationPreviewHeight = 104.0;
 static const CGFloat kTerminalPaddingX = 10.0;   // breathing room between the window edge and the first column
 static const CGFloat kTrafficLightInset = 78.0;  // tab strip starts after the window buttons in the merged title bar
 static const NSTimeInterval kAgentActivityQuietInterval = 2.5;
@@ -238,9 +247,6 @@ static NSURL *gMicaSessionStateURLOverride;
 static BOOL MicaIncreaseContrastEnabled(void) {
     return gMicaTestIncreaseContrast || NSWorkspace.sharedWorkspace.accessibilityDisplayShouldIncreaseContrast;
 }
-static NSURL *MicaMicrophoneSettingsURL(void) {
-    return [NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"];
-}
 static NSInteger gMicaCursorStyle = 0;   // 0 block, 1 bar, 2 underline
 
 static NSColor *MicaBackgroundColor(void) {
@@ -349,10 +355,6 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 @property(nonatomic, assign) uint64_t agentRSSBytes;
 @property(nonatomic, copy) NSString *gitBranch;
 @property(nonatomic, copy) NSString *projectRoot;
-@property(nonatomic, copy) NSArray<NSString *> *vocabularyFileTerms;
-@property(nonatomic, copy) NSArray<NSString *> *gitVocabularyTerms;
-@property(nonatomic, copy) NSString *recentVisibleText;
-@property(nonatomic, strong) NSDate *recentVisibleCapturedAt;
 @property(nonatomic, copy) NSString *gitBranchLookupPath;
 @property(nonatomic, assign) NSTimeInterval lastSelectedAt;
 @property(nonatomic, assign) NSInteger clipboardDecision;  // 0 ask, 2 deny in this tab
@@ -407,35 +409,6 @@ static NSString *MicaAgentNameForText(NSString *text) {
 
 
 // Keep the newest complete words that fit the reserved live transcript preview.
-static NSString *MicaLastWordsFittingSize(NSString *text, NSSize size, NSDictionary *attributes) {
-    NSArray<NSString *> *words = [text componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    NSMutableArray<NSString *> *kept = [NSMutableArray array];
-    for (NSString *word in words) if (word.length) [kept addObject:word];
-    if (!kept.count || size.width <= 0 || size.height <= 0) return @"";
-    NSString *complete = [kept componentsJoinedByString:@" "];
-    NSRect completeBounds = [complete boundingRectWithSize:size
-        options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading attributes:attributes];
-    if (completeBounds.size.width <= size.width && completeBounds.size.height <= size.height) return complete;
-
-    NSUInteger low = 1, high = kept.count, best = 0;
-    while (low <= high) {
-        NSUInteger count = low + (high - low) / 2;
-        NSArray<NSString *> *tail = [kept subarrayWithRange:NSMakeRange(kept.count - count, count)];
-        NSString *candidate = [NSString stringWithFormat:@"… %@", [tail componentsJoinedByString:@" "]];
-        NSRect bounds = [candidate boundingRectWithSize:size
-            options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading attributes:attributes];
-        if (bounds.size.width <= size.width && bounds.size.height <= size.height) {
-            best = count;
-            low = count + 1;
-        } else {
-            if (count == 1) break;
-            high = count - 1;
-        }
-    }
-    if (!best) return @"";
-    NSArray<NSString *> *tail = [kept subarrayWithRange:NSMakeRange(kept.count - best, best)];
-    return [NSString stringWithFormat:@"… %@", [tail componentsJoinedByString:@" "]];
-}
 
 static NSString *MicaAgentStateForTab(MicaTab *tab) { return tab.agentState ?: @"idle"; }
 static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **detailOut);
@@ -454,31 +427,6 @@ static NSString *MicaAgentNameForTab(MicaTab *tab) {
     return MicaAgentNameForText(tab.name);
 }
 
-static BOOL MicaAgentPromptReadyForDictation(MicaTab *tab) {
-    NSString *agent = MicaAgentNameForTab(tab);
-    if (!tab.session || (![agent isEqualToString:@"Codex"] && ![agent isEqualToString:@"Claude Code"]))
-        return NO;
-    NSString *visibleActivity = MicaAgentActivityForSession(tab.session, NULL);
-    if ([visibleActivity isEqualToString:@"Needs approval"] ||
-        [visibleActivity isEqualToString:@"Choosing session"] ||
-        [visibleActivity isEqualToString:@"Working"] ||
-        [visibleActivity isEqualToString:@"Thinking"] ||
-        [visibleActivity isEqualToString:@"Planning"] ||
-        [visibleActivity isEqualToString:@"Searching"] ||
-        [visibleActivity isEqualToString:@"Reading"] ||
-        [visibleActivity isEqualToString:@"Editing"] ||
-        [visibleActivity isEqualToString:@"Testing"] ||
-        [visibleActivity isEqualToString:@"Analyzing"] ||
-        [visibleActivity isEqualToString:@"Exploring"] ||
-        [visibleActivity isEqualToString:@"Compacting"])
-        return NO;
-    if (tab.receivedAgentHook) {
-        NSString *state = MicaAgentStateForTab(tab);
-        return [state isEqualToString:@"idle"] || [state isEqualToString:@"done"] ||
-            [state isEqualToString:@"waitingInput"];
-    }
-    return [visibleActivity isEqualToString:@"Ready"] || [visibleActivity isEqualToString:@"Needs input"];
-}
 
 static BOOL CellIsContinuation(MicaCell cell);
 
@@ -603,9 +551,6 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, assign) NSUInteger drawingStatsCount;
 @property(nonatomic, assign) NSTimeInterval drawingStatsTotalDuration;
 @property(nonatomic, assign) NSTimeInterval drawingStatsMaximumDuration;
-@property(nonatomic, assign) NSRect dictationLabelTextRect;
-@property(nonatomic, assign) NSRect dictationWordsTextRect;
-@property(nonatomic, assign) NSRect dictationHintTextRect;
 @property(nonatomic, assign) BOOL quickSelectActive;
 @property(nonatomic, copy) NSArray<NSDictionary *> *quickSelectMatches;
 @property(nonatomic, copy) NSString *quickSelectPrefix;
@@ -648,19 +593,14 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (NSArray<NSDictionary *> *)quickSelectCandidates;
 - (NSRect)cellRectAtRow:(NSInteger)row col:(NSInteger)col;
 - (NSColor *)colorForVTermColor:(VTermColor)color isForeground:(BOOL)isForeground;
-- (NSRect)dictationPreviewRect;
-- (NSRect)microphoneSettingsButtonRect;
-- (NSRect)dictationButtonRect;
 - (NSRect)terminalHitRect;
 - (CGFloat)tabsLeadingInset;
 - (BOOL)windowIsActive;
-- (void)drawDictationPreview:(MicaVoiceController *)voice inRect:(NSRect)preview;
 - (void)openHyperlinkID:(uint32_t)hyperlinkID forTab:(MicaTab *)tab;
-- (void)cancelLeftOptionTracking;
 @end
 
-@interface MicaAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, MicaVoiceControllerDelegate,
-                                       UNUserNotificationCenterDelegate, NSMenuDelegate>
+
+@interface MicaAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, UNUserNotificationCenterDelegate, NSMenuDelegate>
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, strong) MicaTerminalView *terminalView;
 @property(nonatomic, strong) MicaWindowContentView *windowContentView;
@@ -684,12 +624,6 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, strong) dispatch_group_t terminationCleanupGroup;
 @property(nonatomic, assign) NSTimeInterval lastActivityAnimationAt;
 @property(nonatomic, assign) NSUInteger activityAnimationFrame;
-@property(nonatomic, strong) MicaVoiceController *voiceController;
-@property(nonatomic, strong) MicaTab *voiceTargetTab;
-@property(nonatomic, copy) NSUUID *voiceTargetRecordingID;
-@property(nonatomic, weak) MicaTab *voiceTargetRecordingTab;
-@property(nonatomic) NSInteger lastVoiceState;
-@property(nonatomic) NSTimeInterval lastVoiceAnimationAt;
 @property(nonatomic, copy) NSString *memoryLabel;
 @property(nonatomic) NSTimeInterval memoryCheckedAt;
 @property(nonatomic) BOOL clipboardPromptShowing;
@@ -707,12 +641,6 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, strong) NSTimer *agentRSSTimer;
 @property(nonatomic, strong) MicaAgentRSSMonitor *agentRSSMonitor;
 @property(nonatomic, assign) BOOL agentRSSStatusMenuOpen;
-@property(nonatomic, assign) BOOL dictationToggleMode;
-@property(nonatomic, copy) NSString *lastDictationText;
-@property(nonatomic, copy) NSString *lastDictationRawText;
-@property(nonatomic, weak) MicaTab *lastDictationTab;
-@property(nonatomic, assign) BOOL dictationUndoValid;
-@property(nonatomic, strong) NSURL *dictationSnippetsURLOverride;
 @property(nonatomic, strong) NSPanel *commandPalettePanel;
 @property(nonatomic, strong) NSTextField *commandPaletteSearch;
 @property(nonatomic, strong) NSTableView *commandPaletteTable;
@@ -727,8 +655,6 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)showDockWindowFromMenu:(id)sender;
 - (void)newTabWithName:(NSString *)name command:(NSString *)command;
 - (void)addTabWithName:(NSString *)name cwd:(NSString *)cwd command:(NSString *)command prefilled:(BOOL)prefilled;
-- (void)refreshVocabularyForTab:(MicaTab *)tab;
-- (NSString *)visibleTextForTab:(MicaTab *)tab;
 - (void)closeActiveTab;
 - (void)selectRelativeTab:(NSInteger)delta;
 - (void)jumpToNextWaitingTab:(id)sender;
@@ -749,8 +675,6 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)setCursorStyle:(id)sender;
 - (void)openPreferences:(id)sender;
 - (void)prefShortcutChanged:(NSButton *)sender;
-- (void)prefDictationModeChanged:(NSPopUpButton *)sender;
-- (void)undoLastDictation:(id)sender;
 - (void)applyStoredShortcutPreference;
 - (NSInteger)storedScrollbackLines;
 + (NSInteger)scrollbackIndexForLines:(NSInteger)lines;
@@ -770,14 +694,6 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)takeMenuOwnership;
 - (void)handleHookEvent:(MicaHookEvent)event forTab:(MicaTab *)tab;
 - (void)setupAgentHooks:(id)sender;
-- (void)showRemoteControl:(id)sender;
-- (void)disableRemoteControl:(id)sender;
-- (void)updateRemoteControlMenu;
-- (void)presentRemotePairing;
-- (NSDictionary *)remoteSnapshot;
-- (NSString *)remoteScreenForTabID:(NSString *)identifier;
-- (BOOL)sendRemoteText:(NSString *)text toTabID:(NSString *)identifier;
-- (BOOL)selectRemoteTabID:(NSString *)identifier;
 - (void)buildMenus;
 - (void)teardownWindow;
 - (NSArray<NSValue *> *)detachSessionsForTermination;
@@ -802,10 +718,6 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)pollCompanionForTab:(MicaTab *)tab;
 - (void)resolveAgentResumeForTab:(MicaTab *)tab;
 - (NSArray<NSDictionary *> *)readSessionState;
-- (void)startPushToTalk;
-- (void)finishPushToTalk;
-- (void)beginDictationForActiveTab;
-- (void)cancelDictation;
 - (void)openDiagnosticLogs:(id)sender;
 - (void)showKeyboardShortcuts:(id)sender;
 - (void)openProjectSettings:(id)sender;
@@ -1183,12 +1095,11 @@ static NSString *MicaWorkingDirectoryForPID(pid_t pid) {
     return [NSFileManager.defaultManager stringWithFileSystemRepresentation:paths.pvi_cdir.vip_path length:length];
 }
 
-// "58 MB", or "58 + 36 MB" while the speech helper is running. Nothing else is hidden: this is everything
-// Mica (window, shells' bookkeeping, timer) and its dictation helper occupy right now.
+// The status bar shows the application footprint.
+// Mica (window, shells' bookkeeping, and timer) occupy right now.
 static NSString *MicaMemoryLabel(uint64_t appBytes, uint64_t helperBytes) {
-    double app = appBytes / 1048576.0, helper = helperBytes / 1048576.0;
-    return helperBytes ? [NSString stringWithFormat:@"%.0f + %.0f MB", app, helper]
-                       : [NSString stringWithFormat:@"%.0f MB", app];
+    (void)helperBytes;
+    return [NSString stringWithFormat:@"%.0f MB", appBytes / 1048576.0];
 }
 
 static NSMenuItem *AddMenuItem(NSMenu *menu, NSString *title, SEL selector, NSString *key, NSEventModifierFlags modifiers) {
@@ -1380,7 +1291,6 @@ typedef struct {
     NSRect contextRect;
     NSRect hintsRect;
     NSRect memoryRect;
-    NSRect dictationRect;
     NSArray<NSString *> *hints;
 } MicaStatusBarLayout;
 
@@ -1388,8 +1298,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         CGFloat minimumContextWidth, CGFloat memoryWidth, NSArray<NSString *> *hints,
         NSDictionary<NSAttributedStringKey, id> *hintAttrs) {
     MicaStatusBarLayout layout = {0};
-    layout.dictationRect = NSMakeRect(width - 38, 0, 32, kStatusHeight);
-    layout.memoryRect = NSMakeRect(NSMinX(layout.dictationRect) - 12 - memoryWidth, 0, memoryWidth, kStatusHeight);
+    layout.memoryRect = NSMakeRect(width - 18 - memoryWidth, 0, memoryWidth, kStatusHeight);
     CGFloat hintRight = NSMinX(layout.memoryRect) - 18;
     CGFloat hintWidth = 0;
     while (hints.count) {
@@ -1436,22 +1345,14 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     NSToolTipTag _tabToolTipTag;
     NSRect _tabToolTipRect;
     BOOL _hasTabToolTip;
-    NSToolTipTag _dictationToolTipTag;
-    NSRect _dictationToolTipRect;
-    BOOL _hasDictationToolTip;
-    NSTimer *_leftOptionTimer;
     NSTimer *_gridSizeRetryTimer;
     BOOL _gridSizeFailureLogged;
-    BOOL _leftOptionIsDown;
-    BOOL _leftOptionUsedWithAnotherKey;
-    BOOL _leftOptionStartedDictation;
 }
 
 #pragma mark NSTextInputClient
 
 - (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
     (void)replacementRange;
-    if (self.owner.dictationUndoValid) self.owner.dictationUndoValid = NO;
     _markedText = nil;
     [self setNeedsDisplay:YES];
     NSString *text = [string isKindOfClass:NSAttributedString.class] ? [(NSAttributedString *)string string] : string;
@@ -1555,7 +1456,6 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     [super resetCursorRects];
     NSRect terminal = [self terminalRect];
     if (!NSIsEmptyRect(terminal)) [self addCursorRect:terminal cursor:NSCursor.IBeamCursor];
-    [self addCursorRect:[self dictationButtonRect] cursor:NSCursor.pointingHandCursor];
     MicaTab *tab = self.owner.activeTab;
     if (tab.session) {
         // Validate each distinct link once instead of parsing its URL for every cell.
@@ -1585,63 +1485,12 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
 }
 
 - (void)dealloc {
-    [_leftOptionTimer invalidate];
     [_gridResizeTimer invalidate];
     [_gridSizeRetryTimer invalidate];
 }
 
-- (void)leftOptionPressedAlone:(NSTimer *)timer {
-    if (_leftOptionTimer != timer) return;
-    _leftOptionTimer = nil;
-    if (_leftOptionIsDown && !_leftOptionUsedWithAnotherKey) {
-        _leftOptionStartedDictation = YES;
-        [self.owner startPushToTalk];
-    }
-}
 
-- (void)cancelLeftOptionTracking {
-    BOOL shouldFinish = _leftOptionStartedDictation;
-    [_leftOptionTimer invalidate];
-    _leftOptionTimer = nil;
-    _leftOptionIsDown = NO;
-    _leftOptionUsedWithAnotherKey = NO;
-    _leftOptionStartedDictation = NO;
-    if (shouldFinish) [self.owner finishPushToTalk];
-}
 
-- (void)flagsChanged:(NSEvent *)event {
-    [super flagsChanged:event];
-    if (event.keyCode != 58) return; // Left Option; leave right Option as a normal shell modifier.
-    NSEventModifierFlags flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
-    BOOL isDown = (flags & NSEventModifierFlagOption) != 0;
-    if (isDown) {
-        if (_leftOptionIsDown) return;
-        _leftOptionIsDown = YES;
-        _leftOptionUsedWithAnotherKey =
-            (flags & (NSEventModifierFlagCommand | NSEventModifierFlagControl |
-                      NSEventModifierFlagShift | NSEventModifierFlagFunction)) != 0;
-        [_leftOptionTimer invalidate];
-        _leftOptionTimer = nil;
-        if (!_leftOptionUsedWithAnotherKey && self.owner.dictationToggleMode) {
-            MicaVoiceControllerState state = self.owner.voiceController.state;
-            if (state == MicaVoiceControllerStatePreparing || state == MicaVoiceControllerStateListening)
-                [self.owner finishPushToTalk];
-            else [self.owner beginDictationForActiveTab];
-            _leftOptionStartedDictation = NO;
-        } else if (!_leftOptionUsedWithAnotherKey) {
-            _leftOptionTimer = [NSTimer scheduledTimerWithTimeInterval:0.28
-                target:self selector:@selector(leftOptionPressedAlone:) userInfo:nil repeats:NO];
-        }
-    } else {
-        BOOL shouldFinish = _leftOptionIsDown && _leftOptionStartedDictation;
-        [_leftOptionTimer invalidate];
-        _leftOptionTimer = nil;
-        _leftOptionIsDown = NO;
-        _leftOptionUsedWithAnotherKey = NO;
-        _leftOptionStartedDictation = NO;
-        if (shouldFinish && !self.owner.dictationToggleMode) [self.owner finishPushToTalk];
-    }
-}
 
 - (NSColor *)colorForVTermColor:(VTermColor)color isForeground:(BOOL)isForeground {
     if (isForeground && VTERM_COLOR_IS_DEFAULT_FG(&color)) return MicaForegroundColor();
@@ -1731,9 +1580,8 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
 }
 
 - (NSRect)terminalRect {
-    CGFloat previewHeight = self.owner.voiceController.state == MicaVoiceControllerStateIdle ? 0 : kDictationPreviewHeight;
     return NSMakeRect(kTerminalPaddingX, kStatusHeight, MAX(0, self.bounds.size.width - 2 * kTerminalPaddingX),
-                      MAX(0, self.bounds.size.height - kHeaderHeight - kStatusHeight - previewHeight));
+                      MAX(0, self.bounds.size.height - kHeaderHeight - kStatusHeight));
 }
 
 // The full-width band the terminal occupies, padding included, for hit-testing drops and clicks.
@@ -1752,26 +1600,6 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
 // Room reserved at the left of the tab strip for the traffic lights (none in full screen).
 - (CGFloat)tabsLeadingInset {
     return (self.window.styleMask & NSWindowStyleMaskFullScreen) ? 8.0 : kTrafficLightInset;
-}
-
-- (NSRect)dictationPreviewRect {
-    if (!self.owner.voiceController || self.owner.voiceController.state == MicaVoiceControllerStateIdle)
-        return NSZeroRect;
-    NSRect terminal = [self terminalRect];
-    return NSMakeRect(0, NSMaxY(terminal), self.bounds.size.width, kDictationPreviewHeight);
-}
-
-- (NSRect)microphoneSettingsButtonRect {
-    MicaVoiceController *voice = self.owner.voiceController;
-    BOOL denied = voice.state == MicaVoiceControllerStateFailed &&
-        ([voice.statusText containsString:@"Microphone access was denied"] ||
-         [voice.statusText containsString:@"Microphone access is off"]);
-    NSRect preview = [self dictationPreviewRect];
-    return denied ? NSMakeRect(MAX(0, self.bounds.size.width - 190), NSMinY(preview) + 12, 178, 24) : NSZeroRect;
-}
-
-- (NSRect)dictationButtonRect {
-    return NSMakeRect(MAX(0, self.bounds.size.width - 38), 0, MIN(32, self.bounds.size.width), kStatusHeight);
 }
 
 - (void)updateGridSize {
@@ -2125,30 +1953,13 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         _tabToolTipRect = header;
         _hasTabToolTip = YES;
     }
-    NSRect dictationRect = [self dictationButtonRect];
-    if (_hasDictationToolTip && !NSEqualRects(dictationRect, _dictationToolTipRect)) {
-        [self removeToolTip:_dictationToolTipTag];
-        _hasDictationToolTip = NO;
-    }
-    if (!_hasDictationToolTip && !NSIsEmptyRect(dictationRect)) {
-        _dictationToolTipTag = [self addToolTipRect:dictationRect owner:self userData:NULL];
-        _dictationToolTipRect = dictationRect;
-        _hasDictationToolTip = YES;
-    }
+
 }
 
 - (NSString *)view:(NSView *)view stringForToolTip:(NSToolTipTag)tag point:(NSPoint)point userData:(void *)data {
     (void)view;
     (void)tag;
     (void)data;
-    if (NSPointInRect(point, [self dictationButtonRect])) {
-        MicaVoiceControllerState state = self.owner.voiceController.state;
-        if (state == MicaVoiceControllerStatePreparing || state == MicaVoiceControllerStateListening)
-            return @"Stop dictation and insert the transcript";
-        if (state == MicaVoiceControllerStateTranscribing) return @"Transcribing and sending the text";
-        if (state == MicaVoiceControllerStateFailed) return @"Retry dictation";
-        return @"Start speech to text";
-    }
     if (NSPointInRect(point, [self tabOverflowRect])) {
         NSUInteger hidden = self.owner.tabs.count - [self visibleTabRange].length;
         return [NSString stringWithFormat:@"%lu more terminal tab%@", (unsigned long)hidden, hidden == 1 ? @"" : @"s"];
@@ -2311,7 +2122,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         NSForegroundColorAttributeName: contextColor
     };
 
-    NSArray<NSString *> *hintParts = @[@"⌘/ Shortcuts", @"⌥ Dictate", @"⌘1–8 Switch tab",
+    NSArray<NSString *> *hintParts = @[@"⌘/ Shortcuts", @"⌘1–8 Switch tab",
         @"⌘T New tab", @"⌘Q Quit"];
     NSDictionary *hintAttrs = @{
         NSFontAttributeName: [NSFont systemFontOfSize:11.5],
@@ -2337,30 +2148,6 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     CGFloat hintX = NSMinX(layout.hintsRect);
     CGFloat availableWidth = layout.contextRect.size.width;
     MicaDrawCenteredLine(memoryText, layout.memoryRect, memoryAttrs, NSTextAlignmentRight);
-    NSRect dictationButton = [self dictationButtonRect];
-    MicaVoiceControllerState dictationState = self.owner.voiceController.state;
-    BOOL dictationActive = dictationState == MicaVoiceControllerStatePreparing ||
-        dictationState == MicaVoiceControllerStateListening;
-    BOOL dictationFinishing = dictationState == MicaVoiceControllerStateTranscribing;
-    NSString *dictationSymbol = dictationActive ? @"stop.fill" :
-        (dictationFinishing ? @"arrow.up.circle.fill" : @"mic");
-    NSColor *dictationTint = dictationActive ? NSColor.systemRedColor :
-        (dictationFinishing ? NSColor.controlAccentColor : MicaSecondaryLabelColor(1.0));
-    NSColor *dictationPillColor = dictationActive
-        ? [NSColor.systemRedColor colorWithAlphaComponent:0.18]
-        : (dictationFinishing ? [NSColor.controlAccentColor colorWithAlphaComponent:0.20]
-                              : [NSColor.secondaryLabelColor colorWithAlphaComponent:0.12]);
-    NSRect dictationPill = NSInsetRect(dictationButton, 5, 4);
-    [dictationPillColor setFill];
-    [[NSBezierPath bezierPathWithRoundedRect:dictationPill xRadius:7 yRadius:7] fill];
-    NSImage *mic = [NSImage imageWithSystemSymbolName:dictationSymbol
-                                accessibilityDescription:dictationActive ? @"Stop dictation" :
-                                    (dictationFinishing ? @"Sending dictated text" : @"Start dictation")];
-    if (mic) {
-        mic = [mic imageWithSymbolConfiguration:
-            [NSImageSymbolConfiguration configurationWithHierarchicalColor:dictationTint]];
-        [mic drawInRect:NSInsetRect(dictationPill, 7, 6)];
-    }
     if (!modeName && !tab.currentCommand.length && !tab.completedCommand && viewOffset == 0) {
         NSString *branchSuffix = tab.gitBranch.length ? [NSString stringWithFormat:@"  ·  %@", tab.gitBranch] : @"";
         CGFloat branchWidth = [branchSuffix sizeWithAttributes:contextAttrs].width;
@@ -2370,15 +2157,6 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         CGFloat pathWidth = MAX(0, availableWidth - labelWidth - branchWidth);
         context = [[folderLabel stringByAppendingString:
             MicaTruncatedPath(folderName, pathWidth, contextAttrs)] stringByAppendingString:branchSuffix];
-    }
-    MicaVoiceController *prefetchVoice = self.owner.voiceController;
-    BOOL prefetching = prefetchVoice.isPrefetchingModel;
-    if (prefetching) {
-        double fraction = prefetchVoice.prefetchFraction;
-        context = fraction > 0
-            ? [NSString stringWithFormat:@"%@ · %.0f%%", prefetchVoice.prefetchStatus, fraction * 100.0]
-            : (prefetchVoice.prefetchStatus.length ? prefetchVoice.prefetchStatus : @"Preparing speech");
-        if (![context hasSuffix:@"%"] && ![context hasSuffix:@"…"]) context = [context stringByAppendingString:@"…"];
     }
     CGFloat contextWidth = availableWidth;
     contextWidth = MIN(contextWidth, [context sizeWithAttributes:contextAttrs].width);
@@ -2407,152 +2185,9 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
             x += 8;
         }
     }
-    // The status strip control is also the mouse-only dictation entry point for remote desktops.
-    if (prefetching) {
-        NSRect track = NSMakeRect(0, 0, self.bounds.size.width, 2);
-        [[NSColor.controlAccentColor colorWithAlphaComponent:0.16] setFill];
-        NSRectFill(track);
-        double fraction = prefetchVoice.prefetchFraction;
-        NSRect fill = track;
-        if (fraction > 0) {
-            fill.size.width *= fraction;
-        } else {
-            CGFloat segmentWidth = MIN(100, track.size.width * 0.2);
-            CGFloat phase = fmod(NSProcessInfo.processInfo.systemUptime / 1.25, 2.0);
-            if (phase > 1.0) phase = 2.0 - phase;
-            fill.origin.x += MAX(0, track.size.width - segmentWidth) * phase;
-            fill.size.width = segmentWidth;
-        }
-        [NSColor.controlAccentColor setFill];
-        NSRectFill(fill);
-    }
+
 }
 
-- (void)drawDictationPreview:(MicaVoiceController *)voice inRect:(NSRect)preview {
-    MicaVoiceControllerState state = voice.state;
-    NSColor *accent = state == MicaVoiceControllerStateFailed ? NSColor.systemRedColor : NSColor.controlAccentColor;
-    NSString *heading = voice.statusText ?: @"";
-    if (state == MicaVoiceControllerStateListening) {
-        NSUInteger seconds = (NSUInteger)MAX(0, voice.elapsedSeconds);
-        heading = self.owner.dictationToggleMode ? @"Listening · press ⌥ to stop" :
-            [NSString stringWithFormat:@"Listening · %02lu:%02lu", (unsigned long)(seconds / 60), (unsigned long)(seconds % 60)];
-    } else if (state == MicaVoiceControllerStatePreparing) {
-        heading = @"Preparing speech…";
-    } else if (state == MicaVoiceControllerStateTranscribing) {
-        heading = @"Finishing transcript…";
-    } else if (state == MicaVoiceControllerStateFailed) {
-        heading = @"Dictation failed";
-    }
-    [NSColor.controlBackgroundColor setFill]; NSRectFill(preview);
-    [MicaSeparatorColor() setStroke];
-    NSBezierPath *edge = [NSBezierPath bezierPath];
-    [edge moveToPoint:NSMakePoint(0, NSMinY(preview) + 0.5)];
-    [edge lineToPoint:NSMakePoint(NSMaxX(preview), NSMinY(preview) + 0.5)];
-    [edge moveToPoint:NSMakePoint(0, NSMaxY(preview) - 0.5)];
-    [edge lineToPoint:NSMakePoint(NSMaxX(preview), NSMaxY(preview) - 0.5)]; [edge stroke];
-    NSDictionary *statusAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold],
-        NSForegroundColorAttributeName: state == MicaVoiceControllerStateFailed
-            ? NSColor.systemRedColor : NSColor.labelColor
-    };
-    CGFloat titleY = NSMaxY(preview) - 26;
-    BOOL meter = state == MicaVoiceControllerStateListening ||
-        (state == MicaVoiceControllerStatePreparing && voice.isCapturing);
-    if (meter) {
-        static const CGFloat weights[5] = { 0.55, 0.85, 1.0, 0.8, 0.5 };
-        CGFloat level = voice.audioLevel;
-        for (NSInteger bar = 0; bar < 5; bar++) {
-            CGFloat wobble = 0.85 + 0.15 * sin(NSProcessInfo.processInfo.systemUptime * 9.0 + bar * 1.7);
-            CGFloat barHeight = 3 + level * 15 * weights[bar] * wobble;
-            NSRect wave = NSMakeRect(16 + bar * 4.5, titleY + 3, 2.5, barHeight);
-            [[accent colorWithAlphaComponent:state == MicaVoiceControllerStateListening ? 1.0 : 0.6] setFill];
-            [[NSBezierPath bezierPathWithRoundedRect:wave xRadius:1.25 yRadius:1.25] fill];
-        }
-    } else if (state == MicaVoiceControllerStatePreparing || state == MicaVoiceControllerStateTranscribing) {
-        CGFloat start = fmod(NSProcessInfo.processInfo.systemUptime * 300.0, 360.0);
-        NSBezierPath *arc = [NSBezierPath bezierPath];
-        arc.lineWidth = 2;
-        arc.lineCapStyle = NSLineCapStyleRound;
-        [arc appendBezierPathWithArcWithCenter:NSMakePoint(26, titleY + 8) radius:6
-            startAngle:start endAngle:start + 260];
-        [accent setStroke];
-        [arc stroke];
-    } else {
-        NSBezierPath *micDot = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(23, titleY + 5, 6, 6)];
-        [accent setFill];
-        [micDot fill];
-    }
-    NSString *text;
-    if (state == MicaVoiceControllerStatePreparing) {
-        text = voice.statusText.length ? voice.statusText : @"Getting the speech model ready…";
-        if (voice.isCapturing) text = @"Getting ready. Keep talking, nothing is lost";
-        if (voice.hasProgress)
-            text = [NSString stringWithFormat:@"%@  %.0f%%", text, MIN(1.0, MAX(0.0, voice.progress)) * 100.0];
-    } else if (state == MicaVoiceControllerStateFailed) {
-        text = voice.statusText ?: @"Press Escape to dismiss";
-    } else if (voice.transcript.length) {
-        text = voice.transcript;
-    } else {
-        text = state == MicaVoiceControllerStateListening ? @"Listening. Your words appear in a few seconds" : @"";
-    }
-    NSMutableParagraphStyle *tailStyle = [NSMutableParagraphStyle new];
-    tailStyle.lineBreakMode = NSLineBreakByTruncatingTail;
-    NSDictionary *transcriptAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:13 weight:NSFontWeightMedium],
-        NSForegroundColorAttributeName: state == MicaVoiceControllerStateFailed ? NSColor.secondaryLabelColor : NSColor.labelColor,
-        NSParagraphStyleAttributeName: tailStyle
-    };
-    [heading drawAtPoint:NSMakePoint(38, titleY) withAttributes:statusAttrs];
-    NSString *keyHint = state == MicaVoiceControllerStateListening ?
-        (self.owner.dictationToggleMode ? @"Esc to cancel" : @"Release ⌥ to insert · Esc to cancel") :
-        (state == MicaVoiceControllerStateFailed ? @"Esc to dismiss" : @"Esc to cancel");
-    NSDictionary *hintAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:10.5],
-        NSForegroundColorAttributeName: NSColor.tertiaryLabelColor
-    };
-    NSRect settingsButton = [self microphoneSettingsButtonRect];
-    CGFloat right = !NSIsEmptyRect(settingsButton) ? NSMinX(settingsButton) - 10 : preview.size.width - 16;
-    NSRect transcriptRect = NSMakeRect(16, NSMinY(preview) + 22, MAX(0, right - 16), 50);
-    if ((state == MicaVoiceControllerStateListening || state == MicaVoiceControllerStateTranscribing) && voice.transcript.length) {
-        text = MicaLastWordsFittingSize(voice.transcript, transcriptRect.size, transcriptAttrs);
-    }
-    self.dictationLabelTextRect = NSMakeRect(38, titleY, MAX(0, right - 38), 16);
-    self.dictationWordsTextRect = transcriptRect;
-    [text drawInRect:transcriptRect withAttributes:transcriptAttrs];
-    NSRect hintRect = NSMakeRect(16, NSMinY(preview) + 5, MAX(0, right - 16), 14);
-    self.dictationHintTextRect = hintRect;
-    [keyHint drawInRect:hintRect withAttributes:hintAttrs];
-    if (!NSIsEmptyRect(settingsButton)) {
-        NSRect button = settingsButton;
-        [[NSColor.controlAccentColor colorWithAlphaComponent:0.14] setFill];
-        [[NSBezierPath bezierPathWithRoundedRect:button xRadius:6 yRadius:6] fill];
-        NSDictionary *buttonAttrs = @{
-            NSFontAttributeName: [NSFont systemFontOfSize:10.5 weight:NSFontWeightSemibold],
-            NSForegroundColorAttributeName: NSColor.controlAccentColor
-        };
-        MicaDrawCenteredLine(@"Open Microphone Settings", button, buttonAttrs, NSTextAlignmentCenter);
-    }
-
-    BOOL showsActivity = state == MicaVoiceControllerStatePreparing || state == MicaVoiceControllerStateTranscribing;
-    if (voice.hasProgress || showsActivity) {
-        NSRect track = NSMakeRect(0, NSMinY(preview), preview.size.width, 2);
-        [[accent colorWithAlphaComponent:0.16] setFill];
-        NSRectFill(track);
-        NSRect fill = track;
-        if (voice.hasProgress) {
-            fill.size.width *= voice.progress;
-        } else {
-            CGFloat segmentWidth = MIN(100, track.size.width * 0.2);
-            CGFloat travel = MAX(0, track.size.width - segmentWidth);
-            CGFloat phase = fmod(NSProcessInfo.processInfo.systemUptime / 1.25, 2.0);
-            if (phase > 1.0) phase = 2.0 - phase;
-            fill.origin.x += travel * phase;
-            fill.size.width = segmentWidth;
-        }
-        [accent setFill];
-        NSRectFill(fill);
-    }
-}
 
 - (BOOL)handleNavigationModeKey:(NSEvent *)event key:(NSString *)key control:(BOOL)control {
     MicaUIMode mode = self.owner.uiMode;
@@ -2913,9 +2548,6 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     }
     NSRect status = NSMakeRect(0, 0, self.bounds.size.width, kStatusHeight);
     if (NSIntersectsRect(status, dirtyRect)) [self drawStatusBarForTab:tab];
-    NSRect dictationPreview = [self dictationPreviewRect];
-    if (!NSIsEmptyRect(dictationPreview) && NSIntersectsRect(dictationPreview, dirtyRect))
-        [self drawDictationPreview:self.owner.voiceController inRect:dictationPreview];
     if (self.quickSelectActive) {
         NSDictionary *attrs = @{ NSFontAttributeName: [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightBold],
             NSForegroundColorAttributeName: NSColor.whiteColor };
@@ -2959,7 +2591,6 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         }
         return;
     }
-    if (self.owner.dictationUndoValid) self.owner.dictationUndoValid = NO;
     MicaTab *tab = self.owner.activeTab;
     NSEventModifierFlags flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
     BOOL command = (flags & NSEventModifierFlagCommand) != 0;
@@ -2973,26 +2604,6 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         }
     }
     NSString *keyString = event.charactersIgnoringModifiers.lowercaseString;
-    if (event.keyCode != 58 && _leftOptionIsDown && !_leftOptionStartedDictation) {
-        _leftOptionUsedWithAnotherKey = YES;
-        [_leftOptionTimer invalidate];
-        _leftOptionTimer = nil;
-    } else if (event.keyCode != 58 && _leftOptionIsDown && _leftOptionStartedDictation &&
-               option && !command && event.characters.length > 0) {
-        // Option is also how Italian, German and Spanish layouts type @ # [ ] { }. If the hold turned into
-        // dictation just before the character key arrived, drop the dictation and type the character.
-        _leftOptionStartedDictation = NO;
-        _leftOptionUsedWithAnotherKey = YES;
-        [self.owner cancelDictation];
-    }
-    MicaVoiceControllerState voiceState = self.owner.voiceController.state;
-    BOOL voiceBusy = voiceState == MicaVoiceControllerStatePreparing ||
-        voiceState == MicaVoiceControllerStateListening ||
-        voiceState == MicaVoiceControllerStateTranscribing;
-    if (event.keyCode == 53 && (voiceBusy || voiceState == MicaVoiceControllerStateFailed)) {
-        [self.owner cancelDictation];
-        return;
-    }
     if (command && (flags & NSEventModifierFlagShift) && [keyString isEqualToString:@"p"]) {
         [self.owner toggleCommandPalette:nil];
         return;
@@ -3151,28 +2762,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         [self setNeedsDisplay:YES];
     }
     [self.window makeFirstResponder:self];
-    if (_leftOptionIsDown && !_leftOptionStartedDictation) {
-        _leftOptionUsedWithAnotherKey = YES;
-        [_leftOptionTimer invalidate];
-        _leftOptionTimer = nil;
-    }
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
-    NSRect dictationButton = [self dictationButtonRect];
-    if (NSPointInRect(point, dictationButton)) {
-        MicaVoiceControllerState state = self.owner.voiceController.state;
-        if (state == MicaVoiceControllerStatePreparing || state == MicaVoiceControllerStateListening)
-            [self.owner finishPushToTalk];
-        else if (state != MicaVoiceControllerStateTranscribing)
-            [self.owner beginDictationForActiveTab];
-        return;
-    }
-    NSRect dictationStatus = [self dictationPreviewRect];
-    NSRect microphoneSettings = [self microphoneSettingsButtonRect];
-    if (!NSIsEmptyRect(microphoneSettings) && NSPointInRect(point, microphoneSettings)) {
-        [NSWorkspace.sharedWorkspace openURL:MicaMicrophoneSettingsURL()];
-        return;
-    }
-    if (!NSIsEmptyRect(dictationStatus) && NSPointInRect(point, dictationStatus)) return;
     NSRect header = NSMakeRect(0, NSMaxY(self.bounds) - kHeaderHeight,
                                self.bounds.size.width, kHeaderHeight);
     if (NSPointInRect(point, header)) {
@@ -4922,7 +4512,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         [self openProjectWindowWithArguments:pendingArguments[index]];
 }
 
-// Builds this controller's window, tabs, voice controller and timers. `arguments` are launch-style
+// Builds this controller's window, tabs, and timers. `arguments` are launch-style
 // (--layout, --project-name); nil means the process's own command line.
 - (void)startWindowWithArguments:(NSArray<NSString *> *)arguments {
     if (![MicaControllers() containsObject:self]) [MicaControllers() addObject:self];
@@ -4967,17 +4557,6 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     self.windowContentView.terminalView = self.terminalView;
     [self.windowContentView addSubview:self.terminalView];
     [self.window setContentView:self.windowContentView];
-    NSURL *voiceHelperURL = [NSBundle.mainBundle.bundleURL URLByAppendingPathComponent:@"Contents/Helpers/mica-voice"];
-    self.voiceController = [[MicaVoiceController alloc] initWithHelperURL:voiceHelperURL defaults:[self micaDefaults]];
-    self.voiceController.delegate = self;
-    // Rebuild Core ML's compiled model cache in the background after an update so the first dictation is fast.
-    static BOOL prewarmScheduled;
-    if (!getenv("MICA_TEST_NO_STARTUP") && !prewarmScheduled) {
-        prewarmScheduled = YES;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 4 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-            [self.voiceController prewarmSpeechModelIfNeeded];
-        });
-    }
     [self installMenus];
     self.uiMode = MicaUIModeNormal;
     if (arguments) [self loadLaunchConfigurationFromArguments:arguments bundleInfo:NSBundle.mainBundle.infoDictionary];
@@ -4998,7 +4577,6 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     } else {
         self.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     }
-    self.dictationToggleMode = [[self micaDefaults] boolForKey:@"MicaDictationToggleMode"];
     // A second window opened on top of another gets the classic cascade offset instead of hiding it.
     for (MicaAppDelegate *other in MicaControllers()) {
         if (other == self || !other.window) continue;
@@ -5039,9 +4617,6 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     for (NSMenuItem *item in gViewMenuItems) item.target = self.terminalView;
     // This item is inserted after the static menu targets are collected, so retarget it
     // explicitly whenever a different project window takes ownership of the menu bar.
-    NSMenu *appMenu = [NSApp.mainMenu itemWithTitle:@"Mica"].submenu;
-    NSMenuItem *disableRemote = [appMenu itemWithTitle:@"Disable Remote Control…"];
-    if (disableRemote) disableRemote.target = self;
     for (NSMenuItem *item in gRecentProjectsMenu.itemArray)
         if (item.action == @selector(openRecentProject:) || item.action == @selector(clearRecentProjects:)) item.target = self;
     if (gMicaStatusItem) [self updateMenuBarTimer];
@@ -5342,167 +4917,15 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 
 - (void)setupAgentHooks:(id)sender { (void)sender; [MicaHookInstall presentFromWindow:self.window]; }
 
-- (NSString *)remoteIdentifierForController:(MicaAppDelegate *)controller tab:(MicaTab *)tab {
-    return [NSString stringWithFormat:@"%p-%llu", controller, (unsigned long long)tab.identifier];
-}
 
-- (NSString *)remoteScreenForTab:(MicaTab *)tab {
-    if (!tab.session) return @"";
-    size_t capacity = 48u * 160u * 4u + 49u;
-    char *bytes = calloc(capacity, 1);
-    if (!bytes) return @"";
-    size_t written = 0;
-    BOOL ok = mica_session_copy_remote_screen(tab.session, 48, 160, bytes, capacity, &written);
-    NSString *screen = ok ? [[NSString alloc] initWithBytes:bytes length:written encoding:NSUTF8StringEncoding] : @"";
-    free(bytes);
-    return screen ?: @"";
-}
 
-- (NSDictionary *)remoteSnapshot {
-    NSMutableArray *projects = [NSMutableArray array];
-    for (MicaAppDelegate *controller in MicaControllers()) {
-        NSMutableArray *tabs = [NSMutableArray array];
-        for (MicaTab *tab in controller.tabs) {
-            NSString *activity = tab.agentActivity.length ? tab.agentActivity : (tab.currentCommand.length ? tab.currentCommand : @"Shell");
-            [tabs addObject:@{@"id":[self remoteIdentifierForController:controller tab:tab],
-                @"name":tab.name.length ? tab.name : @"Terminal", @"activity":activity,
-                @"folder":tab.cwd.length ? tab.cwd : @"/",
-                @"running":@(tab.session && mica_session_is_running(tab.session)),
-                @"selected":@(tab == controller.activeTab)}];
-        }
-        NSString *name = controller.projectName.length ? controller.projectName :
-            [self projectDisplayNameForTab:controller.activeTab] ?: @"Mica Project";
-        [projects addObject:@{@"name":name, @"tabs":tabs}];
-    }
-    return @{@"projects":projects};
-}
 
-- (BOOL)sendRemoteText:(NSString *)text toTabID:(NSString *)identifier {
-    for (MicaAppDelegate *controller in MicaControllers()) for (MicaTab *tab in controller.tabs) {
-        if (![[self remoteIdentifierForController:controller tab:tab] isEqualToString:identifier] ||
-            !tab.session || !mica_session_is_running(tab.session)) continue;
-        NSData *bytes = [[text stringByAppendingString:@"\n"] dataUsingEncoding:NSUTF8StringEncoding];
-        if (bytes.length > 8192) return NO;
-        mica_session_paste(tab.session, bytes.bytes, bytes.length - 1);
-        mica_session_key(tab.session, VTERM_KEY_ENTER, VTERM_MOD_NONE);
-        MicaTab *previousPollTab = controller.dispatchPollTab;
-        controller.dispatchPollTab = tab;
-        @try { [controller pollSessions:nil]; }
-        @finally { controller.dispatchPollTab = previousPollTab; }
-        return YES;
-    }
-    return NO;
-}
 
-- (NSString *)remoteScreenForTabID:(NSString *)identifier {
-    for (MicaAppDelegate *controller in MicaControllers()) for (MicaTab *tab in controller.tabs)
-        if ([[self remoteIdentifierForController:controller tab:tab] isEqualToString:identifier])
-            return [self remoteScreenForTab:tab];
-    return nil;
-}
 
-- (BOOL)selectRemoteTabID:(NSString *)identifier {
-    for (MicaAppDelegate *controller in MicaControllers()) for (NSUInteger index = 0; index < controller.tabs.count; index++) {
-        MicaTab *tab = controller.tabs[index];
-        if (![[self remoteIdentifierForController:controller tab:tab] isEqualToString:identifier]) continue;
-        if ((NSInteger)index != controller.activeIndex) [controller selectTabAtIndex:(NSInteger)index];
-        return YES;
-    }
-    return NO;
-}
 
-- (void)showRemoteControl:(id)sender {
-    (void)sender;
-    MicaRemoteServer *server = MicaRemoteServer.sharedServer;
-    if (!server.isRunning) {
-        server.snapshot = ^NSDictionary *{ MicaAppDelegate *owner = MicaControllers().firstObject; return [owner remoteSnapshot] ?: @{@"projects":@[]}; };
-        server.screenSnapshot = ^NSString *(NSString *identifier) { return [MicaControllers().firstObject remoteScreenForTabID:identifier]; };
-        server.sendText = ^BOOL(NSString *identifier, NSString *text) { return [MicaControllers().firstObject sendRemoteText:text toTabID:identifier]; };
-        server.selectTab = ^BOOL(NSString *identifier) { return [MicaControllers().firstObject selectRemoteTabID:identifier]; };
-        if (![server start]) {
-            NSAlert *alert = [NSAlert new]; alert.messageText = @"Remote control is unavailable";
-            alert.informativeText = @"Mica could not find a private Wi‑Fi IPv4 address, or port 8765 is already in use.";
-            [alert runModal]; return;
-        }
-        [self updateRemoteControlMenu];
-    } else {
-        [server renewPairingCode];
-    }
-    [self presentRemotePairing];
-}
 
-- (void)updateRemoteControlMenu {
-    NSMenu *menu = [NSApp.mainMenu itemWithTitle:@"Mica"].submenu;
-    NSMenuItem *remote = [menu itemWithTitle:@"Remote Control…"] ?: [menu itemWithTitle:@"Show Remote Control QR…"];
-    if (!remote) return;
-    if (MicaRemoteServer.sharedServer.isRunning) {
-        remote.title = @"Show Remote Control QR…";
-        NSMenuItem *disable = [menu itemWithTitle:@"Disable Remote Control…"];
-        if (!disable) {
-            disable = [[NSMenuItem alloc] initWithTitle:@"Disable Remote Control…" action:@selector(disableRemoteControl:) keyEquivalent:@""];
-            disable.target = self;
-            [menu insertItem:disable atIndex:MAX(0, (NSInteger)[menu indexOfItem:remote] + 1)];
-        }
-    } else {
-        remote.title = @"Remote Control…";
-        NSMenuItem *disable = [menu itemWithTitle:@"Disable Remote Control…"];
-        if (disable) [menu removeItem:disable];
-    }
-}
 
-- (void)presentRemotePairing {
-    MicaRemoteServer *server = MicaRemoteServer.sharedServer;
-    if (!server.isRunning) return;
-    for (;;) {
-        NSString *pairURL = server.pairingPayload ?: @"";
-        CIFilter *filter = [CIFilter filterWithName:@"CIQRCodeGenerator"];
-        [filter setValue:[pairURL dataUsingEncoding:NSUTF8StringEncoding] forKey:@"inputMessage"];
-        [filter setValue:@"M" forKey:@"inputCorrectionLevel"];
-        CIImage *qr = filter.outputImage;
-        NSImageView *image = [[NSImageView alloc] initWithFrame:NSMakeRect(0, 0, 224, 224)];
-        image.wantsLayer = YES; image.layer.backgroundColor = NSColor.whiteColor.CGColor;
-        image.imageScaling = NSImageScaleProportionallyUpOrDown;
-        BOOL rendered = NO;
-        if (qr) {
-            CGRect extent = CGRectIntegral(qr.extent);
-            CGFloat scale = floor(190.0 / MAX(extent.size.width, extent.size.height));
-            if (scale < 1) scale = 1;
-            CGAffineTransform transform = CGAffineTransformMakeScale(scale, scale);
-            transform.tx = 17; transform.ty = 17;
-            CIImage *scaled = [qr imageByApplyingTransform:transform];
-            CIImage *white = [[CIImage imageWithColor:CIColor.whiteColor] imageByCroppingToRect:CGRectMake(0, 0, 224, 224)];
-            CIImage *composite = [scaled imageByCompositingOverImage:white];
-            CIContext *context = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer:@YES}];
-            CGImageRef bitmap = [context createCGImage:composite fromRect:CGRectMake(0, 0, 224, 224)];
-            if (bitmap) { image.image = [[NSImage alloc] initWithCGImage:bitmap size:NSMakeSize(224, 224)]; CGImageRelease(bitmap); rendered = YES; }
-        }
-        NSString *text = [NSString stringWithFormat:@"Scan with the Mica Remote Android app\n\nPairing code: %@\n\n%@\n\nAvailable only over this Wi‑Fi network using TLS. The QR code pins this Mac’s certificate. Disable Remote Control to stop the listener and revoke every paired device.%@",
-            server.pairingCode, server.localURL, rendered ? @"" : @"\n\nQR rendering failed. Reopen Remote Control to try generating it again."];
-        NSTextField *details = [NSTextField wrappingLabelWithString:text];
-        NSStackView *stack = [NSStackView new]; [stack addArrangedSubview:image]; [stack addArrangedSubview:details];
-        stack.orientation = NSUserInterfaceLayoutOrientationVertical; stack.alignment = NSLayoutAttributeCenterX;
-        stack.distribution = NSStackViewDistributionFill; stack.spacing = 14; stack.frame = NSMakeRect(0, 0, 520, 340);
-        details.preferredMaxLayoutWidth = 500;
-        NSAlert *alert = [NSAlert new]; alert.messageText = @"Mica Remote Control";
-        alert.informativeText = @"Pair a phone on the same Wi‑Fi network to view tabs and send prompts.";
-        alert.accessoryView = stack; [alert addButtonWithTitle:@"Done"];
-        [alert addButtonWithTitle:@"New Pairing Code"];
-        [alert addButtonWithTitle:@"Disable Remote Control"];
-        NSModalResponse response = [alert runModal];
-        if (response == NSAlertSecondButtonReturn) { [server renewPairingCode]; continue; }
-        if (response == NSAlertThirdButtonReturn) [self disableRemoteControl:nil];
-        return;
-    }
-}
 
-- (void)disableRemoteControl:(id)sender {
-    (void)sender;
-    [MicaRemoteServer.sharedServer stop];
-    [self updateRemoteControlMenu];
-    NSAlert *alert = [NSAlert new]; alert.messageText = @"Remote control disabled";
-    alert.informativeText = @"The local service stopped and all paired device tokens were revoked.";
-    [alert runModal];
-}
 
 - (void)buildMenus {
     NSMenu *main = [[NSMenu alloc] initWithTitle:@"Mica"];
@@ -5518,7 +4941,6 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     recentRoot.submenu = gRecentProjectsMenu;
     [appMenu addItem:recentRoot];
     AddMenuItem(appMenu, @"Set Up Agent Hooks…", @selector(setupAgentHooks:), @"", 0).target = self;
-    AddMenuItem(appMenu, @"Remote Control…", @selector(showRemoteControl:), @"", 0).target = self;
     [appMenu addItem:NSMenuItem.separatorItem];
     // Standard macOS place for Settings (⌘,): appearance, plus links to the project and timer settings.
     AddMenuItem(appMenu, @"Settings…", @selector(openSettings:), @",", NSEventModifierFlagCommand).target = self;
@@ -5584,13 +5006,6 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     AddMenuItem(editMenu, @"Copy Last Command Output", @selector(copyLastCommandOutput:), @"", 0).target = self.terminalView;
     AddMenuItem(editMenu, @"Quick Select…", @selector(toggleQuickSelect:), @"u", NSEventModifierFlagCommand | NSEventModifierFlagShift).target = self.terminalView;
     AddMenuItem(editMenu, @"Paste", @selector(paste:), @"v", NSEventModifierFlagCommand);
-    AddMenuItem(editMenu, @"Undo Last Dictation", @selector(undoLastDictation:), @"", 0).target = self;
-    NSMenuItem *vocabularyToggle = AddMenuItem(editMenu, @"Improve Dictation with Project Vocabulary", @selector(toggleVocabularyPreference:), @"", 0);
-    vocabularyToggle.target = self;
-    vocabularyToggle.state = (![[self micaDefaults] objectForKey:@"MicaDictationVocabularyEnabled"] ||
-        [[self micaDefaults] boolForKey:@"MicaDictationVocabularyEnabled"]) ? NSControlStateValueOn : NSControlStateValueOff;
-    AddMenuItem(editMenu, @"Edit Vocabulary…", @selector(editVocabulary:), @"", 0).target = self;
-    AddMenuItem(editMenu, @"Edit Snippets…", @selector(editSnippets:), @"", 0).target = self;
     AddMenuItem(editMenu, @"Find in Scrollback…", @selector(findInScrollback:), @"f", NSEventModifierFlagCommand).target = self.terminalView;
     AddMenuItem(editMenu, @"Find Next", @selector(findNextMatch:), @"g", NSEventModifierFlagCommand).target = self.terminalView;
     AddMenuItem(editMenu, @"Find Previous", @selector(findPreviousMatch:), @"g",
@@ -5674,8 +5089,6 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         @"⌥⌘L  Toggle the light terminal theme",
         @"⌥⌘F  Fold selected lines",
         @"⌘-click  Open a link or web address",
-        @"Hold left ⌥  Dictate; release to finish",
-        @"Esc  Cancel dictation or return to live terminal"
     ] componentsJoinedByString:@"\n"];
     [alert addButtonWithTitle:@"Done"];
     [alert beginSheetModalForWindow:self.window completionHandler:nil];
@@ -5770,9 +5183,6 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     tab.remoteProfile = normalized;
     tab.gitBranch = nil;
     tab.gitBranchLookupPath = tab.cwd;
-    tab.vocabularyFileTerms = @[];
-    tab.gitVocabularyTerms = @[];
-    tab.recentVisibleText = @"";
 }
 
 - (void)connectSSHProfile:(id)sender {
@@ -5888,10 +5298,6 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     }
     if (item.action == @selector(clearRecentProjects:))
         return MicaRecentProjectHistory().projects.count > 0;
-    if (item.action == @selector(undoLastDictation:)) {
-        item.toolTip = self.dictationUndoValid ? nil : @"Undo is available only until you type again";
-        return self.dictationUndoValid;
-    }
     if (item.action == @selector(skipPomodoroPhase:)) {
         [self refreshPomodoroState];
         MicaPomodoroPhase phase = self.pomodoro.phase;
@@ -6108,7 +5514,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 
 // ---- Lazygit companion -------------------------------------------------------------------------------
 // Each tab can swap its view to a lazygit session in the same folder. The companion is not a tab: it is
-// invisible to agent detection, notifications, remote control and saved sessions, and is killed after
+// invisible to agent detection, notifications and saved sessions, and is killed after
 // sitting hidden for kMicaLazygitIdleSeconds.
 static const NSTimeInterval kMicaLazygitIdleSeconds = 600;
 
@@ -6132,7 +5538,6 @@ static NSString *MicaLazygitCommand(void) {
     tab.showingCompanion = NO;
     tab.companion = nil;
     tab.companionRoot = nil;
-    if (self.voiceTargetTab == companion) [self cancelDictation];
     [companion destroySession];
     if (wasShowing && tab == [self selectedTab]) {
         if (tab.session && NSApp.isActive) mica_session_focus(tab.session, true);
@@ -6242,6 +5647,33 @@ static NSString *MicaLazygitCommand(void) {
         [self killCompanionForTab:tab];
 }
 
+- (void)refreshGitBranchForTab:(MicaTab *)tab {
+    if (!tab.cwd.length) return;
+    NSString *tabPath = tab.cwd;
+    if ([tab.gitBranchLookupPath isEqualToString:tabPath]) return;
+    tab.gitBranchLookupPath = tabPath;
+    tab.gitBranch = nil;
+    tab.projectRoot = nil;
+    __weak MicaTab *weakTab = tab;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSString *branch = MicaGitBranchForDirectory(tabPath);
+        NSString *projectRoot = MicaGitRootForDirectory(tabPath);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            MicaTab *strongTab = weakTab;
+            MicaAppDelegate *strongSelf = weakSelf;
+            if (!strongTab || !strongSelf || strongTab.remoteProfile ||
+                ![strongSelf.tabs containsObject:strongTab] || ![strongTab.cwd isEqualToString:tabPath]) return;
+            strongTab.gitBranch = branch;
+            strongTab.projectRoot = projectRoot;
+            if (strongTab == strongSelf.activeTab) [strongSelf updateWindowTitle];
+            [strongSelf.terminalView setNeedsDisplayInRect:NSMakeRect(0, 0,
+                strongSelf.terminalView.bounds.size.width, kStatusHeight)];
+            [strongSelf.windowContentView.sidebarView refreshRows];
+        });
+    });
+}
+
 - (void)addTabWithName:(NSString *)name cwd:(NSString *)cwd command:(NSString *)command prefilled:(BOOL)prefilled {
     MicaTab *previous = self.activeTab;
     if (previous.session && NSApp.isActive) mica_session_focus(previous.session, false);
@@ -6279,62 +5711,14 @@ static NSString *MicaLazygitCommand(void) {
     tab.revision = UINT64_MAX;
     [self.tabs addObject:tab];
     self.activeIndex = (NSInteger)self.tabs.count - 1;
-    [self refreshVocabularyForTab:tab];
+    [self refreshGitBranchForTab:tab];
     if (tab.session && NSApp.isActive) mica_session_focus(tab.session, true);
     [self updateWindowTitle];
     [self resizeActiveSession];
     [self.terminalView setNeedsDisplay:YES];
 }
 
-- (void)refreshVocabularyForTab:(MicaTab *)tab {
-    if (!tab.cwd.length) return;
-    NSString *tabPath=tab.cwd;
-    tab.vocabularyFileTerms=MicaVocabularyTermsFromFile([NSURL fileURLWithPath:
-        [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Mica/vocabulary.txt"]]);
-    if (![tab.gitBranchLookupPath isEqualToString:tabPath]) {
-        tab.gitBranchLookupPath=tabPath;
-        tab.gitBranch=nil;
-        tab.projectRoot=nil;
-        __weak MicaTab *branchTab=tab; __weak typeof(self) branchSelf=self;
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{
-            NSString *branch=MicaGitBranchForDirectory(tabPath);
-            NSString *projectRoot=MicaGitRootForDirectory(tabPath);
-            dispatch_async(dispatch_get_main_queue(), ^{
-                MicaTab *strongTab=branchTab; MicaAppDelegate *strongSelf=branchSelf;
-                if (strongTab && strongSelf && !strongTab.remoteProfile && [strongSelf.tabs containsObject:strongTab] && [strongTab.cwd isEqualToString:tabPath]) {
-                    strongTab.gitBranch=branch;
-                    strongTab.projectRoot=projectRoot;
-                    if (strongTab == strongSelf.activeTab) [strongSelf updateWindowTitle];
-                    [strongSelf.terminalView setNeedsDisplayInRect:NSMakeRect(0,0,strongSelf.terminalView.bounds.size.width,kStatusHeight)];
-                    [strongSelf.windowContentView.sidebarView refreshRows];
-                }
-            });
-        });
-    }
-    __weak MicaTab *weakTab=tab; __weak typeof(self) weakSelf=self;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{
-        NSArray *terms=MicaVocabularyTermsFromGitFiles(tabPath);
-        dispatch_async(dispatch_get_main_queue(), ^{
-            MicaTab *strongTab=weakTab; MicaAppDelegate *strongSelf=weakSelf;
-            if (strongTab && strongSelf && !strongTab.remoteProfile && [strongSelf.tabs containsObject:strongTab] && [strongTab.cwd isEqualToString:tabPath]) strongTab.gitVocabularyTerms=terms;
-        });
-    });
-}
 
-- (NSString *)visibleTextForTab:(MicaTab *)tab {
-    if (!tab.session) return @"";
-    NSMutableString *text=[NSMutableString string];
-    int rows=mica_session_rows(tab.session), cols=mica_session_cols(tab.session);
-    for (int row=0;row<rows;row++) {
-        for (int col=0;col<cols;col++) {
-            MicaCell cell;
-            if (mica_session_get_cell(tab.session,row,col,&cell) && cell.chars[0]>=0x20 && cell.chars[0]<=0x7f)
-                [text appendFormat:@"%C",(unichar)cell.chars[0]];
-        }
-        [text appendString:@"\n"];
-    }
-    return text;
-}
 
 - (void)newTabWithName:(NSString *)name command:(NSString *)command {
     MicaTab *active = self.activeTab;
@@ -6585,150 +5969,11 @@ static BOOL MicaValidBranchName(NSString *name) {
     [NSApp replyToOpenOrPrint:NSApplicationDelegateReplySuccess];
 }
 
-- (void)startPushToTalk {
-    [self beginDictationForActiveTab];
-}
 
-- (void)beginDictationForActiveTab {
-    MicaTab *tab = self.activeTab;
-    if (!tab.session || !self.voiceController) return;
-    MicaVoiceControllerState state = self.voiceController.state;
-    BOOL inProgress = state == MicaVoiceControllerStatePreparing || state == MicaVoiceControllerStateListening ||
-        state == MicaVoiceControllerStateTranscribing;
-    if (!inProgress) {
-        self.voiceTargetTab = tab;
-        self.voiceTargetRecordingID = nil;
-        self.voiceTargetRecordingTab = nil;
-    }
 
-    char path[4096] = {0};
-    NSString *workingDirectory = tab.cwd;
-    if (mica_session_working_directory(tab.session, path, sizeof(path))) {
-        NSString *liveDirectory = [NSFileManager.defaultManager stringWithFileSystemRepresentation:path
-                                                                                           length:strlen(path)];
-        if (liveDirectory.length) {
-            workingDirectory = liveDirectory;
-            tab.cwd = liveDirectory;
-            [self refreshVocabularyForTab:tab];
-            [self updateWindowTitle];
-        }
-    }
-    // Capture once at dictation start instead of maintaining a rolling screen buffer.
-    tab.recentVisibleText = [self visibleTextForTab:tab];
-    tab.recentVisibleCapturedAt = [NSDate date];
-    [self.voiceController startPushToTalkForWorkingDirectory:workingDirectory];
-    [self.terminalView setNeedsDisplay:YES];
-}
 
-- (void)finishPushToTalk {
-    [self.voiceController finishPushToTalk];
-    [self.terminalView setNeedsDisplay:YES];
-}
 
-- (void)cancelDictation {
-    [self.voiceController cancel];
-    self.voiceTargetTab = nil;
-    self.voiceTargetRecordingID = nil;
-    self.voiceTargetRecordingTab = nil;
-    [self.terminalView setNeedsDisplay:YES];
-}
 
-- (void)voiceControllerDidUpdate:(MicaVoiceController *)controller {
-    if (!self.voiceTargetRecordingID && controller.recordingID && self.voiceTargetTab) {
-        self.voiceTargetRecordingID = controller.recordingID;
-        self.voiceTargetRecordingTab = self.voiceTargetTab;
-    }
-    // State transitions reserve or release the preview band and resize the PTY grid.
-    NSInteger state = (NSInteger)controller.state;
-    if (state != self.lastVoiceState) {
-        self.lastVoiceState = state;
-        [self resizeActiveSession];
-        [self.terminalView setNeedsDisplay:YES];
-        // The preview is drawn in the terminal view, so announce state changes to VoiceOver.
-        if (controller.statusText.length)
-            NSAccessibilityPostNotificationWithUserInfo(self.terminalView, NSAccessibilityAnnouncementRequestedNotification,
-                @{ NSAccessibilityAnnouncementKey: controller.statusText,
-                   NSAccessibilityPriorityKey: @(NSAccessibilityPriorityMedium) });
-    } else {
-        [self.terminalView setNeedsDisplayInRect:[self.terminalView dictationPreviewRect]];
-    }
-}
-
-- (BOOL)voiceController:(MicaVoiceController *)controller
-      didFinishTranscript:(NSString *)transcript {
-    NSUUID *recordingID = controller.recordingID;
-    if (recordingID && !self.voiceTargetRecordingID) {
-        self.voiceTargetRecordingID = recordingID;
-        self.voiceTargetRecordingTab = self.voiceTargetTab;
-    }
-    MicaTab *target = [recordingID isEqual:self.voiceTargetRecordingID]
-        ? self.voiceTargetRecordingTab : self.voiceTargetTab;
-    if (!target || ![self.tabs containsObject:target] || !target.session ||
-        !mica_session_is_running(target.session)) {
-        [controller updateHistoryForRecordingID:recordingID metadata:@{
-            @"provenance": @{
-                @"corrected_transcript": NSNull.null,
-                @"inserted_text": NSNull.null,
-                @"paste_succeeded": @NO,
-                @"paste_attempted": @NO,
-                @"paste_delivery": @"not_attempted",
-                @"auto_submitted": @NO,
-            },
-        }];
-        return NO;
-    }
-    BOOL improve = ![[self micaDefaults] objectForKey:@"MicaDictationVocabularyEnabled"] ||
-        [[self micaDefaults] boolForKey:@"MicaDictationVocabularyEnabled"];
-    NSString *visibleText = target.recentVisibleText.length ? target.recentVisibleText : [self visibleTextForTab:target];
-    NSDate *capturedAt = target.recentVisibleCapturedAt ?: [NSDate date];
-    NSArray *recentTerms = MicaVocabularyTermsFromRecentText(visibleText, capturedAt, [NSDate date]);
-    NSArray *terms = MicaVocabularyMerge(@[target.vocabularyFileTerms ?: @[],
-        self.projectName ? @[self.projectName] : @[], target.gitBranch ? @[target.gitBranch] : @[],
-        target.gitVocabularyTerms ?: @[], recentTerms]);
-    NSString *corrected = improve ? MicaCorrectTranscript(transcript, terms) : transcript;
-    NSURL *snippetsURL = self.dictationSnippetsURLOverride ?: [NSURL fileURLWithPath:
-        [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Mica/snippets.txt"]];
-    NSString *insertedText = MicaApplyDictationSnippet(corrected, MicaDictationSnippetsFromFile(snippetsURL));
-    NSData *bytes = [insertedText dataUsingEncoding:NSUTF8StringEncoding];
-    if (!bytes.length) {
-        [controller updateHistoryForRecordingID:recordingID metadata:@{
-            @"provenance": @{
-                @"corrected_transcript": corrected,
-                @"inserted_text": insertedText,
-                @"paste_succeeded": @NO,
-                @"paste_attempted": @NO,
-                @"paste_delivery": @"not_attempted",
-                @"auto_submitted": @NO,
-            },
-        }];
-        return NO;
-    }
-    BOOL submitToAgent = MicaAgentPromptReadyForDictation(target);
-    mica_session_paste(target.session, bytes.bytes, bytes.length);
-    if (submitToAgent) mica_session_key(target.session, VTERM_KEY_ENTER, VTERM_MOD_NONE);
-    [controller updateHistoryForRecordingID:recordingID metadata:@{
-        @"provenance": @{
-            @"corrected_transcript": corrected,
-            @"inserted_text": insertedText,
-            // The C paste API queues input asynchronously and returns no delivery status.
-            @"paste_succeeded": NSNull.null,
-            @"paste_attempted": @YES,
-            @"paste_delivery": @"unknown",
-            @"auto_submitted": @(submitToAgent),
-        },
-    }];
-    self.lastDictationText = insertedText;
-    self.lastDictationRawText = transcript;
-    self.lastDictationTab = target;
-    self.dictationUndoValid = [transcript rangeOfCharacterFromSet:
-        NSCharacterSet.newlineCharacterSet].location == NSNotFound;
-    self.voiceTargetTab = nil;
-    if (target == self.activeTab) {
-        [self.terminalView clearSelection];
-        [self.terminalView setNeedsDisplay:YES];
-    }
-    return YES;
-}
 
 - (void)closeActiveTab {
     if (self.tabs.count <= 1) { [self.window performClose:nil]; return; }
@@ -6736,7 +5981,6 @@ static BOOL MicaValidBranchName(NSString *name) {
     MicaTab *closing = [self selectedTab];
     MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"tab closed pid=%d",
         previous.session ? mica_session_pid(previous.session) : -1]);
-    if (previous == self.voiceTargetTab) [self cancelDictation];
     if (previous.session && NSApp.isActive) mica_session_focus(previous.session, false);
     [self killCompanionForTab:closing];
     [MicaAttention() clearTabID:closing.identifier];
@@ -6986,66 +6230,12 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     }
 }
 
-- (void)prefDictationModeChanged:(NSPopUpButton *)sender {
-    self.dictationToggleMode = sender.indexOfSelectedItem == 1;
-    [[self micaDefaults] setBool:self.dictationToggleMode forKey:@"MicaDictationToggleMode"];
-}
 
-- (void)prefVocabularyChanged:(NSButton *)sender {
-    [[self micaDefaults] setBool:sender.state == NSControlStateValueOn forKey:@"MicaDictationVocabularyEnabled"];
-}
 
 - (void)prefResumeAgentsChanged:(NSButton *)sender {
     [[self micaDefaults] setBool:sender.state == NSControlStateValueOn forKey:@"MicaResumeAgentsOnRestore"];
 }
 
-- (void)editVocabulary:(id)sender {
-    (void)sender;
-    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Mica/vocabulary.txt"];
-    [NSFileManager.defaultManager createDirectoryAtPath:path.stringByDeletingLastPathComponent
-        withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil];
-    if (![NSFileManager.defaultManager fileExistsAtPath:path])
-        [@"# One term per line; spoken form => Canonical spelling\n" writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    [[NSWorkspace sharedWorkspace] selectFile:path inFileViewerRootedAtPath:path.stringByDeletingLastPathComponent];
-}
-
-- (void)editSnippets:(id)sender {
-    (void)sender;
-    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Mica/snippets.txt"];
-    [NSFileManager.defaultManager createDirectoryAtPath:path.stringByDeletingLastPathComponent
-        withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil];
-    if (![NSFileManager.defaultManager fileExistsAtPath:path])
-        [@"# One spoken phrase per line: phrase => expansion\n" writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    [[NSWorkspace sharedWorkspace] selectFile:path inFileViewerRootedAtPath:path.stringByDeletingLastPathComponent];
-}
-
-- (void)toggleVocabularyPreference:(id)sender {
-    BOOL enabled = ![[self micaDefaults] objectForKey:@"MicaDictationVocabularyEnabled"] ||
-        [[self micaDefaults] boolForKey:@"MicaDictationVocabularyEnabled"];
-    enabled = !enabled;
-    [[self micaDefaults] setBool:enabled forKey:@"MicaDictationVocabularyEnabled"];
-    if ([sender isKindOfClass:NSMenuItem.class]) ((NSMenuItem *)sender).state = enabled ? NSControlStateValueOn : NSControlStateValueOff;
-    NSButton *button = (NSButton *)[self.preferencesWindow.contentView viewWithTag:108];
-    if ([button isKindOfClass:NSButton.class]) button.state = enabled ? NSControlStateValueOn : NSControlStateValueOff;
-}
-
-- (void)undoLastDictation:(id)sender {
-    (void)sender;
-    MicaTab *tab = self.lastDictationTab;
-    if (!self.dictationUndoValid || !tab.session || ![self.tabs containsObject:tab]) return;
-    __block NSUInteger count = 0;
-    [self.lastDictationText enumerateSubstringsInRange:NSMakeRange(0, self.lastDictationText.length)
-        options:NSStringEnumerationByComposedCharacterSequences usingBlock:^(__unused NSString *part, __unused NSRange range,
-            __unused NSRange enclosing, __unused BOOL *stop) { count++; }];
-    for (NSUInteger i = 0; i < count; i++) mica_session_key(tab.session, VTERM_KEY_BACKSPACE, VTERM_MOD_NONE);
-    self.dictationUndoValid = NO;
-    NSData *raw = [self.lastDictationRawText dataUsingEncoding:NSUTF8StringEncoding];
-    if (raw.length) mica_session_paste(tab.session, raw.bytes, raw.length);
-    self.lastDictationText = nil;
-    self.lastDictationRawText = nil;
-    self.lastDictationTab = nil;
-    [self.terminalView setNeedsDisplay:YES];
-}
 
 - (void)openPreferences:(id)sender {
     (void)sender;
@@ -7066,15 +6256,8 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
         NSPopUpButton *memoryWarning = (NSPopUpButton *)[self.preferencesWindow.contentView viewWithTag:114];
         NSInteger warningGB = MicaAgentRSSWarningGB([self micaDefaults]);
         [memoryWarning selectItemAtIndex:warningGB == 0 ? 0 : warningGB == 2 ? 1 : warningGB == 4 ? 2 : warningGB == 8 ? 3 : 4];
-        ((NSButton *)[self.preferencesWindow.contentView viewWithTag:108]).state =
-            (![[self micaDefaults] objectForKey:@"MicaDictationVocabularyEnabled"] ||
-             [[self micaDefaults] boolForKey:@"MicaDictationVocabularyEnabled"]) ? NSControlStateValueOn : NSControlStateValueOff;
-        {
         [(NSPopUpButton *)[self.preferencesWindow.contentView viewWithTag:106]
                 selectItemAtIndex:[MicaAppDelegate scrollbackIndexForLines:[self storedScrollbackLines]]];
-            [(NSPopUpButton *)[self.preferencesWindow.contentView viewWithTag:107]
-                selectItemAtIndex:self.dictationToggleMode ? 1 : 0];
-        }
         [self refreshPreferencesSizeLabel];
         self.preferencesWindow.appearance = gMicaFollowSystemTheme ? nil :
             [NSAppearance appearanceNamed:gMicaLightTheme ? NSAppearanceNameAqua : NSAppearanceNameDarkAqua];
@@ -7082,7 +6265,6 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
         [self.preferencesWindow makeKeyAndOrderFront:nil];
         return;
     }
-    self.dictationToggleMode = [[self micaDefaults] boolForKey:@"MicaDictationToggleMode"];
     NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 460, 550)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
     window.title = @"Mica Settings";
@@ -7176,15 +6358,6 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     row(@"Scrollback", popup(@[@"650 lines · about 5 MB", @"2,000 lines · about 16 MB", @"5,000 lines · about 40 MB", @"20,000 lines · about 160 MB"],
         [MicaAppDelegate scrollbackIndexForLines:[self storedScrollbackLines]], 106, @selector(prefScrollbackChanged:)), 260, 26);
 
-    section(@"Dictation", NO);
-    row(@"Mode", popup(@[@"Hold", @"Toggle"], self.dictationToggleMode ? 1 : 0, 107, @selector(prefDictationModeChanged:)), 200, 26);
-    NSButton *vocabulary = [NSButton checkboxWithTitle:@"Improve dictation with project vocabulary" target:self action:@selector(prefVocabularyChanged:)];
-    vocabulary.state = on(@"MicaDictationVocabularyEnabled", YES);
-    vocabulary.tag = 108;
-    row(@"", vocabulary, kRight - kControlX, 20);
-    NSButton *editVocabulary = [NSButton buttonWithTitle:@"Edit Vocabulary…" target:self action:@selector(editVocabulary:)];
-    row(@"", editVocabulary, 150, 24);
-
     section(@"Advanced", NO);
     NSInteger warningGB = MicaAgentRSSWarningGB([self micaDefaults]);
     row(@"Memory warning", popup(@[@"Never", @"2 GB", @"4 GB", @"8 GB", @"16 GB"],
@@ -7261,7 +6434,7 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
             if (!strongSelf || !cwd.length || !tab.session ||
                 mica_session_pid(tab.session) != pid || [cwd isEqualToString:tab.cwd]) return;
             tab.cwd = cwd;
-            [strongSelf refreshVocabularyForTab:tab];
+            [strongSelf refreshGitBranchForTab:tab];
             if (tab == strongSelf.activeTab) [strongSelf updateWindowTitle];
             [strongSelf.terminalView setNeedsDisplayInRect:NSMakeRect(0, 0,
                 strongSelf.terminalView.bounds.size.width, kStatusHeight)];
@@ -7276,7 +6449,7 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     // Process footprint is useful only while its status-strip readout is visible.
     {
         NSTimeInterval nowForMemory = NSProcessInfo.processInfo.systemUptime;
-        pid_t helperPID = [self.voiceController helperProcessIdentifier];
+        pid_t helperPID = 0;
         BOOL statusVisible = self.window.isVisible && !self.terminalView.hidden && self.terminalView.window != nil;
         if (statusVisible && nowForMemory - self.memoryCheckedAt >= 2.0) {
             self.memoryCheckedAt = nowForMemory;
@@ -7293,12 +6466,6 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     }
     // Idle backoff: after ~5 s without output, poll at 50 ms instead of 15 ms.
     NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
-    MicaVoiceController *voice = self.voiceController;
-    if (voice.state == MicaVoiceControllerStateListening && voice.transcript.length == 0 &&
-        now - self.lastVoiceAnimationAt >= 0.10) {
-        self.lastVoiceAnimationAt = now;
-        [self.terminalView setNeedsDisplayInRect:[self.terminalView dictationPreviewRect]];
-    }
     NSTimeInterval pollStartedAt = now;
     if (self.lastPollTimerTickAt > 0 && now - self.lastPollTimerTickAt >= 0.150 &&
         now - self.lastSlowPollLogAt >= 1.0) {
@@ -7482,7 +6649,6 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
         if (index == NSNotFound) continue;
         MicaDiagnosticsLog(@"pty", [NSString stringWithFormat:@"session exited status=%d",
             mica_session_exit_status(tab.session)]);
-        if (self.voiceTargetTab == tab) [self cancelDictation];
         if (self.tabs.count <= 1) {
             [self.window performClose:nil];
             return;
@@ -7533,15 +6699,13 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
             self.activeTab.session ? mica_session_pid(self.activeTab.session) : -1]);
     }
     // Time based UI work shares one window timer, and sleeps when no visible
-    // countdown, animation, or dictation indicator needs another frame.
+    // countdown or animation needs another frame.
     BOOL hasCommandClock = NO;
     for (MicaTab *tab in self.tabs) if (tab.currentCommand.length) { hasCommandClock = YES; break; }
     BOOL needsTimer = animatesTab || hasCommandClock ||
         mica_pomodoro_is_running(&_pomodoro) ||
-        (self.voiceController.state == MicaVoiceControllerStateListening && self.voiceController.transcript.length == 0) ||
         (self.window.isVisible && !self.terminalView.hidden && self.terminalView.window != nil);
-    BOOL oneSecondTimer = hasCommandClock || mica_pomodoro_is_running(&_pomodoro) ||
-        (self.voiceController.state == MicaVoiceControllerStateListening && self.voiceController.transcript.length == 0);
+    BOOL oneSecondTimer = hasCommandClock || mica_pomodoro_is_running(&_pomodoro);
     if (needsTimer) [self restartPollTimerWithInterval:animatesTab ? 0.12 : oneSecondTimer ? 1.0 : 2.0];
     else if (!needsTimer && self.pollTimer) { [self.pollTimer invalidate]; self.pollTimer = nil; }
 }
@@ -7611,11 +6775,10 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     // windows closed just before Quit, rather than abandoning their descendants.
     return NSTerminateLater;
 }
-// Stops this window's timers and voice controller and hands back its sessions for destruction.
+// Stops this window's timers and hands back its sessions for destruction.
 - (NSArray<NSValue *> *)detachSessionsForTermination {
     [self.pollTimer invalidate];
     self.pollTimer = nil;
-    [self.voiceController cancel];
     NSMutableArray<NSValue *> *sessions = [NSMutableArray arrayWithCapacity:self.tabs.count];
     for (MicaTab *tab in self.tabs) {
         if (!tab.session) continue;
@@ -7685,13 +6848,11 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     [self saveSessionState];
     MicaDiagnosticsLog(@"app", @"application is terminating");
     [MicaHookServer.sharedServer stop];
-    [MicaRemoteServer.sharedServer stop];
     unsetenv("MICA_HOOK_SOCK");
 }
 - (void)applicationWillResignActive:(NSNotification *)notification {
     (void)notification;
     for (MicaAppDelegate *controller in MicaControllers().count ? [MicaControllers() copy] : @[self]) {
-        [controller.terminalView cancelLeftOptionTracking];
         MicaTab *tab = controller.activeTab;
         if (tab.session) mica_session_focus(tab.session, false);
     }
@@ -7734,7 +6895,7 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
 int main(int argc, const char *argv[]) {
     (void)argc; (void)argv;
     @autoreleasepool {
-        // A dead speech helper must surface as a write error, not kill every terminal with SIGPIPE.
+        // Dead child/pipe writes must surface as errors, not SIGPIPE.
 signal(SIGPIPE, SIG_IGN);
 NSApplication *app = NSApplication.sharedApplication;
         app.activationPolicy = NSApplicationActivationPolicyRegular;

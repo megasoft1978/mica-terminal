@@ -46,12 +46,6 @@ static double MicaContrastRatio(NSColor *foreground, NSColor *background) {
     return (MAX(la, lb) + 0.05) / (MIN(la, lb) + 0.05);
 }
 
-@interface MicaVoiceController (MicaVoiceTestHooks)
-- (void)launchHelperWithArguments:(NSArray<NSString *> *)arguments
-                        inputData:(NSData *)inputData
-                   keepsInputOpen:(BOOL)keepsInputOpen;
-@end
-
 static BOOL MicaUITestFindText(MicaSession *session, NSString *text, NSInteger *foundRow, NSInteger *foundCol) {
     const char *needle = text.UTF8String;
     if (!session || !needle || !needle[0]) return NO;
@@ -99,13 +93,13 @@ static BOOL MicaUITestFindTextAcrossWrappedRows(MicaSession *session, NSString *
     return NO;
 }
 
-static NSString *MicaUITestVoiceFile(NSString *directory, MicaSession *session, NSString *suffix) {
+static NSString *MicaUITestZLEFile(NSString *directory, MicaSession *session, NSString *suffix) {
     return [directory stringByAppendingPathComponent:
         [NSString stringWithFormat:@"%d.%@", (int)mica_session_pid(session), suffix]];
 }
 
 static NSString *MicaUITestCaptureZLEBuffer(NSString *directory, MicaSession *session) {
-    NSString *path = MicaUITestVoiceFile(directory, session, @"buffer");
+    NSString *path = MicaUITestZLEFile(directory, session, @"buffer");
     [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
     static const char chord[] = { 0x18, 0x02 };
     mica_session_write(session, chord, sizeof(chord));
@@ -191,12 +185,6 @@ static void MicaUITestRecord(NSMutableString *report, BOOL *allPassed, BOOL pass
     if (!passed) *allPassed = NO;
 }
 
-static void MicaUITestLaunchSpeechHelper(MicaVoiceController *controller) {
-    [controller setValue:@(MicaVoiceControllerStatePreparing) forKey:@"state"];
-    [controller setValue:@"Starting local speech recognition…" forKey:@"statusText"];
-    [controller launchHelperWithArguments:@[@"stream"] inputData:nil keepsInputOpen:NO];
-}
-
 static BOOL MicaUITestExitTabs(NSArray<MicaTab *> *tabs) {
     // Let finite fixture commands release stdin before typing `exit`; otherwise
     // their output can appear ready while the shell still owns the PTY.
@@ -241,23 +229,8 @@ static void MicaUITestSendKey(MicaAppDelegate *delegate, NSString *characters,
     if (event) [delegate.terminalView keyDown:event];
 }
 
-static void MicaUITestInsertComposedText(MicaAppDelegate *delegate, NSString *text) {
-    // AppKit's keyboard layout differs between developer machines and CI. Feed
-    // the composed string through the NSTextInputClient callback that real
-    // keyboard layouts and IMEs call after composition.
-    [delegate.terminalView insertText:text replacementRange:NSMakeRange(NSNotFound, 0)];
-}
-
 static int shortcutEnableCalls, shortcutDisableCalls;
 static BOOL MicaUITestCountingRegistrar(BOOL enable) { if (enable) shortcutEnableCalls++; else shortcutDisableCalls++; return YES; }
-
-static void MicaUITestSendFlags(MicaAppDelegate *delegate, NSEventModifierFlags modifiers,
-                               unsigned short keyCode) {
-    NSEvent *event = [NSEvent keyEventWithType:NSEventTypeFlagsChanged location:NSZeroPoint
-        modifierFlags:modifiers timestamp:0 windowNumber:delegate.window.windowNumber context:nil
-        characters:@"" charactersIgnoringModifiers:@"" isARepeat:NO keyCode:keyCode];
-    if (event) [delegate.terminalView flagsChanged:event];
-}
 
 static void MicaUITestRunLoopFor(NSTimeInterval seconds) {
     [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:seconds]];
@@ -309,30 +282,6 @@ static void MicaUITestSendMouse(MicaAppDelegate *delegate, NSEventType type, NSP
 - (NSPasteboard *)draggingPasteboard { return self.pasteboard; }
 @end
 
-@interface MicaUITestVoiceController : MicaVoiceController
-@property(nonatomic) NSUInteger pushToTalkStarts;
-@property(nonatomic) NSUInteger pushToTalkFinishes;
-@property(nonatomic) NSUInteger cancels;
-@property(nonatomic, strong) NSUUID *testRecordingID;
-@property(nonatomic, strong) NSUUID *historyUpdatedRecordingID;
-@property(nonatomic, copy) NSDictionary<NSString *, id> *historyUpdateMetadata;
-@end
-
-@implementation MicaUITestVoiceController
-- (NSUUID *)recordingID { return self.testRecordingID; }
-- (void)updateHistoryForRecordingID:(NSUUID *)recordingID metadata:(NSDictionary<NSString *,id> *)metadata {
-    self.historyUpdatedRecordingID = recordingID;
-    self.historyUpdateMetadata = metadata;
-}
-- (void)startPushToTalkForWorkingDirectory:(NSString *)workingDirectory {
-    (void)workingDirectory;
-    self.pushToTalkStarts++;
-    [self setValue:@(MicaVoiceControllerStateListening) forKey:@"state"];
-}
-- (void)finishPushToTalk { self.pushToTalkFinishes++; [self setValue:@(MicaVoiceControllerStateIdle) forKey:@"state"]; }
-- (void)cancel { self.cancels++; [self setValue:@(MicaVoiceControllerStateIdle) forKey:@"state"]; }
-@end
-
 @interface MicaUITestLiveResizeView : MicaTerminalView
 @property(nonatomic) BOOL testInLiveResize;
 @end
@@ -348,133 +297,6 @@ static int MicaRunUISelfTest(void) {
         setenv("MICA_TEST_NO_STARTUP", "1", 1);
         NSApplication *app = NSApplication.sharedApplication;
         app.activationPolicy = NSApplicationActivationPolicyAccessory;
-
-        NSArray *vocab = @[@"MicaTerminal", @"libvterm", @"mica_app.m", @"AppKit", @"NSUserDefaults", @"git-ls-files", @"pseudo-terminal", @"vterm-screen", @"make-sanitize"];
-        BOOL vocabularyCases =
-            [MicaCorrectTranscript(@"Open Mica Terminal", vocab) isEqualToString:@"Open MicaTerminal"] &&
-            [MicaCorrectTranscript(@"Open Mica-Terminal", vocab) isEqualToString:@"Open MicaTerminal"] &&
-            [MicaCorrectTranscript(@"Open Mica Terminaal", vocab) isEqualToString:@"Open MicaTerminal"] &&
-            [MicaCorrectTranscript(@"Open MicaTerminal", vocab) isEqualToString:@"Open MicaTerminal"] &&
-            [MicaCorrectTranscript(@"this is a common word", @[@"with", @"which"]) isEqualToString:@"this is a common word"] &&
-            [MicaCorrectTranscript(@"cat", @[@"Catapult"]) isEqualToString:@"cat"] &&
-            [MicaCorrectTranscript(@"MicaTerminaal", @[@"MicaTerminal"]) isEqualToString:@"MicaTerminal"] &&
-            [MicaCorrectTranscript(@"db", @[@"db\tDatabase"]) isEqualToString:@"Database"] &&
-            [MicaCorrectTranscript(@"unrelated ordinary sentence with useful words", @[@"MicaTerminal", @"MicaTerminul"]) isEqualToString:@"unrelated ordinary sentence with useful words"];
-        MicaUITestRecord(report, &allPassed, vocabularyCases,
-                         @"vocabulary corrector handles normalized terms and rejects common words, short terms, near misses, and ambiguous candidates");
-
-        NSDictionary *snippetCases = @{@"open mica": @"MicaTerminal", @"good morning": @"Hello"};
-        BOOL snippetMatching =
-            [MicaApplyDictationSnippet(@"  OPEN MICA  ", snippetCases) isEqualToString:@"MicaTerminal"] &&
-            [MicaApplyDictationSnippet(@"open", snippetCases) isEqualToString:@"open"] &&
-            [MicaApplyDictationSnippet(@"open mica today", snippetCases) isEqualToString:@"open mica today"] &&
-            [MicaApplyDictationSnippet(@"Open Mica", @{@"open mica": @"other"}) isEqualToString:@"other"];
-        MicaUITestRecord(report, &allPassed, snippetMatching,
-            @"snippets expand only a whole trimmed, case-folded corrected transcript");
-        char snippetsTemplate[] = "/tmp/mica-snippets-XXXXXX";
-        int snippetsFD = mkstemp(snippetsTemplate);
-        unichar snippetControl = 1;
-        NSString *snippetFixture = [NSString stringWithFormat:@" Open Mica => echo should-not-run\nopen mica=>duplicate\nBad\ncontrol => nope%Cbad\n", snippetControl];
-        NSData *snippetFixtureData = [snippetFixture dataUsingEncoding:NSUTF8StringEncoding];
-        BOOL snippetFileReady = snippetsFD >= 0 && write(snippetsFD, snippetFixtureData.bytes, snippetFixtureData.length) == (ssize_t)snippetFixtureData.length;
-        if (snippetsFD >= 0) close(snippetsFD);
-        NSDictionary *loadedSnippets = snippetFileReady ? MicaDictationSnippetsFromFile([NSURL fileURLWithPath:[NSString stringWithUTF8String:snippetsTemplate]]) : @{};
-        BOOL snippetValidation = loadedSnippets.count == 1 && [loadedSnippets[@"open mica"] isEqualToString:@"echo should-not-run"];
-        MicaUITestRecord(report, &allPassed, snippetValidation,
-            @"snippet file skips malformed, duplicate normalized, and control-character entries");
-        NSMutableString *snippetLimitsText = [NSMutableString string];
-        for (NSUInteger i = 0; i < 101; i++) [snippetLimitsText appendFormat:@"trigger%lu => expansion\n", (unsigned long)i];
-        [snippetLimitsText appendFormat:@"%@ => too-long-trigger\ntrigger-too-long => %@\n",
-            [@"t" stringByPaddingToLength:129 withString:@"t" startingAtIndex:0],
-            [@"e" stringByPaddingToLength:2049 withString:@"e" startingAtIndex:0]];
-        [snippetLimitsText writeToFile:[NSString stringWithUTF8String:snippetsTemplate] atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        NSDictionary *boundedSnippets = MicaDictationSnippetsFromFile([NSURL fileURLWithPath:[NSString stringWithUTF8String:snippetsTemplate]]);
-        BOOL snippetLimits = boundedSnippets.count == 100 && !boundedSnippets[@"trigger-too-long"];
-        MicaUITestRecord(report, &allPassed, snippetLimits,
-            @"snippet entries cap at 100 and reject overlong triggers and expansions");
-        [[@"x" stringByPaddingToLength:65537 withString:@"x" startingAtIndex:0] writeToFile:[NSString stringWithUTF8String:snippetsTemplate] atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        BOOL snippetFileCap = MicaDictationSnippetsFromFile([NSURL fileURLWithPath:[NSString stringWithUTF8String:snippetsTemplate]]).count == 0;
-        MicaUITestRecord(report, &allPassed, snippetFileCap, @"snippet files larger than 64 KiB are ignored");
-        if (snippetsFD >= 0) unlink(snippetsTemplate);
-        NSMutableArray *mergeTerms = [NSMutableArray array];
-        for (NSUInteger i=0; i<510; i++) [mergeTerms addObject:[NSString stringWithFormat:@"ProjectTerm%lu", (unsigned long)i]];
-        MicaUITestRecord(report, &allPassed, MicaVocabularyMerge(@[mergeTerms]).count == 500,
-            @"vocabulary corrector merged terms cap at 500");
-        MicaTab *vocabularyTabA=[MicaTab new], *vocabularyTabB=[MicaTab new];
-        vocabularyTabA.vocabularyFileTerms=@[@"AlphaProject"]; vocabularyTabB.vocabularyFileTerms=@[@"BetaProject"];
-        BOOL vocabularyWindowIsolation=[MicaCorrectTranscript(@"AlphaaProject",vocabularyTabA.vocabularyFileTerms) isEqualToString:@"AlphaProject"] &&
-            [MicaCorrectTranscript(@"AlphaaProject",vocabularyTabB.vocabularyFileTerms) isEqualToString:@"AlphaaProject"] &&
-            [MicaCorrectTranscript(@"BetaaProject",vocabularyTabB.vocabularyFileTerms) isEqualToString:@"BetaProject"] &&
-            [MicaCorrectTranscript(@"BetaaProject",vocabularyTabA.vocabularyFileTerms) isEqualToString:@"BetaaProject"];
-        MicaUITestRecord(report,&allPassed,vocabularyWindowIsolation,@"each window's tab vocabulary stays local to that tab");
-        NSString *recentVocabularyTerm=MicaVocabularyTermsFromRecentText(@"MicaTerminal",[NSDate date],[NSDate date]).firstObject;
-        BOOL trustedVocabularyWins=[MicaCorrectTranscript(@"MicaTerminaal",@[recentVocabularyTerm ?: @"",@"MicaTerminal"]) isEqualToString:@"MicaTerminal"];
-        MicaUITestRecord(report,&allPassed,trustedVocabularyWins,@"project vocabulary retains higher trust than an identical recent-screen term");
-
-        NSURL *fixtureURL = [NSURL fileURLWithPath:[NSFileManager.defaultManager.currentDirectoryPath stringByAppendingPathComponent:@"examples/vocabulary-transcripts.tsv"]];
-        NSArray *fixtureRows = [[NSString stringWithContentsOfURL:fixtureURL encoding:NSUTF8StringEncoding error:nil] componentsSeparatedByString:@"\n"];
-        NSUInteger fixtureCount = 0, fixtureBefore = 0, fixtureAfter = 0;
-        for (NSUInteger row = 1; row < fixtureRows.count; row++) {
-            NSArray *columns = [fixtureRows[row] componentsSeparatedByString:@"\t"];
-            if (columns.count != 2) continue;
-            fixtureCount++;
-            if ([columns[0] isEqualToString:columns[1]]) fixtureBefore++;
-            if ([MicaCorrectTranscript(columns[0], vocab) isEqualToString:columns[1]]) fixtureAfter++;
-        }
-        MicaUITestRecord(report, &allPassed, fixtureCount >= 40 && fixtureAfter >= fixtureBefore,
-            [NSString stringWithFormat:@"40-prompt vocabulary fixture hit rate: raw %lu/%lu (%.1f%%), corrected %lu/%lu (%.1f%%)",
-             (unsigned long)fixtureBefore, (unsigned long)fixtureCount, fixtureCount ? 100.0*fixtureBefore/fixtureCount : 0,
-             (unsigned long)fixtureAfter, (unsigned long)fixtureCount, fixtureCount ? 100.0*fixtureAfter/fixtureCount : 0]);
-
-        NSMutableArray *latencyTerms = [NSMutableArray array]; for (NSUInteger i=0;i<500;i++) [latencyTerms addObject:[NSString stringWithFormat:@"ProjectIdentifier%03lu",(unsigned long)i]];
-        NSMutableString *longTranscript = [NSMutableString string]; for (NSUInteger i=0;i<200;i++) [longTranscript appendString:@" ordinary token"];
-        double correctorMS = 1e9;
-        for (int attempt = 0; attempt < 7; attempt++) { // best of 7: one scheduler hiccup must not fail the gate
-            NSTimeInterval correctorStart = NSProcessInfo.processInfo.systemUptime;
-            (void)MicaCorrectTranscript(longTranscript, latencyTerms);
-            double elapsedMS = (NSProcessInfo.processInfo.systemUptime-correctorStart)*1000.0;
-            if (elapsedMS < correctorMS) correctorMS = elapsedMS;
-        }
-        BOOL correctorFast = correctorMS < 5.0;
-        MicaUITestRecord(report, &allPassed, correctorFast,
-            [NSString stringWithFormat:@"vocabulary correction stays below 5 ms for 500 terms and a 200-word transcript (%.3f ms)",correctorMS]);
-
-        char vocabularyDir[] = "/tmp/mica-vocabulary-XXXXXX"; char *vocabularyPath = mkdtemp(vocabularyDir);
-        BOOL vocabularySources = vocabularyPath != NULL;
-        if (vocabularySources) {
-            NSString *root = [NSString stringWithUTF8String:vocabularyPath];
-            unichar badControl = 1;
-            NSString *hostile = [[NSString stringWithFormat:@"MicaTerminal\nmicaterminal\nAlpha => Beta => Run\nBad%CWord\n", badControl]
-                stringByAppendingString:[@"x" stringByPaddingToLength:70000 withString:@"x" startingAtIndex:0]];
-            NSString *hostilePath = [root stringByAppendingPathComponent:@"vocabulary.txt"];
-            [hostile writeToFile:hostilePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-            NSArray *hostileTerms = MicaVocabularyTermsFromFile([NSURL fileURLWithPath:hostilePath]);
-            NSUInteger expiredCount = MicaVocabularyTermsFromRecentText(@"MicaTerminal", [NSDate dateWithTimeIntervalSinceNow:-601], [NSDate date]).count;
-            vocabularySources = hostileTerms.count <= 3 && ![hostileTerms containsObject:@"Alpha => Beta => Run"] && expiredCount == 0;
-            unichar control = 1;
-            NSString *boundedHostile = [NSString stringWithFormat:@"# comment\nMicaTerminal\nmicaterminal\nAlpha => Beta => Run\nBad%CWord\nshort => Database\n", control];
-            [boundedHostile writeToFile:hostilePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-            NSArray *boundedTerms = MicaVocabularyTermsFromFile([NSURL fileURLWithPath:hostilePath]);
-            NSArray *dedupedTerms = MicaVocabularyMerge(@[boundedTerms]);
-            vocabularySources = vocabularySources && dedupedTerms.count == 3 &&
-                ![dedupedTerms containsObject:@"Alpha => Beta => Run"] && ![dedupedTerms containsObject:@"Bad"];
-            NSString *repo = [root stringByAppendingPathComponent:@"repo space"];
-            NSString *unicodeFolder=[repo stringByAppendingPathComponent:@"Unicode Ω Folder"];
-            [NSFileManager.defaultManager createDirectoryAtPath:unicodeFolder withIntermediateDirectories:YES attributes:nil error:nil];
-            [@"" writeToFile:[unicodeFolder stringByAppendingPathComponent:@"Unicode Ω File.m"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
-            NSTask *gitInit = [NSTask new]; gitInit.executableURL=[NSURL fileURLWithPath:@"/usr/bin/git"]; gitInit.arguments=@[@"-C",repo,@"init"]; gitInit.standardOutput=[NSFileHandle fileHandleWithNullDevice]; gitInit.standardError=[NSFileHandle fileHandleWithNullDevice]; [gitInit launch]; [gitInit waitUntilExit];
-            NSTask *gitAdd = [NSTask new]; gitAdd.executableURL=[NSURL fileURLWithPath:@"/usr/bin/git"]; gitAdd.arguments=@[@"-C",repo,@"add",@"--all"]; gitAdd.standardOutput=[NSFileHandle fileHandleWithNullDevice]; gitAdd.standardError=[NSFileHandle fileHandleWithNullDevice]; [gitAdd launch]; [gitAdd waitUntilExit];
-            NSArray *gitTerms = MicaVocabularyTermsFromGitFiles(repo);
-            BOOL foundUnicodeName = NO;
-            for (NSString *term in gitTerms)
-                if ([term rangeOfString:@"Unicode"].location != NSNotFound &&
-                    [term rangeOfString:@"File"].location != NSNotFound &&
-                    [term rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"Ω"]].location != NSNotFound &&
-                    [term componentsSeparatedByString:@" "].count == 3) foundUnicodeName = YES;
-            vocabularySources = vocabularySources && foundUnicodeName && [gitTerms containsObject:@"Unicode Ω Folder"];
-            [NSFileManager.defaultManager removeItemAtPath:root error:nil];
-        }
-        MicaUITestRecord(report, &allPassed, vocabularySources, @"vocabulary file rejects oversized and malformed entries; recent terms expire; git filenames preserve spaces and Unicode");
 
         NSString *sameLabel = [NSString stringWithUTF8String:"Codex"];
         BOOL labelComparisonIsNilSafe = !MicaStringChanged(nil, nil) &&
@@ -576,104 +398,41 @@ static int MicaRunUISelfTest(void) {
             [diagnosticContents containsString:@"[test] startup diagnostic record"],
             @"diagnostics stay off until enabled, then write timestamped plain-text logs in an easy-to-open folder");
 
-        char helperPath[] = "/tmp/mica-voice-cancel-XXXXXX";
-        int helperFD = mkstemp(helperPath);
-        BOOL cancelHelperCreated = helperFD >= 0;
-        if (cancelHelperCreated) {
-            const char helperSource[] = "#!/bin/sh\nexec 0<&-\nsleep 5\n";
-            cancelHelperCreated = write(helperFD, helperSource, sizeof(helperSource) - 1) ==
-                (ssize_t)(sizeof(helperSource) - 1) && fchmod(helperFD, 0700) == 0;
-            close(helperFD);
+        char imeDirectoryTemplate[] = "/tmp/mica-ime-input-XXXXXX";
+        char *imeDirectoryPath = mkdtemp(imeDirectoryTemplate);
+        NSString *imeDirectory = imeDirectoryPath ? [NSString stringWithUTF8String:imeDirectoryPath] : nil;
+        MicaAppDelegate *imeDelegate = [[MicaAppDelegate alloc] init];
+        imeDelegate.tabs = [NSMutableArray array];
+        imeDelegate.activeIndex = 0;
+        imeDelegate.uiMode = MicaUIModeNormal;
+        MicaUITestAttachWindow(imeDelegate);
+        BOOL imePromptReady = imeDirectory.length > 0 &&
+            setenv("MICA_TEST_ZLE_DIR", imeDirectory.fileSystemRepresentation, 1) == 0;
+        if (imePromptReady)
+            [imeDelegate addTabWithName:@"Composed input" cwd:@"/tmp" command:nil prefilled:NO];
+        unsetenv("MICA_TEST_ZLE_DIR");
+        MicaTab *imeTab = imeDelegate.activeTab;
+        NSString *imeReadyPath = imeTab.session ? MicaUITestZLEFile(imeDirectory, imeTab.session, @"ready") : nil;
+        for (int attempt = 0; imePromptReady && ![NSFileManager.defaultManager fileExistsAtPath:imeReadyPath] && attempt < 300; attempt++) {
+            mica_session_poll(imeTab.session, 0);
+            MicaUITestRunLoopFor(0.01);
         }
-        MicaVoiceController *cancelProbe = cancelHelperCreated
-            ? [[MicaVoiceController alloc] initWithHelperURL:[NSURL fileURLWithPath:
-                [NSFileManager.defaultManager stringWithFileSystemRepresentation:helperPath length:strlen(helperPath)]]]
-            : nil;
-        if (cancelProbe) {
-            [cancelProbe launchHelperWithArguments:@[@"stream"] inputData:nil keepsInputOpen:YES];
-            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.15]];
-            [cancelProbe cancel];
-            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.10]];
-        }
-        BOOL voiceCancelSafe = cancelProbe.state == MicaVoiceControllerStateIdle;
-        MicaUITestRecord(report, &allPassed, cancelHelperCreated && voiceCancelSafe,
-                         @"cancel closes an exited helper stream without writing a broken-pipe sentinel");
-        unlink(helperPath);
-
-        char failedHelperTemplate[] = "/tmp/mica-voice-failure-XXXXXX";
-        int failedHelperFD = mkstemp(failedHelperTemplate);
-        char childPIDTemplate[] = "/tmp/mica-voice-child-pid-XXXXXX";
-        int childPIDFD = mkstemp(childPIDTemplate);
-        BOOL failedHelperCreated = failedHelperFD >= 0 && childPIDFD >= 0;
-        NSString *childPIDPath = [NSString stringWithUTF8String:childPIDTemplate];
-        if (childPIDFD >= 0) close(childPIDFD);
-        if (failedHelperFD >= 0) {
-            NSString *failedHelperSource = [NSString stringWithFormat:
-                @"#!/bin/sh\nsleep 30 &\nprintf '%%s\\n' \"$!\" > '%@'\nexit 23\n", childPIDPath];
-            NSData *sourceData = [failedHelperSource dataUsingEncoding:NSUTF8StringEncoding];
-            failedHelperCreated = failedHelperCreated &&
-                write(failedHelperFD, sourceData.bytes, sourceData.length) == (ssize_t)sourceData.length &&
-                fchmod(failedHelperFD, 0700) == 0;
-            close(failedHelperFD);
-        }
-        MicaVoiceController *failedHelperProbe = failedHelperCreated
-            ? [[MicaVoiceController alloc] initWithHelperURL:[NSURL fileURLWithPath:
-                [NSFileManager.defaultManager stringWithFileSystemRepresentation:failedHelperTemplate length:strlen(failedHelperTemplate)]]]
-            : nil;
-        MicaUITestLaunchSpeechHelper(failedHelperProbe);
-        BOOL startsWithIndeterminateProgress = failedHelperCreated &&
-            failedHelperProbe.state == MicaVoiceControllerStatePreparing &&
-            !failedHelperProbe.hasProgress &&
-            [failedHelperProbe.statusText isEqualToString:@"Starting local speech recognition…"];
-        for (int attempt = 0; failedHelperProbe.state != MicaVoiceControllerStateFailed && attempt < 300; attempt++)
-            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
-        BOOL unexpectedExitHandled = failedHelperCreated &&
-            failedHelperProbe.state == MicaVoiceControllerStateFailed &&
-            [failedHelperProbe.statusText containsString:@"status 23"];
-        NSString *childPIDString = [NSString stringWithContentsOfFile:childPIDPath
-            encoding:NSUTF8StringEncoding error:nil];
-        pid_t childPID = (pid_t)childPIDString.intValue;
-        if (childPID > 1) kill(childPID, SIGTERM);
-        unlink(failedHelperTemplate);
-        unlink(childPIDTemplate);
-        MicaUITestRecord(report, &allPassed, unexpectedExitHandled,
-            [NSString stringWithFormat:@"an exited speech helper cannot leave Dictation stuck when an inherited pipe stays open (failed=%d status=%@)",
-                unexpectedExitHandled, failedHelperProbe.statusText]);
-        MicaUITestRecord(report, &allPassed, startsWithIndeterminateProgress,
-            @"dictation starts with an indeterminate indicator instead of a false zero-percent bar");
-        [failedHelperProbe cancel];
-
-        char progressHelperTemplate[] = "/tmp/mica-voice-progress-XXXXXX";
-        int progressHelperFD = mkstemp(progressHelperTemplate);
-        const char progressHelperSource[] =
-            "#!/bin/sh\n"
-            "printf '%s\\n' '{\"type\":\"status\",\"message\":\"Downloading speech model files…\",\"progress\":0.4}'\n"
-            "sleep 0.15\n"
-            "printf '%s\\n' '{\"type\":\"error\",\"message\":\"fixture helper failure\"}'\n"
-            "exit 0\n";
-        BOOL progressHelperCreated = progressHelperFD >= 0 &&
-            write(progressHelperFD, progressHelperSource, sizeof(progressHelperSource) - 1) ==
-                (ssize_t)(sizeof(progressHelperSource) - 1) && fchmod(progressHelperFD, 0700) == 0;
-        if (progressHelperFD >= 0) close(progressHelperFD);
-        MicaVoiceController *progressHelperProbe = progressHelperCreated
-            ? [[MicaVoiceController alloc] initWithHelperURL:[NSURL fileURLWithPath:
-                [NSFileManager.defaultManager stringWithFileSystemRepresentation:progressHelperTemplate length:strlen(progressHelperTemplate)]]]
-            : nil;
-        MicaUITestLaunchSpeechHelper(progressHelperProbe);
-        BOOL receivedDownloadProgress = NO;
-        for (int attempt = 0; progressHelperProbe.state != MicaVoiceControllerStateFailed && attempt < 200; attempt++) {
-            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
-            receivedDownloadProgress = receivedDownloadProgress ||
-                (progressHelperProbe.hasProgress && fabs(progressHelperProbe.progress - 0.4) < 0.001);
-        }
-        BOOL outputPipeStayedOpen = progressHelperCreated && receivedDownloadProgress &&
-            progressHelperProbe.state == MicaVoiceControllerStateFailed &&
-            [progressHelperProbe.statusText isEqualToString:@"fixture helper failure"];
-        MicaUITestRecord(report, &allPassed, outputPipeStayedOpen,
-            [NSString stringWithFormat:@"dictation keeps the helper output pipe alive to receive download progress and its final error (progress=%d result=%@)",
-                receivedDownloadProgress, progressHelperProbe.statusText]);
-        [progressHelperProbe cancel];
-        unlink(progressHelperTemplate);
+        imePromptReady = imePromptReady && [NSFileManager.defaultManager fileExistsAtPath:imeReadyPath];
+        for (NSString *character in @[@"@", @"#", @"@", @"@"])
+            if (imePromptReady) MicaUITestSendKey(imeDelegate, character, NSEventModifierFlagOption, 0);
+        NSString *optionComposedBuffer = imePromptReady ? MicaUITestCaptureZLEBuffer(imeDirectory, imeTab.session) : nil;
+        BOOL optionCompositionReachesShell = [optionComposedBuffer isEqualToString:@"@#@@"];
+        MicaUITestRecord(report, &allPassed, imePromptReady && optionCompositionReachesShell,
+            [NSString stringWithFormat:@"Option-composed punctuation reaches the shell as typed text (ready=%d buffer=%@)",
+                imePromptReady, optionComposedBuffer ?: @"<missing>"]);
+        if (imeTab.session) mica_session_write(imeTab.session, "\x03", 1);
+        BOOL imeSessionStopped = MicaUITestExitTabs(imeDelegate.tabs);
+        MicaUITestRecord(report, &allPassed, imeSessionStopped, @"composed-input test shell exits cleanly");
+        imeDelegate.tabs = [NSMutableArray array];
+        [imeDelegate.window orderOut:nil];
+        imeDelegate.terminalView = nil;
+        imeDelegate.window = nil;
+        if (imeDirectoryPath) [[NSFileManager defaultManager] removeItemAtPath:imeDirectory error:nil];
 
         MicaAppDelegate *delegate = [[MicaAppDelegate alloc] init];
         delegate.tabs = [NSMutableArray array];
@@ -711,17 +470,7 @@ static int MicaRunUISelfTest(void) {
         NSMenuItem *shortcutsMenuItem = [helpMenu itemWithTitle:@"Keyboard Shortcuts…"];
         NSMenuItem *paletteMenuItem = [helpMenu itemWithTitle:@"Command Palette…"];
         NSMenu *editMenu = [NSApp.mainMenu itemWithTitle:@"Edit"].submenu;
-        NSMenuItem *vocabularyToggleMenuItem = [editMenu itemWithTitle:@"Improve Dictation with Project Vocabulary"];
-        NSMenuItem *editVocabularyMenuItem = [editMenu itemWithTitle:@"Edit Vocabulary…"];
-        NSMenuItem *editSnippetsMenuItem = [editMenu itemWithTitle:@"Edit Snippets…"];
         NSMenuItem *quickSelectMenuItem = [editMenu itemWithTitle:@"Quick Select…"];
-        NSMenuItem *undoMenuItem = [editMenu itemWithTitle:@"Undo Last Dictation"];
-        BOOL removedVocabularyBoost = [editMenu itemWithTitle:@"Boost Vocabulary While Dictating (downloads extra model)"] == nil &&
-            [[delegate paletteRows] filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSDictionary *row, NSDictionary *bindings) {
-                (void)bindings;
-                return [row[@"title"] containsString:@"Boost Vocabulary"];
-            }]].count == 0 &&
-            [[NSUserDefaults standardUserDefaults] objectForKey:@"MicaDictationVocabularyBoostEnabled"] == nil;
         [delegate openPreferences:nil];
         NSButton *menuBarTimerPreference = (NSButton *)[delegate.preferencesWindow.contentView viewWithTag:109];
         BOOL menuBarTimerPreferenceVisible = [menuBarTimerPreference.title isEqualToString:@"Show the focus timer in the menu bar"];
@@ -730,7 +479,6 @@ static int MicaRunUISelfTest(void) {
                          sshProfilesMenuItem.target == delegate &&
                          [newShellMenuItem.keyEquivalent isEqualToString:@"t"] &&
                          (newShellMenuItem.keyEquivalentModifierMask & NSEventModifierFlagCommand) != 0 &&
-                         [sessionMenu itemWithTitle:@"Dictate…"] == nil &&
                          tabPickerMenuItem.keyEquivalent.length == 0 &&
                          [scrollbackMenuItem.keyEquivalent isEqualToString:@"s"] &&
                          selectOutputMenuItem.target == delegate.terminalView &&
@@ -739,11 +487,8 @@ static int MicaRunUISelfTest(void) {
                           (NSEventModifierFlagCommand | NSEventModifierFlagShift)) ==
                             (NSEventModifierFlagCommand | NSEventModifierFlagShift) &&
                          diagnosticLogsMenuItem.target == delegate &&
-                         vocabularyToggleMenuItem.target == delegate && editVocabularyMenuItem.target == delegate &&
-                         editSnippetsMenuItem.target == delegate &&
                          quickSelectMenuItem.target == delegate.terminalView && quickSelectMenuItem.isEnabled &&
-                         undoMenuItem.target == delegate && ![delegate validateMenuItem:undoMenuItem] &&
-                         removedVocabularyBoost && menuBarTimerPreferenceVisible &&
+                         menuBarTimerPreferenceVisible &&
                          paletteMenuItem.target == delegate &&
                          [paletteMenuItem.keyEquivalent isEqualToString:@"p"] &&
                          (paletteMenuItem.keyEquivalentModifierMask &
@@ -764,7 +509,7 @@ static int MicaRunUISelfTest(void) {
                          (quitMenuItem.keyEquivalentModifierMask & NSEventModifierFlagCommand) != 0 &&
                          [sessionMenu itemWithTitle:@"New Claude Code Tab"] == nil &&
                          [sessionMenu itemWithTitle:@"New Codex Tab"] == nil,
-                         @"smoke: shipped menu actions exist and are enabled when applicable; unavailable dictation undo is disabled");
+                         @"smoke: shipped menu actions exist and are enabled when applicable");
 
         NSString *recentMenuDirectory = [NSTemporaryDirectory() stringByAppendingPathComponent:
             [NSString stringWithFormat:@"mica-recent-menu-%@", NSUUID.UUID.UUIDString]];
@@ -1132,472 +877,6 @@ static int MicaRunUISelfTest(void) {
                 (long)boundaryRow, boundaryHistoryClick, boundaryLiveClick]);
         mica_set_history_limit_lines(savedWrapBudget / (80u * sizeof(VTermScreenCell)));
         wrapDelegate.tabs = [NSMutableArray array];
-
-        MicaAppDelegate *voiceDelegate = [[MicaAppDelegate alloc] init];
-        voiceDelegate.tabs = [NSMutableArray array];
-        voiceDelegate.activeIndex = 0;
-        voiceDelegate.uiMode = MicaUIModeNormal;
-        MicaUITestAttachWindow(voiceDelegate);
-        char voiceTestDirectoryTemplate[] = "/tmp/mica-voice-contract-XXXXXX";
-        char *voiceTestDirectoryPath = mkdtemp(voiceTestDirectoryTemplate);
-        NSString *voiceTestDirectory = voiceTestDirectoryPath
-            ? [NSString stringWithUTF8String:voiceTestDirectoryPath] : nil;
-        BOOL voiceTestDirectoryReady = voiceTestDirectory.length > 0 &&
-            setenv("MICA_TEST_ZLE_DIR", voiceTestDirectory.fileSystemRepresentation, 1) == 0;
-        MicaUITestVoiceController *pushToTalkProbe = [[MicaUITestVoiceController alloc]
-            initWithHelperURL:[NSURL fileURLWithPath:@"/bin/false"]];
-        pushToTalkProbe.testRecordingID = NSUUID.UUID;
-        voiceDelegate.voiceController = pushToTalkProbe;
-        [voiceDelegate addTabWithName:@"PTT target" cwd:@"/tmp"
-            command:@"printf 'PTT-TARGET-READY\\n'" prefilled:NO];
-        [voiceDelegate addTabWithName:@"Other tab" cwd:@"/tmp"
-            command:@"printf 'PTT-OTHER-READY\\n'" prefilled:NO];
-        unsetenv("MICA_TEST_ZLE_DIR");
-        MicaTab *voiceTargetTab = voiceDelegate.tabs.firstObject;
-        BOOL voiceTabsReady = NO;
-        for (int attempt = 0; attempt < 200; attempt++) {
-            for (MicaTab *tab in voiceDelegate.tabs) mica_session_poll(tab.session, 0);
-            if (MicaUITestFindText(voiceTargetTab.session, @"PTT-TARGET-READY", NULL, NULL)) {
-                voiceTabsReady = YES;
-                break;
-            }
-            usleep(10000);
-        }
-        // The command-completion OSC arrives before its replacement zsh prompt.
-        // Wait for each shell's zle-line-init probe instead of guessing by time.
-        BOOL voiceTabsAtPrompt = NO;
-        for (int attempt = 0; voiceTestDirectoryReady && attempt < 500; attempt++) {
-            BOOL bothEditorsReady = voiceTestDirectoryReady;
-            for (MicaTab *tab in voiceDelegate.tabs) {
-                mica_session_poll(tab.session, 0);
-                bothEditorsReady = bothEditorsReady &&
-                    [[NSFileManager defaultManager] fileExistsAtPath:
-                        MicaUITestVoiceFile(voiceTestDirectory, tab.session, @"ready")];
-            }
-            if (bothEditorsReady) {
-                voiceTabsAtPrompt = YES;
-                break;
-            }
-            MicaUITestRunLoopFor(0.01);
-        }
-        [voiceDelegate selectTabAtIndex:0];
-        MicaUITestSendFlags(voiceDelegate, NSEventModifierFlagOption, 58);
-        MicaUITestSendFlags(voiceDelegate, 0, 58);
-        MicaUITestRunLoopFor(0.22);
-        BOOL quickOptionTapIgnored = pushToTalkProbe.pushToTalkStarts == 0 &&
-            pushToTalkProbe.pushToTalkFinishes == 0;
-        MicaUITestSendFlags(voiceDelegate,
-            NSEventModifierFlagOption | NSEventModifierFlagCommand, 58);
-        MicaUITestSendFlags(voiceDelegate, NSEventModifierFlagCommand, 58);
-        MicaUITestRunLoopFor(0.22);
-        BOOL optionChordIgnored = pushToTalkProbe.pushToTalkStarts == 0 &&
-            pushToTalkProbe.pushToTalkFinishes == 0;
-        MicaUITestSendFlags(voiceDelegate, NSEventModifierFlagOption, 58);
-        for (int attempt = 0; pushToTalkProbe.pushToTalkStarts < 1 && attempt < 200; attempt++)
-            MicaUITestRunLoopFor(0.01);
-        BOOL heldOptionStartedOnce = pushToTalkProbe.pushToTalkStarts == 1 &&
-            voiceDelegate.voiceTargetTab == voiceTargetTab;
-        MicaUITestSendFlags(voiceDelegate, 0, 58);
-        BOOL optionReleaseFinishedOnce = pushToTalkProbe.pushToTalkFinishes == 1;
-        MicaUITestRecord(report, &allPassed, voiceTabsReady && voiceTabsAtPrompt && quickOptionTapIgnored &&
-            optionChordIgnored && heldOptionStartedOnce && optionReleaseFinishedOnce,
-            [NSString stringWithFormat:@"left Option hold starts dictation once, release finishes, and taps/chords are ignored (ready=%d prompt=%d quick=%d chord=%d starts=%lu finishes=%lu)",
-                voiceTabsReady, voiceTabsAtPrompt, quickOptionTapIgnored, optionChordIgnored,
-                (unsigned long)pushToTalkProbe.pushToTalkStarts,
-                (unsigned long)pushToTalkProbe.pushToTalkFinishes]);
-
-        voiceDelegate.dictationToggleMode = YES;
-        MicaUITestSendFlags(voiceDelegate, NSEventModifierFlagOption, 58);
-        MicaUITestSendFlags(voiceDelegate, 0, 58);
-        BOOL toggleStarted = pushToTalkProbe.pushToTalkStarts == 2 &&
-            pushToTalkProbe.state == MicaVoiceControllerStateListening;
-        MicaUITestSendFlags(voiceDelegate, NSEventModifierFlagOption, 58);
-        MicaUITestSendFlags(voiceDelegate, 0, 58);
-        BOOL toggleStopped = pushToTalkProbe.pushToTalkFinishes == 2 &&
-            pushToTalkProbe.state == MicaVoiceControllerStateIdle;
-        MicaUITestSendFlags(voiceDelegate, NSEventModifierFlagOption, 58);
-        MicaUITestSendFlags(voiceDelegate, 0, 58);
-        [voiceDelegate.terminalView keyDown:[NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
-            modifierFlags:0 timestamp:0 windowNumber:voiceDelegate.window.windowNumber context:nil
-            characters:@"\x1b" charactersIgnoringModifiers:@"\x1b" isARepeat:NO keyCode:53]];
-        BOOL toggleCancelled = pushToTalkProbe.cancels == 1 &&
-            pushToTalkProbe.state == MicaVoiceControllerStateIdle;
-        MicaUITestRecord(report, &allPassed, toggleStarted && toggleStopped && toggleCancelled,
-            [NSString stringWithFormat:@"toggle dictation starts on first Option tap, stops on the next, and Esc cancels (start=%d stop=%d cancel=%d)",
-                toggleStarted, toggleStopped, toggleCancelled]);
-        voiceDelegate.dictationToggleMode = NO;
-        NSRect micButton = [voiceDelegate.terminalView dictationButtonRect];
-        NSString *micStartTip = [voiceDelegate.terminalView view:voiceDelegate.terminalView
-            stringForToolTip:0 point:NSMakePoint(NSMidX(micButton), NSMidY(micButton)) userData:NULL];
-        MicaUITestSendMouse(voiceDelegate, NSEventTypeLeftMouseDown,
-            NSMakePoint(NSMidX(micButton), NSMidY(micButton)), 0);
-        BOOL mouseDictationStarted = pushToTalkProbe.pushToTalkStarts == 4 &&
-            pushToTalkProbe.state == MicaVoiceControllerStateListening;
-        MicaUITestSendMouse(voiceDelegate, NSEventTypeLeftMouseDown,
-            NSMakePoint(NSMidX(micButton), NSMidY(micButton)), 0);
-        BOOL mouseDictationFinished = pushToTalkProbe.pushToTalkFinishes == 3 &&
-            pushToTalkProbe.state == MicaVoiceControllerStateIdle;
-        voiceDelegate.dictationToggleMode = YES;
-        MicaUITestSendMouse(voiceDelegate, NSEventTypeLeftMouseDown,
-            NSMakePoint(NSMidX(micButton), NSMidY(micButton)), 0);
-        BOOL mouseDictationToggleModeStarted = pushToTalkProbe.pushToTalkStarts == 5 &&
-            pushToTalkProbe.state == MicaVoiceControllerStateListening;
-        MicaUITestSendMouse(voiceDelegate, NSEventTypeLeftMouseDown,
-            NSMakePoint(NSMidX(micButton), NSMidY(micButton)), 0);
-        BOOL mouseDictationToggleModeFinished = pushToTalkProbe.pushToTalkFinishes == 4 &&
-            pushToTalkProbe.state == MicaVoiceControllerStateIdle;
-        voiceDelegate.dictationToggleMode = NO;
-        MicaUITestRecord(report, &allPassed, mouseDictationStarted && mouseDictationFinished &&
-            mouseDictationToggleModeStarted && mouseDictationToggleModeFinished &&
-            [micStartTip isEqualToString:@"Start speech to text"],
-            [NSString stringWithFormat:@"status-bar microphone click starts and finishes dictation in Hold and Toggle settings and exposes a tooltip (hold=%d/%d toggle=%d/%d tooltip=%@)",
-                mouseDictationStarted, mouseDictationFinished, mouseDictationToggleModeStarted,
-                mouseDictationToggleModeFinished, micStartTip]);
-
-        id savedVocabularyPreference = [[voiceDelegate micaDefaults] objectForKey:@"MicaDictationVocabularyEnabled"];
-        [[voiceDelegate micaDefaults] setBool:YES forKey:@"MicaDictationVocabularyEnabled"];
-        voiceTargetTab.vocabularyFileTerms = @[@"MicaTerminal"];
-        voiceDelegate.voiceTargetTab = voiceTargetTab;
-        BOOL fakeTranscriptInserted = [voiceDelegate voiceController:pushToTalkProbe
-            didFinishTranscript:@"Mica Terminal"];
-        NSDictionary *firstProvenance = pushToTalkProbe.historyUpdateMetadata[@"provenance"];
-        BOOL firstInsertionRecorded = [pushToTalkProbe.historyUpdatedRecordingID isEqual:pushToTalkProbe.testRecordingID] &&
-            [voiceDelegate.voiceTargetRecordingID isEqual:pushToTalkProbe.testRecordingID] &&
-            voiceDelegate.voiceTargetRecordingTab == voiceTargetTab &&
-            [firstProvenance[@"corrected_transcript"] isEqual:@"MicaTerminal"] &&
-            [firstProvenance[@"inserted_text"] isEqual:@"MicaTerminal"] &&
-            [firstProvenance[@"paste_attempted"] boolValue] &&
-            firstProvenance[@"paste_succeeded"] == NSNull.null &&
-            [firstProvenance[@"paste_delivery"] isEqual:@"unknown"] &&
-            ![firstProvenance[@"auto_submitted"] boolValue];
-        MicaUITestRunLoopFor(0.05);
-        NSString *insertedBuffer = voiceTestDirectoryReady
-            ? MicaUITestCaptureZLEBuffer(voiceTestDirectory, voiceTargetTab.session) : nil;
-        NSMenuItem *undoItem = [[NSMenuItem alloc] initWithTitle:@"Undo Last Dictation"
-            action:@selector(undoLastDictation:) keyEquivalent:@""];
-        undoItem.target = voiceDelegate;
-        BOOL undoEnabled = voiceDelegate.dictationUndoValid && [voiceDelegate validateMenuItem:undoItem];
-        [voiceDelegate undoLastDictation:nil];
-        MicaUITestRunLoopFor(0.05);
-        NSString *undoneBuffer = voiceTestDirectoryReady
-            ? MicaUITestCaptureZLEBuffer(voiceTestDirectory, voiceTargetTab.session) : nil;
-        MicaUITestRecord(report, &allPassed, fakeTranscriptInserted && firstInsertionRecorded && undoEnabled &&
-            [insertedBuffer isEqualToString:@"MicaTerminal"] && [undoneBuffer isEqualToString:@"Mica Terminal"],
-            [NSString stringWithFormat:@"injected corrected transcript is associated with its recording and enables undo (provenance=%@ enabled=%d before=%@ after=%@)",
-                firstProvenance, undoEnabled, insertedBuffer, undoneBuffer]);
-        char ptySnippetTemplate[] = "/tmp/mica-pty-snippet-XXXXXX";
-        int ptySnippetFD = mkstemp(ptySnippetTemplate);
-        NSString *snippetExecutionMarker = MicaUITestVoiceFile(voiceTestDirectory, voiceTargetTab.session, @"snippet-executed");
-        NSString *ptySnippetText = [NSString stringWithFormat:@"MicaTerminal => touch %@\n", snippetExecutionMarker];
-        NSData *ptySnippetData = [ptySnippetText dataUsingEncoding:NSUTF8StringEncoding];
-        BOOL ptySnippetReady = ptySnippetFD >= 0 && write(ptySnippetFD, ptySnippetData.bytes, ptySnippetData.length) == (ssize_t)ptySnippetData.length;
-        if (ptySnippetFD >= 0) close(ptySnippetFD);
-        mica_session_write(voiceTargetTab.session, "\x15", 1); // Clear the prior raw-transcript undo from the zsh line editor.
-        for (int attempt = 0; attempt < 20; attempt++) { mica_session_poll(voiceTargetTab.session, 0); MicaUITestRunLoopFor(0.01); }
-        voiceDelegate.dictationSnippetsURLOverride = ptySnippetReady ? [NSURL fileURLWithPath:[NSString stringWithUTF8String:ptySnippetTemplate]] : nil;
-        voiceDelegate.voiceTargetTab = voiceTargetTab;
-        BOOL ptySnippetInserted = ptySnippetReady && [voiceDelegate voiceController:pushToTalkProbe didFinishTranscript:@"Mica Terminal"];
-        NSDictionary *snippetProvenance = pushToTalkProbe.historyUpdateMetadata[@"provenance"];
-        NSString *ptySnippetBuffer = ptySnippetReady ? MicaUITestCaptureZLEBuffer(voiceTestDirectory, voiceTargetTab.session) : nil;
-        BOOL snippetNotExecuted = ptySnippetInserted && [ptySnippetBuffer isEqualToString:[NSString stringWithFormat:@"touch %@", snippetExecutionMarker]] &&
-            ![[NSFileManager defaultManager] fileExistsAtPath:snippetExecutionMarker];
-        [voiceDelegate undoLastDictation:nil];
-        NSString *ptySnippetUndoBuffer = ptySnippetReady ? MicaUITestCaptureZLEBuffer(voiceTestDirectory, voiceTargetTab.session) : nil;
-        voiceDelegate.dictationSnippetsURLOverride = nil;
-        if (ptySnippetFD >= 0) unlink(ptySnippetTemplate);
-        BOOL snippetProvenanceRecorded = [snippetProvenance[@"corrected_transcript"] isEqual:@"MicaTerminal"] &&
-            [snippetProvenance[@"inserted_text"] isEqual:[NSString stringWithFormat:@"touch %@", snippetExecutionMarker]] &&
-            [snippetProvenance[@"paste_attempted"] boolValue] &&
-            ![snippetProvenance[@"auto_submitted"] boolValue];
-        MicaUITestRecord(report, &allPassed, snippetNotExecuted && snippetProvenanceRecorded &&
-            [ptySnippetUndoBuffer isEqualToString:@"Mica Terminal"],
-            [NSString stringWithFormat:@"corrected snippet insertion provenance records expanded text without claiming submission (inserted=%d provenance=%@ undo=%@)",
-                snippetNotExecuted, snippetProvenance, ptySnippetUndoBuffer ?: @"<missing>"]);
-        if (savedVocabularyPreference) [[voiceDelegate micaDefaults] setObject:savedVocabularyPreference forKey:@"MicaDictationVocabularyEnabled"];
-        else [[voiceDelegate micaDefaults] removeObjectForKey:@"MicaDictationVocabularyEnabled"];
-
-        pushToTalkProbe.testRecordingID = NSUUID.UUID;
-        voiceDelegate.voiceTargetTab = nil;
-        voiceDelegate.voiceTargetRecordingID = nil;
-        voiceDelegate.voiceTargetRecordingTab = nil;
-        BOOL failedInsertionRejected = ![voiceDelegate voiceController:pushToTalkProbe
-            didFinishTranscript:@"Mica Terminal"];
-        NSDictionary *failedProvenance = pushToTalkProbe.historyUpdateMetadata[@"provenance"];
-        BOOL failedInsertionRecorded = failedInsertionRejected &&
-            [pushToTalkProbe.historyUpdatedRecordingID isEqual:pushToTalkProbe.testRecordingID] &&
-            failedProvenance[@"corrected_transcript"] == NSNull.null &&
-            failedProvenance[@"inserted_text"] == NSNull.null &&
-            ![failedProvenance[@"paste_attempted"] boolValue] &&
-            ![failedProvenance[@"paste_succeeded"] boolValue] &&
-            [failedProvenance[@"paste_delivery"] isEqual:@"not_attempted"] &&
-            ![failedProvenance[@"auto_submitted"] boolValue];
-        MicaUITestRecord(report, &allPassed, failedInsertionRecorded,
-            [NSString stringWithFormat:@"transcript with no valid target records that insertion was not attempted (%@)", failedProvenance]);
-        voiceDelegate.voiceTargetRecordingID = nil;
-        voiceDelegate.voiceTargetRecordingTab = nil;
-        voiceDelegate.voiceTargetTab = voiceTargetTab;
-
-        voiceDelegate.voiceTargetTab = voiceTargetTab;
-        BOOL multilineInserted = [voiceDelegate voiceController:pushToTalkProbe
-            didFinishTranscript:@"first line\nsecond line"];
-        BOOL multilineUndoDisabled = !voiceDelegate.dictationUndoValid && ![voiceDelegate validateMenuItem:undoItem];
-        MicaUITestRecord(report, &allPassed, multilineInserted && multilineUndoDisabled,
-            @"undo stays disabled for a multiline injected transcript");
-        mica_session_write(voiceTargetTab.session, "\x03", 1);
-        for (int attempt = 0; attempt < 40; attempt++) {
-            mica_session_poll(voiceTargetTab.session, 0);
-            MicaUITestRunLoopFor(0.01);
-        }
-        voiceDelegate.voiceTargetTab = voiceTargetTab;
-        [voiceDelegate voiceController:pushToTalkProbe didFinishTranscript:@"mica-edit-check"];
-        MicaUITestInsertComposedText(voiceDelegate, @"x");
-        BOOL editedPromptUndoDisabled = !voiceDelegate.dictationUndoValid && ![voiceDelegate validateMenuItem:undoItem];
-        MicaUITestRecord(report, &allPassed, editedPromptUndoDisabled,
-            @"undo becomes disabled when composed or pasted prompt text is edited");
-
-        NSUInteger startsBeforeFocusLoss = pushToTalkProbe.pushToTalkStarts;
-        NSUInteger finishesBeforeFocusLoss = pushToTalkProbe.pushToTalkFinishes;
-        MicaUITestSendFlags(voiceDelegate, NSEventModifierFlagOption, 58);
-        for (int attempt = 0; pushToTalkProbe.pushToTalkStarts == startsBeforeFocusLoss && attempt < 200; attempt++)
-            MicaUITestRunLoopFor(0.01);
-        [voiceDelegate.terminalView cancelLeftOptionTracking];
-        BOOL focusLossFinishesHold = pushToTalkProbe.pushToTalkStarts == startsBeforeFocusLoss + 1 &&
-            pushToTalkProbe.pushToTalkFinishes == finishesBeforeFocusLoss + 1;
-        MicaUITestRecord(report, &allPassed, focusLossFinishesHold,
-            @"losing app focus finalizes an active hold-to-talk capture exactly once");
-
-        // The input method delivers composed text through NSTextInputClient;
-        // exercise that boundary directly so this test is independent of the
-        // machine's physical keyboard layout.
-        [voiceDelegate selectTabAtIndex:0];
-        mica_session_write(voiceTargetTab.session, "\x15", 1); // zsh: Ctrl-U
-        for (int attempt = 0; attempt < 20; attempt++) {
-            mica_session_poll(voiceTargetTab.session, 0);
-            MicaUITestRunLoopFor(0.01);
-        }
-        MicaUITestInsertComposedText(voiceDelegate, @"@#@@");
-        NSString *composedBuffer = voiceTestDirectoryReady
-            ? MicaUITestCaptureZLEBuffer(voiceTestDirectory, voiceTargetTab.session) : nil;
-        BOOL atTyped = [composedBuffer isEqualToString:@"@#@@"];
-        MicaUITestRecord(report, &allPassed, atTyped,
-            [NSString stringWithFormat:@"composed punctuation reaches the captured shell buffer (buffer=%@)",
-                composedBuffer ?: @"<missing>"]);
-        if (voiceTestDirectoryReady)
-            [[NSFileManager defaultManager] removeItemAtPath:
-                MicaUITestVoiceFile(voiceTestDirectory, voiceTargetTab.session, @"buffer") error:nil];
-        mica_session_write(voiceTargetTab.session, "\x15", 1); // zsh: Ctrl-U
-        for (int attempt = 0; attempt < 20; attempt++) {
-            mica_session_poll(voiceTargetTab.session, 0);
-            MicaUITestRunLoopFor(0.01);
-        }
-
-        // Holding left Option long enough to start dictation, then pressing a
-        // character key cancels dictation. Insert its composed text through
-        // NSTextInputClient so the assertion does not depend on the host layout.
-        [voiceDelegate.terminalView cancelLeftOptionTracking];
-        NSUInteger startsBefore = pushToTalkProbe.pushToTalkStarts;
-        MicaUITestSendFlags(voiceDelegate, NSEventModifierFlagOption, 58);
-        for (int attempt = 0; pushToTalkProbe.pushToTalkStarts <= startsBefore && attempt < 300; attempt++)
-            MicaUITestRunLoopFor(0.01);
-        NSEvent *afterHoldKey = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
-            modifierFlags:NSEventModifierFlagOption timestamp:0 windowNumber:voiceDelegate.window.windowNumber
-            context:nil characters:@"a" charactersIgnoringModifiers:@"a" isARepeat:NO keyCode:0];
-        if (afterHoldKey) [voiceDelegate.terminalView keyDown:afterHoldKey];
-        MicaUITestSendFlags(voiceDelegate, 0, 58);
-        mica_session_write(voiceTargetTab.session, "\x15", 1); // zsh: Ctrl-U
-        MicaUITestInsertComposedText(voiceDelegate, @"mica_late_option_text");
-        NSString *lateBuffer = voiceTestDirectoryReady
-            ? MicaUITestCaptureZLEBuffer(voiceTestDirectory, voiceTargetTab.session) : nil;
-        BOOL lateAtTyped = [lateBuffer isEqualToString:@"mica_late_option_text"];
-        MicaUITestRecord(report, &allPassed, lateAtTyped && pushToTalkProbe.pushToTalkStarts == startsBefore + 1,
-            [NSString stringWithFormat:@"a character key after a long left Option hold leaves text input available (buffer=%@ starts=%lu)",
-                lateBuffer ?: @"<missing>", (unsigned long)(pushToTalkProbe.pushToTalkStarts - startsBefore)]);
-        if (voiceTestDirectoryReady)
-            [[NSFileManager defaultManager] removeItemAtPath:
-                MicaUITestVoiceFile(voiceTestDirectory, voiceTargetTab.session, @"buffer") error:nil];
-
-        // The Option-composition checks above intentionally typed into this prompt.
-        // Clear that line so the transcript routing assertion starts from an empty buffer.
-        mica_session_write(voiceTargetTab.session, "\x15", 1); // zsh: Ctrl-U
-        for (int attempt = 0; attempt < 20; attempt++) {
-            mica_session_poll(voiceTargetTab.session, 0);
-            MicaUITestRunLoopFor(0.01);
-        }
-
-        char rawHelperTemplate[] = "/tmp/mica-voice-raw-XXXXXX";
-        char rawCallsTemplate[] = "/tmp/mica-voice-raw-calls-XXXXXX";
-        int rawHelperFD = mkstemp(rawHelperTemplate);
-        int rawCallsFD = mkstemp(rawCallsTemplate);
-        NSString *rawCallsPath = [NSString stringWithUTF8String:rawCallsTemplate];
-        NSString *rawHelperSource = [NSString stringWithFormat:
-            @"#!/bin/sh\nprintf '%%s\\n' \"$1\" >> '%@'\n"
-             "if [ \"$1\" = stream ]; then\n"
-             "  printf '%%s\\n' '{\"type\":\"result\",\"text\":\"mica_test_raw_transcript\"}'\n"
-             "else\n"
-             "  printf '%%s\\n' '{\"type\":\"error\",\"message\":\"cleanup should not run\"}'\n"
-             "fi\n", rawCallsPath];
-        NSData *rawHelperData = [rawHelperSource dataUsingEncoding:NSUTF8StringEncoding];
-        BOOL rawHelperReady = rawHelperFD >= 0 && rawCallsFD >= 0 &&
-            write(rawHelperFD, rawHelperData.bytes, rawHelperData.length) == (ssize_t)rawHelperData.length &&
-            fchmod(rawHelperFD, 0700) == 0;
-        if (rawHelperFD >= 0) close(rawHelperFD);
-        if (rawCallsFD >= 0) close(rawCallsFD);
-        MicaVoiceController *rawVoiceController = rawHelperReady
-            ? [[MicaVoiceController alloc] initWithHelperURL:[NSURL fileURLWithPath:
-                [NSString stringWithUTF8String:rawHelperTemplate]]]
-            : nil;
-        voiceDelegate.voiceController = rawVoiceController;
-        rawVoiceController.delegate = voiceDelegate;
-        voiceDelegate.voiceTargetTab = voiceTargetTab;
-        [voiceDelegate selectTabAtIndex:1];
-        if (rawHelperReady)
-            MicaUITestLaunchSpeechHelper(rawVoiceController);
-        for (int attempt = 0; rawHelperReady &&
-             (rawVoiceController.state != MicaVoiceControllerStateIdle ||
-              ![rawVoiceController.transcript isEqualToString:@"mica_test_raw_transcript"]) && attempt < 500; attempt++) {
-            for (MicaTab *tab in voiceDelegate.tabs) mica_session_poll(tab.session, 0);
-            MicaUITestRunLoopFor(0.01);
-        }
-
-        // Ask each live zsh line editor to write its actual editable buffer to
-        // a private fixture receipt. This works for wrapped text and proves
-        // which PTY received input without submitting that input.
-        NSString *targetBufferPath = MicaUITestVoiceFile(voiceTestDirectory,
-            voiceTargetTab.session, @"buffer");
-        NSString *otherBufferPath = MicaUITestVoiceFile(voiceTestDirectory,
-            ((MicaTab *)voiceDelegate.tabs[1]).session, @"buffer");
-        NSString *targetExecutionPath = MicaUITestVoiceFile(voiceTestDirectory,
-            voiceTargetTab.session, @"executed");
-        if (voiceTabsAtPrompt && voiceTestDirectoryReady) {
-            static const char captureBufferChord[] = { 0x18, 0x02 };
-            mica_session_write(voiceTargetTab.session, captureBufferChord, sizeof(captureBufferChord));
-            mica_session_write(((MicaTab *)voiceDelegate.tabs[1]).session,
-                captureBufferChord, sizeof(captureBufferChord));
-        }
-        for (int attempt = 0; rawHelperReady && voiceTestDirectoryReady && attempt < 300; attempt++) {
-            for (MicaTab *tab in voiceDelegate.tabs) mica_session_poll(tab.session, 0);
-            if ([[NSFileManager defaultManager] fileExistsAtPath:targetBufferPath] &&
-                [[NSFileManager defaultManager] fileExistsAtPath:otherBufferPath]) break;
-            MicaUITestRunLoopFor(0.01);
-        }
-        NSString *targetBuffer = [NSString stringWithContentsOfFile:targetBufferPath
-            encoding:NSUTF8StringEncoding error:nil];
-        NSString *otherBuffer = [NSString stringWithContentsOfFile:otherBufferPath
-            encoding:NSUTF8StringEncoding error:nil];
-        targetBuffer = [targetBuffer stringByTrimmingCharactersInSet:
-            NSCharacterSet.newlineCharacterSet];
-        otherBuffer = [otherBuffer stringByTrimmingCharactersInSet:
-            NSCharacterSet.newlineCharacterSet];
-        NSString *rawHelperCalls = [NSString stringWithContentsOfFile:rawCallsPath
-            encoding:NSUTF8StringEncoding error:nil];
-        BOOL wasNotSubmittedAutomatically =
-            ![[NSFileManager defaultManager] fileExistsAtPath:targetExecutionPath];
-        BOOL routedToCapturedTab = [targetBuffer isEqualToString:@"mica_test_raw_transcript"] &&
-            otherBuffer.length == 0;
-        BOOL targetTranscriptVisible = NO;
-        if (routedToCapturedTab) {
-            [voiceDelegate selectTabAtIndex:0];
-            for (int attempt = 0; attempt < 100 && !targetTranscriptVisible; attempt++) {
-                mica_session_poll(voiceTargetTab.session, 0);
-                targetTranscriptVisible = MicaUITestFindTextAcrossWrappedRows(
-                    voiceTargetTab.session, @"mica_test_raw_transcript");
-                if (!targetTranscriptVisible) MicaUITestRunLoopFor(0.01);
-            }
-        }
-        BOOL explicitReturnExecutes = NO;
-        if (routedToCapturedTab && wasNotSubmittedAutomatically) {
-            MicaUITestSendKey(voiceDelegate, @"\r", 0, 36);
-            for (int attempt = 0; attempt < 300; attempt++) {
-                mica_session_poll(voiceTargetTab.session, 0);
-                if ([[NSFileManager defaultManager] fileExistsAtPath:targetExecutionPath]) {
-                    explicitReturnExecutes = YES;
-                    break;
-                }
-                MicaUITestRunLoopFor(0.01);
-            }
-        }
-        BOOL rawTranscriptInsertedWithoutCleanup = rawHelperReady &&
-            rawVoiceController.state == MicaVoiceControllerStateIdle &&
-            [rawHelperCalls isEqualToString:@"stream\n"] &&
-            routedToCapturedTab && wasNotSubmittedAutomatically && targetTranscriptVisible &&
-            explicitReturnExecutes;
-        MicaUITestRecord(report, &allPassed, rawTranscriptInsertedWithoutCleanup,
-            [NSString stringWithFormat:@"raw speech result stays in the captured shell buffer until Return (calls=%@ state=%ld status=%@ target-running=%d target-buffer=%@ other-buffer=%@ not-submitted=%d visible=%d return-executes=%d command=%s completions=%llu screen=%@)",
-                rawHelperCalls, (long)rawVoiceController.state, rawVoiceController.statusText,
-                mica_session_is_running(voiceTargetTab.session), targetBuffer ?: @"<missing>",
-                otherBuffer ?: @"<missing>", wasNotSubmittedAutomatically,
-                targetTranscriptVisible, explicitReturnExecutes,
-                mica_session_current_command(voiceTargetTab.session),
-                (unsigned long long)mica_session_command_completion_count(voiceTargetTab.session),
-                MicaUITestScreenTail(voiceTargetTab.session)]);
-
-        NSString *readyBuffer = voiceTestDirectoryReady
-            ? MicaUITestCaptureZLEBuffer(voiceTestDirectory, voiceTargetTab.session) : nil;
-        [NSFileManager.defaultManager removeItemAtPath:targetExecutionPath error:nil];
-        voiceTargetTab.agentKind = @"codex";
-        voiceTargetTab.receivedAgentHook = YES;
-        voiceTargetTab.agentState = @"done";
-        voiceDelegate.voiceTargetTab = voiceTargetTab;
-        BOOL agentPromptReady = MicaAgentPromptReadyForDictation(voiceTargetTab);
-        voiceTargetTab.agentState = @"waitingPermission";
-        BOOL permissionPromptDoesNotAutoSubmit = !MicaAgentPromptReadyForDictation(voiceTargetTab);
-        voiceTargetTab.agentState = @"done";
-        if (voiceTestDirectoryReady && [readyBuffer isEqualToString:@"" ] && agentPromptReady)
-            [voiceDelegate voiceController:rawVoiceController didFinishTranscript:@"mica_test_raw_transcript"];
-        for (int attempt = 0; voiceTestDirectoryReady && attempt < 300 &&
-             ![NSFileManager.defaultManager fileExistsAtPath:targetExecutionPath]; attempt++) {
-            mica_session_poll(voiceTargetTab.session, 0);
-            MicaUITestRunLoopFor(0.01);
-        }
-        BOOL submittedAtAgentPrompt = voiceTestDirectoryReady && agentPromptReady &&
-            permissionPromptDoesNotAutoSubmit &&
-            [NSFileManager.defaultManager fileExistsAtPath:targetExecutionPath];
-        MicaUITestRecord(report, &allPassed, submittedAtAgentPrompt,
-            [NSString stringWithFormat:@"dictation submits with Return at a ready Codex prompt and leaves approval prompts untouched (ready=%d permission-safe=%d submitted=%d buffer=%@)",
-                agentPromptReady, permissionPromptDoesNotAutoSubmit,
-                [NSFileManager.defaultManager fileExistsAtPath:targetExecutionPath], readyBuffer ?: @"<missing>"]);
-        voiceTargetTab.agentKind = nil;
-        voiceTargetTab.receivedAgentHook = NO;
-        voiceTargetTab.agentState = nil;
-
-        MicaVoiceController *undeliveredProbe = rawHelperReady
-            ? [[MicaVoiceController alloc] initWithHelperURL:[NSURL fileURLWithPath:
-                [NSString stringWithUTF8String:rawHelperTemplate]]]
-            : nil;
-        undeliveredProbe.delegate = voiceDelegate;
-        voiceDelegate.voiceController = undeliveredProbe;
-        voiceDelegate.voiceTargetTab = nil;
-        if (rawHelperReady) MicaUITestLaunchSpeechHelper(undeliveredProbe);
-        for (int attempt = 0; rawHelperReady &&
-             undeliveredProbe.state != MicaVoiceControllerStateFailed && attempt < 300; attempt++)
-            MicaUITestRunLoopFor(0.01);
-        BOOL rejectedDeliveryPreservesTranscript = rawHelperReady &&
-            undeliveredProbe.state == MicaVoiceControllerStateFailed &&
-            [undeliveredProbe.transcript isEqualToString:@"mica_test_raw_transcript"] &&
-            [undeliveredProbe.statusText containsString:@"Copy it"];
-        MicaUITestRecord(report, &allPassed, rejectedDeliveryPreservesTranscript,
-            [NSString stringWithFormat:@"a transcript rejected by its captured shell stays visible with recovery guidance (state=%ld transcript=%@ status=%@)",
-                (long)undeliveredProbe.state, undeliveredProbe.transcript, undeliveredProbe.statusText]);
-        [undeliveredProbe cancel];
-        voiceDelegate.voiceController = rawVoiceController;
-
-        if (voiceTestDirectoryPath) {
-            [[NSFileManager defaultManager] removeItemAtPath:voiceTestDirectory error:nil];
-        }
-        [voiceDelegate.window makeKeyAndOrderFront:nil];
-        [voiceDelegate cancelDictation];
-        BOOL cancelKeepsWindowOpen = voiceDelegate.window.isVisible;
-        MicaUITestRecord(report, &allPassed, cancelKeepsWindowOpen,
-            @"cancelling dictation leaves the Mica window open");
-        unlink(rawHelperTemplate);
-        unlink(rawCallsTemplate);
-        BOOL voiceSessionsExited = MicaUITestExitTabs(voiceDelegate.tabs);
-        MicaUITestRecord(report, &allPassed, voiceSessionsExited,
-            @"hold-to-talk test sessions exit cleanly");
-        voiceDelegate.tabs = [NSMutableArray array];
-        [voiceDelegate.window orderOut:nil];
-        voiceDelegate.terminalView = nil;
-        voiceDelegate.window = nil;
 
         MicaAppDelegate *resizeDelegate = [[MicaAppDelegate alloc] init];
         resizeDelegate.tabs = [NSMutableArray array];
@@ -2565,18 +1844,12 @@ static int MicaRunUISelfTest(void) {
                 [NSString stringWithFormat:@"Command-Shift-P opens an accessible per-window action/tab palette; filtering, action dispatch, tab switching and Escape work (open=%d a11y=%d mru=%d/%d action-filter=%d action=%d tab-filter=%d row-label=%d switch=%d escape=%d)",
                  paletteOpens, paletteAccessibility, activeTabFirst, recentTabFirst, filterFindsAction, paletteRunsAction, filterFindsTab, tabRowAccessible, paletteSwitchesTab, escapeCloses]);
 
-            NSMenuItem *undoPaletteItem = [[NSMenuItem alloc] initWithTitle:@"Undo Last Dictation" action:@selector(undoLastDictation:) keyEquivalent:@""];
-            delegate.dictationUndoValid = NO;
-            BOOL disabledActionBlocked = ![delegate validateMenuItem:undoPaletteItem];
-            delegate.dictationUndoValid = YES;
-            BOOL enabledActionAllowed = [delegate validateMenuItem:undoPaletteItem];
-            delegate.dictationUndoValid = NO;
             MicaAppDelegate *isolatedPalette = [[MicaAppDelegate alloc] init];
             [isolatedPalette toggleCommandPalette:nil];
             BOOL twoWindowIsolation = isolatedPalette.commandPalettePanel != nil && delegate.commandPalettePanel == nil;
             [isolatedPalette toggleCommandPalette:nil];
-            MicaUITestRecord(report, &allPassed, disabledActionBlocked && enabledActionAllowed && twoWindowIsolation,
-                [NSString stringWithFormat:@"palette respects disabled actions and window state is isolated (blocked=%d enabled=%d isolated=%d)", disabledActionBlocked, enabledActionAllowed, twoWindowIsolation]);
+            MicaUITestRecord(report, &allPassed, twoWindowIsolation,
+                @"palette window state is isolated");
 
             [delegate selectTabAtIndex:0];
             [delegate toggleTabPicker];
@@ -2998,39 +2271,6 @@ static int MicaRunUISelfTest(void) {
             MicaUITestRecord(report, &allPassed, lightSurvives && systemSurvives && darkSurvives,
                 [NSString stringWithFormat:@"Dark, Light and System theme settings load in a fresh delegate from an isolated defaults suite (light=%d system=%d dark=%d mode=%@)",
                     lightSurvives, systemSurvives, darkSurvives, [isolatedDefaults stringForKey:@"MicaThemeMode"]]);
-            NSString *dictationSuite = [NSString stringWithFormat:@"mica-dictation-mode-%d", getpid()];
-            NSUserDefaults *dictationDefaults = [[NSUserDefaults alloc] initWithSuiteName:dictationSuite];
-            [dictationDefaults removePersistentDomainForName:dictationSuite];
-            gMicaDefaultsOverride = dictationDefaults;
-            MicaAppDelegate *dictationPreference = [MicaAppDelegate new];
-            dictationPreference.dictationToggleMode = [dictationDefaults boolForKey:@"MicaDictationToggleMode"];
-            NSPopUpButton *dictationModePicker = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-            [dictationModePicker addItemsWithTitles:@[@"Hold", @"Toggle"]];
-            BOOL holdDefault = !dictationPreference.dictationToggleMode;
-            [dictationModePicker selectItemAtIndex:1];
-            [dictationPreference prefDictationModeChanged:dictationModePicker];
-            MicaAppDelegate *restoredDictationPreference = [MicaAppDelegate new];
-            restoredDictationPreference.dictationToggleMode = [dictationDefaults boolForKey:@"MicaDictationToggleMode"];
-            BOOL togglePersists = restoredDictationPreference.dictationToggleMode;
-            [dictationModePicker selectItemAtIndex:0];
-            [dictationPreference prefDictationModeChanged:dictationModePicker];
-            gMicaDefaultsOverride = nil; [dictationDefaults removePersistentDomainForName:dictationSuite];
-            MicaUITestRecord(report, &allPassed, holdDefault && togglePersists,
-                [NSString stringWithFormat:@"dictation defaults to Hold and Toggle persists through an isolated defaults suite (default=%d toggle=%d)",
-                    holdDefault, togglePersists]);
-            NSString *vocabSuite = [NSString stringWithFormat:@"mica-vocabulary-setting-%d", getpid()];
-            NSUserDefaults *vocabDefaults = [[NSUserDefaults alloc] initWithSuiteName:vocabSuite];
-            [vocabDefaults removePersistentDomainForName:vocabSuite]; gMicaDefaultsOverride=vocabDefaults;
-            MicaAppDelegate *vocabPreference=[MicaAppDelegate new];
-            BOOL vocabOnByDefault = ![vocabDefaults objectForKey:@"MicaDictationVocabularyEnabled"] || [vocabDefaults boolForKey:@"MicaDictationVocabularyEnabled"];
-            NSButton *vocabCheckbox=[NSButton checkboxWithTitle:@"Vocabulary" target:nil action:nil]; vocabCheckbox.state=NSControlStateValueOff;
-            [vocabPreference prefVocabularyChanged:vocabCheckbox];
-            BOOL vocabOffPersists = ![[MicaAppDelegate new].micaDefaults boolForKey:@"MicaDictationVocabularyEnabled"];
-            vocabCheckbox.state=NSControlStateValueOn; [vocabPreference prefVocabularyChanged:vocabCheckbox];
-            BOOL vocabOnPersists=[[MicaAppDelegate new].micaDefaults boolForKey:@"MicaDictationVocabularyEnabled"];
-            gMicaDefaultsOverride=nil; [vocabDefaults removePersistentDomainForName:vocabSuite];
-            MicaUITestRecord(report, &allPassed, vocabOnByDefault && vocabOffPersists && vocabOnPersists,
-                [NSString stringWithFormat:@"project vocabulary setting defaults on and persists both states in isolated defaults (default=%d off=%d on=%d)",vocabOnByDefault,vocabOffPersists,vocabOnPersists]);
             // Global shortcut: off by default, persists, and registering/unregistering goes through the injected hook.
             shortcutEnableCalls = shortcutDisableCalls = 0;
             NSString *shortcutSuite = [NSString stringWithFormat:@"mica-shortcut-%d", getpid()];
@@ -3661,19 +2901,6 @@ static int MicaRunUISelfTest(void) {
             BOOL menuAtA = newTabItem.target == windowA;
             [windowB takeMenuOwnership];
             BOOL menuAtB = newTabItem.target == windowB;
-            NSMenu *appMenu = [NSApp.mainMenu itemWithTitle:@"Mica"].submenu;
-            NSMenuItem *disableRemoteItem = [appMenu itemWithTitle:@"Disable Remote Control…"];
-            BOOL addedDisableRemoteItem = disableRemoteItem == nil;
-            if (!disableRemoteItem) {
-                disableRemoteItem = [[NSMenuItem alloc] initWithTitle:@"Disable Remote Control…"
-                    action:@selector(disableRemoteControl:) keyEquivalent:@""];
-                [appMenu addItem:disableRemoteItem];
-            }
-            [windowA takeMenuOwnership];
-            BOOL disableMenuAtA = disableRemoteItem.target == windowA;
-            [windowB takeMenuOwnership];
-            BOOL disableMenuAtB = disableRemoteItem.target == windowB;
-            if (addedDisableRemoteItem) [appMenu removeItem:disableRemoteItem];
             NSMenu *projectDockMenu = [windowA applicationDockMenu:NSApp];
             BOOL dockMenuListsBothProjects = projectDockMenu.itemArray.count == 2;
             BOOL dockMenuTargetsCorrectWindows = NO, dockMenuTitlesIdentifyProjects = NO;
@@ -3752,9 +2979,9 @@ static int MicaRunUISelfTest(void) {
                 windowA.tabs.count == tabsBeforeClose && windowA.activeTab.session != NULL &&
                 windowB.activeTab.session == NULL && windowB.pollTimer == nil &&
                 kill(closedShellPID, 0) == -1 && errno == ESRCH;
-            MicaUITestRecord(report, &allPassed, twoWindows && menuAtA && menuAtB && disableMenuAtA && disableMenuAtB && noDuplicate && closedCleanly,
-                [NSString stringWithFormat:@"one process hosts several project windows (two=%d menuA=%d menuB=%d disableA=%d disableB=%d nodup=%d closed=%d)",
-                    twoWindows, menuAtA, menuAtB, disableMenuAtA, disableMenuAtB, noDuplicate, closedCleanly]);
+            MicaUITestRecord(report, &allPassed, twoWindows && menuAtA && menuAtB && noDuplicate && closedCleanly,
+                [NSString stringWithFormat:@"one process hosts several project windows (two=%d menuA=%d menuB=%d nodup=%d closed=%d)",
+                    twoWindows, menuAtA, menuAtB, noDuplicate, closedCleanly]);
             for (NSValue *leftover in [windowA detachSessionsForTermination]) mica_session_destroy(leftover.pointerValue);
             [MicaControllers() removeAllObjects];
             [fileManager removeItemAtPath:layoutsRoot error:nil];
@@ -3811,35 +3038,13 @@ static int MicaRunUISelfTest(void) {
                 [NSString stringWithFormat:@"terminal cursor renders as a high-contrast full-cell block (pixels=%lu cell=%lu)",
                     (unsigned long)visibleCursorPixels, (unsigned long)cursorCellPixelArea]);
 
-            MicaVoiceController *previewController = [[MicaVoiceController alloc]
-                initWithHelperURL:[NSURL fileURLWithPath:@"/usr/bin/false"]];
-            [previewController setValue:@(MicaVoiceControllerStateListening) forKey:@"state"];
-            [previewController setValue:@"" forKey:@"statusText"];
-            [previewController setValue:@"Change the Codex tab widths so all tabs fit in the window"
-                                  forKey:@"transcript"];
-            [previewController setValue:@"Change the Codex tab widths"
-                                  forKey:@"confirmedTranscript"];
-            [previewController setValue:@(4.0) forKey:@"elapsedSeconds"];
-            NSInteger rowsBeforeDictationPreview = mica_session_rows(delegate.activeTab.session);
-            delegate.voiceController = previewController;
-            [delegate resizeActiveSession];
-            [delegate.terminalView setNeedsDisplay:YES];
-            [delegate.terminalView displayIfNeeded];
-            NSRect voicePanel = [delegate.terminalView dictationPreviewRect];
-            NSRect terminalArea = [delegate.terminalView terminalRect];
-            MicaUITestRecord(report, &allPassed,
-                !NSIsEmptyRect(voicePanel) && voicePanel.size.height == kDictationPreviewHeight &&
-                NSMaxY(voicePanel) <= delegate.terminalView.bounds.size.height - kHeaderHeight &&
-                !NSIntersectsRect(voicePanel, terminalArea) &&
-                mica_session_rows(delegate.activeTab.session) < rowsBeforeDictationPreview,
-                @"live dictation gets a reserved multiline preview above the terminal and reduces PTY rows without covering output");
             NSDictionary *layoutHintAttrs = @{NSFontAttributeName:[NSFont systemFontOfSize:11.5]};
             NSDictionary *layoutContextAttrs = @{NSFontAttributeName:[NSFont systemFontOfSize:11.5]};
             CGFloat minFolderContext = 18 + [@"Ready · " sizeWithAttributes:layoutContextAttrs].width +
                 [@"…/Fieldnote" sizeWithAttributes:layoutContextAttrs].width;
             CGFloat layoutMemoryWidth = [@"58 MB" sizeWithAttributes:
                 @{NSFontAttributeName:[NSFont monospacedDigitSystemFontOfSize:11.5 weight:NSFontWeightMedium]}].width;
-            NSArray<NSString *> *layoutHints = @[@"⌘/ Shortcuts", @"⌥ Dictate", @"⌘1–8 Switch tab",
+            NSArray<NSString *> *layoutHints = @[@"⌘/ Shortcuts", @"⌘1–8 Switch tab",
                 @"⌘T New tab", @"⌘Q Quit"];
             BOOL narrowRectsDoNotOverlap = YES;
             for (NSNumber *widthValue in @[@600, @800]) {
@@ -3850,105 +3055,11 @@ static int MicaRunUISelfTest(void) {
                     !NSIntersectsRect(layout.contextRect, layout.hintsRect) &&
                     !NSIntersectsRect(layout.contextRect, layout.memoryRect) &&
                     !NSIntersectsRect(layout.hintsRect, layout.memoryRect) &&
-                    !NSIntersectsRect(layout.dictationRect, layout.memoryRect) &&
-                    !NSIntersectsRect(layout.dictationRect, layout.hintsRect) &&
                     layout.contextRect.size.width >= minFolderContext - 18;
             }
             MicaUITestRecord(report, &allPassed, narrowRectsDoNotOverlap,
                 @"terminal status strip keeps folder context, hints and memory clear at 600 px or 800 px without a timer");
-            NSMutableArray<NSString *> *fortyTranscriptWords = [NSMutableArray array];
-            for (NSUInteger wordIndex = 0; wordIndex < 40; wordIndex++)
-                [fortyTranscriptWords addObject:@[@"recent", @"words", @"current", @"phrase"][wordIndex % 4]];
-            NSString *longLiveTranscript = [fortyTranscriptWords componentsJoinedByString:@" "];
-            [previewController setValue:longLiveTranscript forKey:@"transcript"];
-            [delegate.terminalView setNeedsDisplay:YES]; [delegate.terminalView displayIfNeeded];
-            NSRect transcriptRect = delegate.terminalView.dictationWordsTextRect;
-            NSRect statusRect = NSMakeRect(0, 0, delegate.terminalView.bounds.size.width, kStatusHeight);
-            NSDictionary *previewTranscriptAttrs = @{
-                NSFontAttributeName: [NSFont systemFontOfSize:13 weight:NSFontWeightMedium],
-                NSForegroundColorAttributeName: NSColor.labelColor
-            };
-            NSString *fittedLongTranscript = MicaLastWordsFittingSize(longLiveTranscript,
-                transcriptRect.size, previewTranscriptAttrs);
-            MicaUITestRecord(report, &allPassed,
-                transcriptRect.size.height > statusRect.size.height &&
-                    !NSIntersectsRect(transcriptRect, statusRect) &&
-                    [fittedLongTranscript hasSuffix:@"phrase"],
-                @"a long live transcript wraps across the reserved preview while the status strip stays separate");
-            NSMutableArray<NSString *> *thirtyShortWords = [NSMutableArray array];
-            for (NSUInteger wordIndex = 0; wordIndex < 30; wordIndex++) [thirtyShortWords addObject:@"ok"];
-            NSString *moreThanTwentyWords = MicaLastWordsFittingSize(
-                [thirtyShortWords componentsJoinedByString:@" "], NSMakeSize(1500, 50), previewTranscriptAttrs);
-            MicaUITestRecord(report, &allPassed,
-                [moreThanTwentyWords componentsSeparatedByString:@" "].count == 30,
-                @"dictation preview shows all complete words that fit, without a fixed 20-word cap");
-            BOOL dictationRectsSafe = YES;
-            NSArray<NSNumber *> *dictationWidths = @[@480, @600, @800, @1600];
-            NSArray<NSNumber *> *dictationStatesForLayout = @[@(MicaVoiceControllerStatePreparing),
-                @(MicaVoiceControllerStateListening), @(MicaVoiceControllerStateFailed)];
-            NSArray<NSString *> *dictationWordSamples = @[@"", @"change the tab widths", longLiveTranscript];
-            NSWindow *dictationLayoutWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1600, 360)
-                styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
-            dictationLayoutWindow.releasedWhenClosed = NO;
-            MicaTerminalView *dictationLayoutView = [[MicaTerminalView alloc] initWithFrame:NSMakeRect(0, 0, 1600, 360)];
-            dictationLayoutView.owner = delegate;
-            dictationLayoutView.terminalFont = delegate.terminalView.terminalFont;
-            [dictationLayoutWindow setContentView:dictationLayoutView];
-            delegate.dictationToggleMode = YES;
-            for (NSInteger themeIndex = 0; themeIndex < 2; themeIndex++) {
-                [delegate setLightTheme:themeIndex == 1];
-                for (NSNumber *width in dictationWidths) for (NSNumber *stateValue in dictationStatesForLayout)
-                    for (NSString *sampleWords in dictationWordSamples) {
-                    [dictationLayoutView setFrameSize:NSMakeSize(width.doubleValue, dictationLayoutView.bounds.size.height)];
-                    [previewController setValue:stateValue forKey:@"state"];
-                    [previewController setValue:sampleWords forKey:@"transcript"];
-                    [previewController setValue:[stateValue integerValue] == MicaVoiceControllerStateFailed
-                        ? @"Microphone access was denied. Enable Mica in System Settings → Privacy & Security → Microphone."
-                        : @"Listening · 00:00" forKey:@"statusText"];
-                    [dictationLayoutView setNeedsDisplay:YES]; [dictationLayoutView displayIfNeeded];
-                    NSBitmapImageRep *layoutBitmap = [dictationLayoutView bitmapImageRepForCachingDisplayInRect:dictationLayoutView.bounds];
-                    [dictationLayoutView cacheDisplayInRect:dictationLayoutView.bounds toBitmapImageRep:layoutBitmap];
-                    NSRect labelRect = dictationLayoutView.dictationLabelTextRect;
-                    NSRect wordsRect = dictationLayoutView.dictationWordsTextRect;
-                    NSRect hintRect = dictationLayoutView.dictationHintTextRect;
-                    NSString *visibleText = MicaLastWordsFittingSize(sampleWords,
-                        wordsRect.size, previewTranscriptAttrs);
-                    NSRange lastSpace = [sampleWords rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet
-                        options:NSBackwardsSearch];
-                    NSString *lastWord = lastSpace.location == NSNotFound ? sampleWords :
-                        [sampleWords substringFromIndex:NSMaxRange(lastSpace)];
-                    BOOL shouldShowLastWord = [stateValue integerValue] == MicaVoiceControllerStateListening && sampleWords.length;
-                    dictationRectsSafe = dictationRectsSafe && !NSIntersectsRect(labelRect, wordsRect) &&
-                        (NSIsEmptyRect(hintRect) || (!NSIntersectsRect(labelRect, hintRect) && !NSIntersectsRect(wordsRect, hintRect))) &&
-                        NSMaxX(wordsRect) <= width.doubleValue &&
-                        (!shouldShowLastWord || [visibleText hasSuffix:lastWord]);
-                }
-            }
-            [dictationLayoutWindow close];
-            delegate.dictationToggleMode = NO;
-            [delegate setLightTheme:NO];
-            MicaUITestRecord(report, &allPassed, dictationRectsSafe,
-                @"dictation preview wraps complete recent words to the available width at 480/600/800/1600 px in both themes");
-            [previewController setValue:@(MicaVoiceControllerStateFailed) forKey:@"state"];
-            [previewController setValue:@"I didn’t catch any speech. Hold left Option and speak a little longer."
-                                  forKey:@"statusText"];
-            [delegate.terminalView setNeedsDisplay:YES];
-            [delegate.terminalView displayIfNeeded];
-            NSRect voiceStatusText = delegate.terminalView.dictationLabelTextRect;
-            NSRect voiceDetailText = delegate.terminalView.dictationWordsTextRect;
-            MicaUITestRecord(report, &allPassed,
-                !NSIntersectsRect(voiceStatusText, voiceDetailText) &&
-                    previewController.statusText.length > 0,
-                @"dictation failure keeps its heading and recovery detail on separate preview rows");
-            [previewController setValue:@"Microphone access was denied. Enable Mica in System Settings → Privacy & Security → Microphone."
-                                  forKey:@"statusText"];
-            NSRect micSettingsButton = [delegate.terminalView microphoneSettingsButtonRect];
-            MicaUITestRecord(report, &allPassed,
-                !NSIsEmptyRect(micSettingsButton) && micSettingsButton.size.width >= 160 &&
-                    NSIntersectsRect(micSettingsButton, voicePanel) &&
-                    NSMaxX(micSettingsButton) <= delegate.terminalView.bounds.size.width &&
-                    [MicaMicrophoneSettingsURL().absoluteString containsString:@"Privacy_Microphone"],
-                @"a denied microphone shows a visible System Settings action with the documented privacy URL");
+
             NSString *smokeProjectName = delegate.projectName;
             delegate.projectName = @"Mica Demo";
             [delegate.terminalView setNeedsDisplay:YES];
@@ -4061,12 +3172,6 @@ static int MicaRunUISelfTest(void) {
                                  [NSString stringWithFormat:@"emoji cell paints ink and color pixels (%lu ink, %lu color)",
                                   (unsigned long)inkPixels, (unsigned long)colorPixels]);
             }
-            [previewController setValue:@(MicaVoiceControllerStateIdle) forKey:@"state"];
-            [delegate resizeActiveSession];
-            [delegate.terminalView setNeedsDisplay:YES];
-            NSInteger rowsAfterDictationPreview = mica_session_rows(delegate.activeTab.session);
-            MicaUITestRecord(report, &allPassed, rowsAfterDictationPreview == rowsBeforeDictationPreview,
-                @"ending dictation releases the reserved band and restores the prior PTY row count");
         }
 
         char optionDirectory[] = "/tmp/mica-option-picker-XXXXXX";
@@ -4517,30 +3622,6 @@ static int MicaRunUISelfTest(void) {
         gMicaDefaultsOverride = nil;
         [MicaControllers() removeAllObjects];
         [MicaControllers() addObjectsFromArray:savedTimerControllers];
-        for (MicaAppDelegate *window in @[timerWindowA, timerWindowB]) {
-            window.voiceController = [[MicaVoiceController alloc]
-                initWithHelperURL:[NSURL fileURLWithPath:@"/usr/bin/false"]];
-            [window.voiceController setValue:@(MicaVoiceControllerStateListening) forKey:@"state"];
-            [window.voiceController setValue:@"" forKey:@"transcript"];
-        }
-        NSTimeInterval heldAnimationStamp = NSProcessInfo.processInfo.systemUptime + 60;
-        timerWindowA.lastVoiceAnimationAt = heldAnimationStamp;
-        timerWindowB.lastVoiceAnimationAt = 0;
-        [timerWindowA pollSessions:nil];
-        [timerWindowB pollSessions:nil];
-        BOOL independentVoiceAnimation = timerWindowA.lastVoiceAnimationAt == heldAnimationStamp &&
-            timerWindowB.lastVoiceAnimationAt > 0;
-        timerWindowB.lastVoiceAnimationAt = heldAnimationStamp;
-        timerWindowA.lastVoiceAnimationAt = 0;
-        [timerWindowB pollSessions:nil];
-        [timerWindowA pollSessions:nil];
-        independentVoiceAnimation = independentVoiceAnimation &&
-            timerWindowB.lastVoiceAnimationAt == heldAnimationStamp && timerWindowA.lastVoiceAnimationAt > 0;
-        MicaUITestRecord(report, &allPassed, independentVoiceAnimation,
-            @"dictation animation throttling belongs to each window and does not suppress another window's repaint");
-        timerWindowA.voiceController = nil;
-        timerWindowB.voiceController = nil;
-
         MicaAppDelegate *layoutDelegate = [[MicaAppDelegate alloc] init];
         layoutDelegate.tabs = [NSMutableArray array];
         layoutDelegate.activeIndex = 0;

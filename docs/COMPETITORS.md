@@ -31,11 +31,10 @@ For Mica, the useful pattern is glanceable phase and time plus unmistakable prim
 
 | App | Covers | Footprint |
 | --- | --- | ---: |
-| Mica | terminal, dictation, focus timer | about 55–60 MB |
+| Mica | terminal and focus timer | about 55–60 MB |
 | Alacritty | terminal | 69 MB |
 | kitty | terminal | 80 MB |
 | iTerm2 | terminal | 126 MB |
-| Wispr Flow | dictation | 645 MB |
 
 Method and caveats: [MEMORY-BASELINE.md](MEMORY-BASELINE.md). cmux, Warp, Ghostty, Zed and the Electron-based agent managers were not measured.
 
@@ -52,8 +51,6 @@ Method and caveats: [MEMORY-BASELINE.md](MEMORY-BASELINE.md). cmux, Warp, Ghostt
 | Quick Select visible URLs, existing paths and git hashes | Done: ⌘⇧U; type to copy, hold Option to open/reveal |
 | Clipboard from remote sessions with consent | Done (OSC 52) |
 | Synchronized output, bracketed paste awareness | Done |
-| Local voice dictation, shared focus timer | Done (not offered by the others) |
-| Hold or Toggle dictation, project vocabulary correction and undo | Done; local correction is switchable and undo restores raw text before later prompt edits |
 | Prompt landmarks and last-command output | Done: ⌘↑/⌘↓ at a prompt, output selection/copy and failed-command marker |
 | Light and dark themes, cursor styles, bundled font, settings | Done |
 | Fuzz, sanitizer and UI stress testing | Done |
