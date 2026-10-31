@@ -7,45 +7,6 @@ static void PollDemo(MicaAppDelegate *owner) {
     [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
 }
 
-@interface MicaTimerMenuPreview : NSView
-@property(nonatomic, copy) NSString *indicatorTitle;
-@property(nonatomic, copy) NSArray<NSString *> *rows;
-@end
-
-@implementation MicaTimerMenuPreview
-- (BOOL)isFlipped { return YES; }
-- (void)drawRect:(NSRect)dirtyRect {
-    (void)dirtyRect;
-    [[NSColor colorWithCalibratedWhite:0.11 alpha:1] setFill]; NSRectFill(self.bounds);
-    NSDictionary *small = @{NSFontAttributeName:[NSFont systemFontOfSize:11 weight:NSFontWeightMedium],
-        NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:0.66 alpha:1]};
-    [@"MACOS MENU BAR" drawAtPoint:NSMakePoint(28, 23) withAttributes:small];
-    NSRect bar = NSMakeRect(20, 52, self.bounds.size.width - 40, 42);
-    [[NSColor colorWithCalibratedWhite:0.20 alpha:1] setFill];
-    [[NSBezierPath bezierPathWithRoundedRect:bar xRadius:9 yRadius:9] fill];
-    [@"Mica" drawAtPoint:NSMakePoint(38, 64) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], NSForegroundColorAttributeName:NSColor.whiteColor}];
-    [self.indicatorTitle drawAtPoint:NSMakePoint(NSMaxX(bar) - 104, 64)
-        withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],
-            NSForegroundColorAttributeName:NSColor.whiteColor}];
-    NSRect popup = NSMakeRect(NSMaxX(bar) - 284, 100, 270, 190);
-    [[NSColor colorWithCalibratedWhite:0.18 alpha:1] setFill];
-    [[NSBezierPath bezierPathWithRoundedRect:popup xRadius:10 yRadius:10] fill];
-    [[NSColor colorWithCalibratedWhite:0.32 alpha:1] setStroke];
-    NSBezierPath *border = [NSBezierPath bezierPathWithRoundedRect:popup xRadius:10 yRadius:10]; border.lineWidth = 1; [border stroke];
-    CGFloat y = NSMinY(popup) + 12;
-    for (NSUInteger i = 0; i < self.rows.count; i++) {
-        NSString *row = self.rows[i];
-        BOOL active = [row isEqualToString:@"Pause Timer"];
-        NSRect rowRect = NSMakeRect(NSMinX(popup) + 7, y, popup.size.width - 14, i == 0 ? 27 : 29);
-        if (active) { [[NSColor colorWithCalibratedRed:0.02 green:0.43 blue:0.96 alpha:1] setFill]; [[NSBezierPath bezierPathWithRoundedRect:rowRect xRadius:5 yRadius:5] fill]; }
-        NSDictionary *attrs = @{NSFontAttributeName:[NSFont systemFontOfSize:i == 0 ? 11 : 12],
-            NSForegroundColorAttributeName:i == 0 ? [NSColor colorWithCalibratedWhite:0.72 alpha:1] : NSColor.whiteColor};
-        [row drawAtPoint:NSMakePoint(NSMinX(rowRect) + 10, NSMinY(rowRect) + 6) withAttributes:attrs];
-        y += rowRect.size.height + (i == 0 ? 4 : 1);
-    }
-}
-@end
-
 @interface MicaProjectStoryCard : NSView
 @property(nonatomic, strong) NSImage *windowImage;
 @property(nonatomic, copy) NSString *headline;
@@ -177,41 +138,6 @@ static BOOL SaveFeatureStoryCard(NSImage *featureImage, NSString *headline, NSSt
     return [png writeToFile:path atomically:YES];
 }
 
-static BOOL SaveTimerMenuPreview(MicaAppDelegate *owner, NSString *directory) {
-    NSString *suite = [NSString stringWithFormat:@"MicaTimerPreview-%@", NSUUID.UUID.UUIDString];
-    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:suite];
-    [defaults setBool:YES forKey:@"MicaMenuBarTimer"];
-    gMicaDefaultsOverride = defaults;
-    MicaPomodoro timer = {0}; timer.phase = MICA_POMODORO_FOCUS; timer.deadline = MicaContinuousTimeSeconds() + 24 * 60 + 18;
-    owner.pomodoro = timer; owner.pomodoroLabel = @"Mica Demo";
-    [owner applyMenuBarTimerPreference]; [owner updateMenuBarTimer];
-    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
-    [owner updateMenuBarTimer];
-    NSStatusItem *statusItem = [gMicaStatusItem valueForKey:@"statusItem"];
-    NSStatusBarButton *button = statusItem.button;
-    NSString *indicatorTitle = button.title.length ? button.title : @"◷ 24:18";
-    NSMutableArray<NSString *> *rows = [NSMutableArray array];
-    for (NSMenuItem *item in [owner menuBarTimerMenu].itemArray)
-        if (!item.isSeparatorItem && item.title.length) [rows addObject:item.title];
-    if (rows.count && indicatorTitle.length) {
-        NSRange timeRange = [indicatorTitle rangeOfString:@"[0-9]" options:NSRegularExpressionSearch];
-        if (timeRange.location != NSNotFound) {
-            NSString *visibleTime = [indicatorTitle substringFromIndex:timeRange.location];
-            if ([rows[0] hasPrefix:@"Focus "]) rows[0] = [@"Focus " stringByAppendingString:visibleTime];
-            else if ([rows[0] hasPrefix:@"Break "]) rows[0] = [@"Break " stringByAppendingString:visibleTime];
-        }
-    }
-    MicaTimerMenuPreview *preview = [[MicaTimerMenuPreview alloc] initWithFrame:NSMakeRect(0, 0, 720, 320)];
-    preview.indicatorTitle = indicatorTitle; preview.rows = rows;
-    NSBitmapImageRep *image = [preview bitmapImageRepForCachingDisplayInRect:preview.bounds];
-    [preview cacheDisplayInRect:preview.bounds toBitmapImageRep:image];
-    NSData *png = [image representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
-    BOOL saved = [png writeToFile:[directory stringByAppendingPathComponent:@"timer-menu-bar-demo.png"] atomically:YES];
-    [gMicaStatusItem disable]; gMicaStatusItem = nil;
-    [defaults removePersistentDomainForName:suite]; gMicaDefaultsOverride = nil;
-    return saved;
-}
-
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         if (argc != 2) return 2;
@@ -251,7 +177,6 @@ int main(int argc, const char *argv[]) {
         const char *setup = "PROMPT='demo> '; RPROMPT=''; clear\n";
         mica_session_write(session, setup, strlen(setup));
         for (int attempt = 0; attempt < 100; attempt++) PollDemo(owner);
-        if (!SaveTimerMenuPreview(owner, directory)) return 1;
         NSArray<NSString *> *commands = @[@"printf 'Hello, Mica! 界🙂 café\\n'", @"seq 1 60"];
         NSMutableArray<NSArray<NSString *> *> *typedCommands = [NSMutableArray new];
         for (NSString *command in commands) {
@@ -432,9 +357,8 @@ int main(int argc, const char *argv[]) {
         NSImage *darkWindowImage = [[NSImage alloc] initWithContentsOfFile:darkWindowPath];
         NSImage *paletteImage = ImageForView(palette);
         NSImage *quickImage = [[NSImage alloc] initWithContentsOfFile:[directory stringByAppendingPathComponent:@"quick-select-demo.png"]];
-        NSImage *timerImage = [[NSImage alloc] initWithContentsOfFile:[directory stringByAppendingPathComponent:@"timer-menu-bar-demo.png"]];
         NSImage *sshImage = [[NSImage alloc] initWithContentsOfFile:[directory stringByAppendingPathComponent:@"ssh-profiles-demo.png"]];
-        BOOL savedFeatureCards = darkWindowImage && paletteImage && quickImage && timerImage && sshImage &&
+        BOOL savedFeatureCards = darkWindowImage && paletteImage && quickImage && sshImage &&
             SaveFeatureStoryCard(darkWindowImage, @"Keep terminal work in named tabs.",
                 @"Shell, Claude Code, Codex and other tools share a project window.",
                 [directory stringByAppendingPathComponent:@"feature-tabs.png"]) &&
@@ -444,9 +368,6 @@ int main(int argc, const char *argv[]) {
             SaveFeatureStoryCard(quickImage, @"Pick a link, existing file or Git hash.",
                 @"Quick Select labels items you can reach in the terminal.",
                 [directory stringByAppendingPathComponent:@"feature-quick-select.png"]) &&
-            SaveFeatureStoryCard(timerImage, @"Keep a focus timer in the menu bar.",
-                @"See the active phase and countdown across Mica windows.",
-                [directory stringByAppendingPathComponent:@"feature-focus-timer.png"]) &&
             SaveFeatureStoryCard(sshImage, @"Reconnect with saved SSH profiles.",
                 @"Open a fresh terminal session through macOS OpenSSH.",
                 [directory stringByAppendingPathComponent:@"feature-ssh.png"]);

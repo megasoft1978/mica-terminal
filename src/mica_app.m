@@ -2,7 +2,6 @@
 #import "mica.h"
 #import "mica_diagnostics.h"
 #import "mica_pomodoro.h"
-#import "mica_status_item.h"
 #import "mica_hook_server.h"
 #import "mica_hook_install.h"
 #import "mica_agent_detect.h"
@@ -14,6 +13,9 @@
 #import "mica_status_context.h"
 #import "mica_ssh_profile.h"
 #import "mica_project_history.h"
+#import "mica_focus_band.h"
+#import "mica_focus_hold.h"
+#import "mica_focus_context.h"
 #import <UserNotifications/UserNotifications.h>
 #import <Carbon/Carbon.h>
 
@@ -179,6 +181,24 @@ static MicaAttentionInbox *MicaAttention(void) {
     dispatch_once(&once, ^{ inbox = [MicaAttentionInbox new]; });
     return inbox;
 }
+// Focus-band support: one hold for agent attention during FOCUS, one recorder for per-project focus time.
+// Tests may replace either pointer.
+static MicaFocusHold *gMicaFocusHold;
+static MicaFocusRecorder *gMicaFocusRecorder;
+static MicaFocusHold *MicaFocusHoldShared(void) {
+    if (!gMicaFocusHold) gMicaFocusHold = [MicaFocusHold new];
+    return gMicaFocusHold;
+}
+static MicaFocusRecorder *MicaFocusRecorderShared(void) {
+    if (!gMicaFocusRecorder) gMicaFocusRecorder = [[MicaFocusRecorder alloc] initWithPath:[MicaFocusRecorder defaultLogPath]];
+    return gMicaFocusRecorder;
+}
+static NSString *const kMicaFocusBandVisibleKey = @"MicaFocusBandVisible";
+static NSString *const kMicaFocusDailyGoalKey = @"MicaFocusDailyGoal";
+static const NSInteger kDefaultFocusDailyGoal = 4;
+static NSString *const kMicaFocusStartHint = @"⌥⌘P";
+static const NSTimeInterval kMicaFocusNoticeSeconds = 10.0;
+
 static BOOL MicaShouldDeliverAttention(BOOL appActive, BOOL selectedInKeyWindow) {
     return !appActive || !selectedInKeyWindow;
 }
@@ -197,12 +217,6 @@ static BOOL gMicaLightTheme = NO;
 static BOOL gMicaFollowSystemTheme = NO;
 static BOOL gMicaTestIncreaseContrast = NO;
 static NSUserDefaults *gMicaDefaultsOverride;
-static MicaStatusItem *gMicaStatusItem;
-#if defined(MICA_APP_NO_MAIN)
-static BOOL (*gMicaTimerStatusItemLifecycleHook)(BOOL enable);
-static BOOL gMicaTimerStatusItemEnabledForTests;
-#endif
-
 // Optional global shortcut (Control-Option-Space) that brings Mica forward. Carbon hot keys need no
 // Accessibility permission. Registration goes through a replaceable function so tests never touch the system.
 static EventHotKeyRef gMicaHotKey;
@@ -550,6 +564,12 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, assign) NSTimeInterval drawingStatsStartedAt;
 @property(nonatomic, assign) NSUInteger drawingStatsCount;
 @property(nonatomic, assign) NSTimeInterval drawingStatsTotalDuration;
+// Focus band under the tab bar; nil until first shown. Its height is 0 while hidden.
+@property(nonatomic, strong, readonly) MicaFocusBandView *focusBand;
+@property(nonatomic, assign, readonly) CGFloat focusBandHeight;
+@property(nonatomic, copy) NSString *focusNotice;   // brief status-strip message after held agent events are released
+- (void)applyFocusBandState:(MicaFocusBandState *)state palette:(MicaFocusBandPalette *)palette visible:(BOOL)visible
+                   delegate:(id<MicaFocusBandDelegate>)delegate;
 @property(nonatomic, assign) NSTimeInterval drawingStatsMaximumDuration;
 @property(nonatomic, assign) BOOL quickSelectActive;
 @property(nonatomic, copy) NSArray<NSDictionary *> *quickSelectMatches;
@@ -600,7 +620,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @end
 
 
-@interface MicaAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, UNUserNotificationCenterDelegate, NSMenuDelegate>
+@interface MicaAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, UNUserNotificationCenterDelegate, NSMenuDelegate, MicaFocusBandDelegate>
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, strong) MicaTerminalView *terminalView;
 @property(nonatomic, strong) MicaWindowContentView *windowContentView;
@@ -640,7 +660,6 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, strong) NSTimer *pomodoroTimer;
 @property(nonatomic, strong) NSTimer *agentRSSTimer;
 @property(nonatomic, strong) MicaAgentRSSMonitor *agentRSSMonitor;
-@property(nonatomic, assign) BOOL agentRSSStatusMenuOpen;
 @property(nonatomic, strong) NSPanel *commandPalettePanel;
 @property(nonatomic, strong) NSTextField *commandPaletteSearch;
 @property(nonatomic, strong) NSTableView *commandPaletteTable;
@@ -742,15 +761,11 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)savePomodoroState;
 - (void)updatePomodoroTimer;
 - (void)pomodoroTimerFired:(NSTimer *)timer;
-- (void)prefMenuBarTimerChanged:(NSButton *)sender;
 - (void)prefDiagnosticsChanged:(NSButton *)sender;
 - (void)prefAgentRSSWarningChanged:(NSPopUpButton *)sender;
-- (void)updateMenuBarTimer;
-- (void)applyMenuBarTimerPreference;
 - (void)updateAgentRSSTimer;
 - (void)agentRSSTimerFired:(NSTimer *)timer;
 - (void)prefAgentRSSWarningChanged:(NSPopUpButton *)sender;
-- (NSDictionary<NSString *, id> *)menuBarTimerPresentationAtTime:(double)now;
 @property(nonatomic, assign) MicaUIMode uiMode;
 @end
 
@@ -1482,6 +1497,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
 
 - (void)layout {
     [super layout];
+    [self layoutFocusBand];
 }
 
 - (void)dealloc {
@@ -1581,7 +1597,42 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
 
 - (NSRect)terminalRect {
     return NSMakeRect(kTerminalPaddingX, kStatusHeight, MAX(0, self.bounds.size.width - 2 * kTerminalPaddingX),
-                      MAX(0, self.bounds.size.height - kHeaderHeight - kStatusHeight));
+                      MAX(0, self.bounds.size.height - kHeaderHeight - self.focusBandHeight - kStatusHeight));
+}
+
+- (CGFloat)focusBandHeight { return _focusBand && !_focusBand.hidden ? _focusBand.frame.size.height : 0; }
+
+// Full width, directly under the tab bar.
+- (void)layoutFocusBand {
+    if (!_focusBand || _focusBand.hidden) return;
+    CGFloat height = _focusBand.frame.size.height;
+    NSRect frame = NSMakeRect(0, MAX(0, self.bounds.size.height - kHeaderHeight - height), self.bounds.size.width, height);
+    if (!NSEqualRects(frame, _focusBand.frame)) _focusBand.frame = frame;
+}
+
+- (void)applyFocusBandState:(MicaFocusBandState *)state palette:(MicaFocusBandPalette *)palette visible:(BOOL)visible
+                   delegate:(id<MicaFocusBandDelegate>)delegate {
+    CGFloat before = self.focusBandHeight;
+    if (!visible) {
+        if (_focusBand) { _focusBand.hidden = YES; if (_focusBand.window) [self.window makeFirstResponder:self]; }
+    } else {
+        if (!_focusBand) {
+            _focusBand = [[MicaFocusBandView alloc] initWithFrame:NSMakeRect(0, 0, self.bounds.size.width, 0)];
+            _focusBand.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+            [self addSubview:_focusBand];
+        }
+        _focusBand.delegate = delegate;
+        _focusBand.hidden = NO;
+        CGFloat height = [MicaFocusBandView heightForPhase:state.phase];
+        if (_focusBand.frame.size.height != height) _focusBand.frame = NSMakeRect(0, 0, self.bounds.size.width, height);
+        [self layoutFocusBand];
+        [_focusBand applyState:state palette:palette];
+    }
+    if (self.focusBandHeight != before) {
+        [self updateGridSize];
+        [self.window invalidateCursorRectsForView:self];
+        [self setNeedsDisplay:YES];
+    }
 }
 
 // The full-width band the terminal occupies, padding included, for hit-testing drops and clicks.
@@ -1603,6 +1654,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
 }
 
 - (void)updateGridSize {
+    [self layoutFocusBand];
     MicaTab *tab = self.owner.activeTab;
     if (!tab.session) return;
     NSDictionary *attrs = @{ NSFontAttributeName: self.terminalFont };
@@ -2057,6 +2109,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     BOOL scrolled = viewOffset > 0;
     BOOL scrollView = mode == MicaUIModeScroll || scrolled;
     NSString *modeName = mode == MicaUIModeTab ? @"Tab picker" : (scrollView ? @"Scrollback" : nil);
+    if (!modeName && self.focusNotice.length) modeName = self.focusNotice;
     NSColor *modeColor = scrollView ? NSColor.systemPurpleColor : NSColor.controlAccentColor;
     NSDictionary *modeAttrs = @{
         NSFontAttributeName: [NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold],
@@ -3845,7 +3898,8 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
     }
     [root updateFocusMenuLabel];
     [root updatePomodoroTimer];
-    if (gMicaStatusItem) [root updateMenuBarTimer];
+    [root syncFocusHold];
+    [MicaAppDelegate updateAllFocusBands];
 }
 
 - (void)configurePomodoro {
@@ -3866,6 +3920,7 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
     if (_pomodoro.phase == MICA_POMODORO_FOCUS || _pomodoro.phase == MICA_POMODORO_BREAK) {
         if (left <= 0) {
             expiredOnRelaunch = YES;
+            if (_pomodoro.phase == MICA_POMODORO_FOCUS) [self recordFocusElapsed:self.pomodoroCycleFocusMinutes * 60.0 reset:NO];
             _pomodoro.phase = _pomodoro.phase == MICA_POMODORO_FOCUS ? MICA_POMODORO_PAUSED_BREAK : MICA_POMODORO_PAUSED_FOCUS;
             _pomodoro.paused_remaining = _pomodoro.phase == MICA_POMODORO_PAUSED_BREAK ? self.pomodoroCycleBreakMinutes * 60.0 : self.pomodoroCycleFocusMinutes * 60.0;
             if (_pomodoro.phase == MICA_POMODORO_PAUSED_BREAK) _pomodoro.completed_focuses = 1;
@@ -3876,15 +3931,25 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
     [self refreshPomodoroState];
     if (expiredOnRelaunch && !NSApp.isActive && self.attentionRequest == 0)
         self.attentionRequest = [NSApp requestUserAttention:NSInformationalRequest];
-    if (gMicaStatusItem) [self updateMenuBarTimer];
 }
 
 - (void)startPomodoro:(id)sender {
     (void)sender;
+    { MicaAppDelegate *root = MicaControllers().firstObject; if (root && root != self) { [root startPomodoro:sender]; return; } }
     double now = MicaContinuousTimeSeconds();
-    if (mica_pomodoro_is_paused(&_pomodoro)) mica_pomodoro_toggle_pause(&_pomodoro, now);
-    else if (_pomodoro.phase == MICA_POMODORO_IDLE) {
-        if (!self.pomodoroLabel.length) self.pomodoroLabel = self.projectName ?: @"";
+    if (mica_pomodoro_is_paused(&_pomodoro)) {
+        mica_pomodoro_toggle_pause(&_pomodoro, now);
+        if (_pomodoro.phase == MICA_POMODORO_FOCUS && !MicaFocusRecorderShared().activeProject.length) [self captureFocusContext];
+    } else if (_pomodoro.phase == MICA_POMODORO_IDLE) {
+        // Capture project and branch from the active tab; an empty label becomes "<project> · <branch>".
+        NSString *project = nil, *branch = nil;
+        [self captureFocusContext];
+        [self focusContextForTab:self.activeTab project:&project branch:&branch];
+        if (!self.pomodoroLabel.length) {
+            NSString *label = branch.length ? [NSString stringWithFormat:@"%@ · %@", project, branch] : project;
+            if (label.length > 80) label = [label substringToIndex:80];
+            self.pomodoroLabel = MicaPomodoroLabelIsValid(label) ? label : (project.length <= 80 ? project : @"");
+        }
         self.pomodoroCycleFocusMinutes = self.focusDurationMinutes;
         self.pomodoroCycleBreakMinutes = self.breakDurationMinutes;
         mica_pomodoro_start(&_pomodoro, now, self.pomodoroCycleFocusMinutes * 60.0);
@@ -3897,7 +3962,9 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
 
 - (void)takePomodoroBreak:(id)sender {
     (void)sender;
+    { MicaAppDelegate *root = MicaControllers().firstObject; if (root && root != self) { [root takePomodoroBreak:sender]; return; } }
     double now = MicaContinuousTimeSeconds();
+    [self recordFocusElapsed:[self focusElapsedSecondsAtTime:now] reset:NO];
     _pomodoro.phase = MICA_POMODORO_BREAK;
     _pomodoro.paused_remaining = 0;
     _pomodoro.deadline = now + MAX(1, self.breakDurationMinutes) * 60.0;
@@ -3914,17 +3981,23 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
     field.stringValue = self.pomodoroLabel ?: @""; alert.accessoryView = field;
     if ([alert runModal] != NSAlertFirstButtonReturn) return;
     if (!MicaPomodoroLabelIsValid(field.stringValue ?: @"")) { NSBeep(); return; }
-    self.pomodoroLabel = field.stringValue ?: @""; [self savePomodoroState]; [self refreshPomodoroState];
+    MicaAppDelegate *root = MicaControllers().firstObject ?: self;
+    root.pomodoroLabel = field.stringValue ?: @""; [root savePomodoroState]; [root refreshPomodoroState];
 }
 
 - (void)togglePomodoroPause:(id)sender {
     (void)sender;
+    { MicaAppDelegate *root = MicaControllers().firstObject; if (root && root != self) { [root togglePomodoroPause:sender]; return; } }
     if (!mica_pomodoro_toggle_pause(&_pomodoro, MicaContinuousTimeSeconds())) { [self startPomodoro:nil]; return; }
     [self savePomodoroState]; [self refreshPomodoroState];
 }
 
 - (void)resetPomodoro:(id)sender {
-    (void)sender; mica_pomodoro_reset(&_pomodoro); self.pomodoroLabel = @"";
+    (void)sender;
+    { MicaAppDelegate *root = MicaControllers().firstObject; if (root && root != self) { [root resetPomodoro:sender]; return; } }
+    [self recordFocusElapsed:[self focusElapsedSecondsAtTime:MicaContinuousTimeSeconds()] reset:YES];
+    MicaFocusRecorderShared().activeProject = nil; MicaFocusRecorderShared().activeBranch = nil;
+    mica_pomodoro_reset(&_pomodoro); self.pomodoroLabel = @"";
     [self savePomodoroState]; [self refreshPomodoroState];
 #if !defined(MICA_APP_NO_MAIN)
     [UNUserNotificationCenter.currentNotificationCenter removeAllPendingNotificationRequests];
@@ -3932,8 +4005,11 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
 }
 
 - (void)skipPomodoroPhase:(id)sender {
-    (void)sender; if (_pomodoro.phase == MICA_POMODORO_IDLE) return;
+    (void)sender;
+    { MicaAppDelegate *root = MicaControllers().firstObject; if (root && root != self) { [root skipPomodoroPhase:sender]; return; } }
+    if (_pomodoro.phase == MICA_POMODORO_IDLE) return;
     MicaPomodoroPhase phase = self.pomodoro.phase; double now = MicaContinuousTimeSeconds();
+    double focusElapsed = [self focusElapsedSecondsAtTime:now];
     if (mica_pomodoro_is_paused(&_pomodoro)) {
         _pomodoro.phase = phase == MICA_POMODORO_PAUSED_FOCUS ? MICA_POMODORO_FOCUS : MICA_POMODORO_BREAK;
         _pomodoro.paused_remaining = 0;
@@ -3942,7 +4018,9 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
     BOOL changed = mica_pomodoro_advance(&_pomodoro, now, MAX(1, self.pomodoroCycleFocusMinutes) * 60.0,
         MAX(1, self.pomodoroCycleBreakMinutes) * 60.0);
     if (!changed) return;
+    [self recordFocusElapsed:focusElapsed reset:NO];
     if (phase == MICA_POMODORO_BREAK || phase == MICA_POMODORO_PAUSED_BREAK) self.pomodoroLabel = @"";
+    if (_pomodoro.phase == MICA_POMODORO_FOCUS) [self captureFocusContext];
     [self savePomodoroState]; [self refreshPomodoroState];
 }
 
@@ -3973,18 +4051,20 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
             title:@"Focus timer phase ended" body:@"Your timer phase has ended." muted:NO];
         NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
         if (previousPhase == MICA_POMODORO_FOCUS) {
+            [owner recordFocusElapsed:owner.pomodoroCycleFocusMinutes * 60.0 reset:NO];
             NSString *day = [NSDateFormatter localizedStringFromDate:NSDate.date dateStyle:NSDateFormatterShortStyle timeStyle:NSDateFormatterNoStyle];
             NSUserDefaults *defaults = [owner micaDefaults];
             NSInteger count = [[defaults stringForKey:@"MicaDailyFocusDay"] isEqualToString:day] ? [defaults integerForKey:@"MicaDailyFocusCount"] : 0;
             [defaults setObject:day forKey:@"MicaDailyFocusDay"];
             [defaults setInteger:count + 1 forKey:@"MicaDailyFocusCount"];
         }
+        if (owner.pomodoro.phase == MICA_POMODORO_FOCUS) [owner captureFocusContext];
         if (owner.pomodoro.phase == MICA_POMODORO_PAUSED_BREAK || owner.pomodoro.phase == MICA_POMODORO_BREAK) owner.pomodoroLabel = @"";
         [owner savePomodoroState]; [owner refreshPomodoroState];
         if (!NSApp.isActive && owner.attentionRequest == 0) owner.attentionRequest = [NSApp requestUserAttention:NSInformationalRequest];
     }
-    [owner updateMenuBarTimer];
     for (MicaAppDelegate *controller in MicaControllers()) [controller.terminalView setNeedsDisplayInRect:NSMakeRect(0, 0, controller.terminalView.bounds.size.width, kStatusHeight)];
+    [MicaAppDelegate updateAllFocusBands];
 }
 
 - (void)updateAgentRSSTimer {
@@ -3994,7 +4074,7 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
         [root updateAgentRSSTimer];
         return;
     }
-    BOOL needed = self.agentRSSStatusMenuOpen || (gMicaStatusItem && gMicaStatusItem.menuOpen);
+    BOOL needed = NO;
     for (MicaAppDelegate *controller in MicaControllers())
         if (controller.sidebarVisible) { needed = YES; break; }
     if (!needed) {
@@ -4015,7 +4095,7 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
     (void)timer;
     MicaAppDelegate *root = MicaControllers().firstObject ?: self;
     if (root != self) { [root agentRSSTimerFired:timer]; return; }
-    BOOL needed = self.agentRSSStatusMenuOpen || (gMicaStatusItem && gMicaStatusItem.menuOpen);
+    BOOL needed = NO;
     for (MicaAppDelegate *controller in MicaControllers())
         if (controller.sidebarVisible) { needed = YES; break; }
     if (!needed) { [self updateAgentRSSTimer]; return; }
@@ -4057,47 +4137,6 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
     }
 }
 
-- (MicaAppDelegate *)menuBarTimerOwner {
-    if (NSApp.keyWindow) for (MicaAppDelegate *controller in MicaControllers())
-        if (controller.window == NSApp.keyWindow) return controller;
-    return MicaControllers().firstObject;
-}
-
-- (void)applyMenuBarTimerPreference {
-    NSUserDefaults *defaults = [self micaDefaults];
-    BOOL enabled = [defaults objectForKey:@"MicaMenuBarTimer"]
-        ? [defaults boolForKey:@"MicaMenuBarTimer"] : YES;
-#if defined(MICA_APP_NO_MAIN)
-    if (gMicaTimerStatusItemLifecycleHook) {
-        if (enabled != gMicaTimerStatusItemEnabledForTests &&
-            gMicaTimerStatusItemLifecycleHook(enabled)) gMicaTimerStatusItemEnabledForTests = enabled;
-        return;
-    }
-#endif
-    if (enabled && !gMicaStatusItem) {
-        gMicaStatusItem = [MicaStatusItem new];
-        __weak typeof(self) weakSelf = self;
-        [gMicaStatusItem enableWithMenuBuilder:^NSMenu *{
-            MicaAppDelegate *owner = [weakSelf menuBarTimerOwner];
-            return owner ? [owner menuBarTimerMenu] : [[NSMenu alloc] initWithTitle:@"Mica"];
-        }];
-        gMicaStatusItem.menuOpenChanged = ^(BOOL open) {
-            MicaAppDelegate *root = MicaControllers().firstObject ?: weakSelf;
-            root.agentRSSStatusMenuOpen = open;
-            [root updateAgentRSSTimer];
-        };
-        [self updateMenuBarTimer];
-    } else if (!enabled && gMicaStatusItem) {
-        [gMicaStatusItem disable];
-        gMicaStatusItem = nil;
-    }
-}
-
-- (void)prefMenuBarTimerChanged:(NSButton *)sender {
-    [[self micaDefaults] setBool:sender.state == NSControlStateValueOn forKey:@"MicaMenuBarTimer"];
-    [self applyMenuBarTimerPreference];
-}
-
 - (void)prefDiagnosticsChanged:(NSButton *)sender {
     BOOL enabled = sender.state == NSControlStateValueOn;
     [[self micaDefaults] setBool:enabled forKey:@"MicaDiagnosticsEnabled"];
@@ -4111,66 +4150,177 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
     [self updateAgentRSSTimer];
 }
 
-- (void)updateMenuBarTimer {
-    MicaAppDelegate *owner = [self menuBarTimerOwner];
-    if (!gMicaStatusItem || !owner) return;
-    NSDictionary *presentation = [owner menuBarTimerPresentationAtTime:MicaContinuousTimeSeconds()];
-    [gMicaStatusItem updateTitle:presentation[@"compactTitle"] accessibilityLabel:presentation[@"accessibilityLabel"]];
+#pragma mark Focus band
+
+- (BOOL)focusBandVisible {
+    NSUserDefaults *defaults = [self micaDefaults];
+    return [defaults objectForKey:kMicaFocusBandVisibleKey] ? [defaults boolForKey:kMicaFocusBandVisibleKey] : YES;
 }
 
-- (NSMenu *)menuBarTimerMenu {
-    NSDictionary *presentation = [self menuBarTimerPresentationAtTime:MicaContinuousTimeSeconds()];
-    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Mica"];
-    NSMenuItem *status = [[NSMenuItem alloc] initWithTitle:presentation[@"title"] action:nil keyEquivalent:@""];
-    status.enabled = NO;
-    [menu addItem:status];
-    [menu addItem:NSMenuItem.separatorItem];
-    NSMenuItem *toggleItem = [menu addItemWithTitle:presentation[@"toggle"] action:@selector(togglePomodoroPause:) keyEquivalent:@""];
-    toggleItem.target = self;
-    NSMenuItem *skip = [menu addItemWithTitle:presentation[@"endTitle"] action:@selector(skipPomodoroPhase:) keyEquivalent:@""];
-    skip.target = self;
-    skip.enabled = [presentation[@"endEnabled"] boolValue];
-    // Extension point: agents-waiting and quota rows belong here in a later cycle.
-    [menu addItem:NSMenuItem.separatorItem];
-    NSMenuItem *show = [menu addItemWithTitle:@"Show Mica" action:@selector(showMicaFromStatusItem:) keyEquivalent:@""];
-    show.target = self;
-    NSMenuItem *settings = [menu addItemWithTitle:@"Settings…" action:@selector(openPreferences:) keyEquivalent:@","];
-    settings.target = self;
-    return menu;
+- (NSInteger)focusDailyGoal {
+    NSUserDefaults *defaults = [self micaDefaults];
+    NSInteger goal = [defaults integerForKey:kMicaFocusDailyGoalKey];
+    return [defaults objectForKey:kMicaFocusDailyGoalKey] && goal >= 1 && goal <= 24 ? goal : kDefaultFocusDailyGoal;
 }
 
-- (void)showMicaFromStatusItem:(id)sender {
+// Project is the repo root folder (else the cwd folder) of the tab, branch its git branch.
+- (void)focusContextForTab:(MicaTab *)tab project:(NSString **)project branch:(NSString **)branch {
+    NSString *path = tab.projectRoot.length ? tab.projectRoot : tab.cwd;
+    NSString *name = path.stringByStandardizingPath.lastPathComponent;
+    if (!name.length || [name isEqualToString:@"/"]) name = self.projectName;
+    if (!name.length) name = tab.name.length ? tab.name : @"Terminal";
+    if (project) *project = name;
+    if (branch) *branch = tab.gitBranch.length ? tab.gitBranch : nil;
+}
+
+// Focus seconds spent in the current session (paused time excluded, as remaining time stands still while paused).
+- (double)focusElapsedSecondsAtTime:(double)now {
+    MicaAppDelegate *root = MicaControllers().firstObject ?: self;
+    MicaPomodoro timer = root.pomodoro;
+    if (timer.phase != MICA_POMODORO_FOCUS && timer.phase != MICA_POMODORO_PAUSED_FOCUS) return 0;
+    double total = root.pomodoroCycleFocusMinutes * 60.0;
+    return MAX(0, MIN(total, total - mica_pomodoro_remaining(&timer, now)));
+}
+
+// Remembers the active tab's project and branch for the focus session being entered.
+- (void)captureFocusContext {
+    NSString *project = nil, *branch = nil;
+    [self focusContextForTab:self.activeTab project:&project branch:&branch];
+    MicaFocusRecorderShared().activeProject = project;
+    MicaFocusRecorderShared().activeBranch = branch;
+}
+
+- (void)recordFocusElapsed:(double)seconds reset:(BOOL)reset {
+    if (seconds <= 0) return;
+    MicaFocusRecorder *recorder = MicaFocusRecorderShared();
+    NSString *project = recorder.activeProject, *branch = recorder.activeBranch;
+    if (!project.length) [self focusContextForTab:self.activeTab project:&project branch:&branch];
+    [recorder recordSeconds:seconds project:project branch:branch date:NSDate.date minimumSeconds:reset ? 60.0 : 1.0];
+    recorder.activeProject = nil; recorder.activeBranch = nil;
+}
+
+- (MicaFocusBandState *)focusBandStateAtTime:(double)now {
+    MicaAppDelegate *root = MicaControllers().firstObject ?: self;
+    MicaPomodoro timer = root.pomodoro;
+    BOOL idle = timer.phase == MICA_POMODORO_IDLE;
+    BOOL focus = timer.phase == MICA_POMODORO_FOCUS || timer.phase == MICA_POMODORO_PAUSED_FOCUS;
+    MicaFocusBandState *state = [MicaFocusBandState new];
+    state.phase = timer.phase;
+    state.totalSeconds = (idle ? root.focusDurationMinutes : focus ? root.pomodoroCycleFocusMinutes : root.pomodoroCycleBreakMinutes) * 60.0;
+    state.remainingSeconds = idle ? state.totalSeconds : mica_pomodoro_remaining(&timer, now);
+    state.label = root.pomodoroLabel ?: @"";
+    MicaFocusRecorder *recorder = MicaFocusRecorderShared();
+    NSString *day = [MicaFocusRecorder dayKeyForDate:NSDate.date];
+    state.completedToday = [recorder sessionsForDayKey:day];
+    state.goalToday = [self focusDailyGoal];
+    state.todayTotalSeconds = [recorder totalSecondsForDayKey:day];
+    state.projectRows = [recorder rowsForDayKey:day];
+    state.startHint = kMicaFocusStartHint;
+    return state;
+}
+
+- (void)updateFocusBand {
+    if (!self.terminalView) return;
+    static MicaFocusBandPalette *dark, *light;
+    if (!dark) { dark = [MicaFocusBandPalette darkPalette]; light = [MicaFocusBandPalette lightPalette]; }
+    BOOL visible = [self focusBandVisible];
+    [self.terminalView applyFocusBandState:visible ? [self focusBandStateAtTime:MicaContinuousTimeSeconds()] : nil
+        palette:gMicaLightTheme ? light : dark visible:visible delegate:self];
+}
+
++ (void)updateAllFocusBands {
+    NSArray<MicaAppDelegate *> *controllers = [MicaControllers() copy];
+    for (MicaAppDelegate *controller in controllers) [controller updateFocusBand];
+}
+
+- (void)toggleFocusBand:(id)sender {
     (void)sender;
-    [NSApp activateIgnoringOtherApps:YES];
-    [self.window makeKeyAndOrderFront:nil];
+    [[self micaDefaults] setBool:![self focusBandVisible] forKey:kMicaFocusBandVisibleKey];
+    [self updateFocusBand];
+    [MicaAppDelegate updateAllFocusBands];
 }
 
-- (NSDictionary<NSString *, id> *)menuBarTimerPresentationAtTime:(double)now {
-    MicaPomodoro timer = self.pomodoro;
-    BOOL focus = timer.phase == MICA_POMODORO_IDLE || timer.phase == MICA_POMODORO_FOCUS ||
-        timer.phase == MICA_POMODORO_PAUSED_FOCUS;
-    BOOL paused = mica_pomodoro_is_paused(&timer);
-    NSInteger minutes = focus ? self.focusDurationMinutes : self.breakDurationMinutes;
-    double seconds = timer.phase == MICA_POMODORO_IDLE ? MAX(1, minutes) * 60.0 : mica_pomodoro_remaining(&timer, now);
-    NSString *phase = timer.phase == MICA_POMODORO_IDLE ? @"Ready" :
-        paused ? (focus ? @"Paused focus" : @"Paused break") : (focus ? @"Focus" : @"Break");
-    NSInteger wholeSeconds = (NSInteger)seconds;
-    NSString *title = [NSString stringWithFormat:@"%@ %02ld:%02ld", phase, (long)(wholeSeconds / 60), (long)(wholeSeconds % 60)];
-    NSString *toggle = timer.phase == MICA_POMODORO_IDLE ? @"Start Focus" : (paused ? @"Resume Timer" : @"Pause Timer");
-    NSString *symbol = timer.phase == MICA_POMODORO_IDLE ? @"◷" : (paused ? @"Ⅱ" :
-        ((timer.phase == MICA_POMODORO_BREAK) ? @"☕" : @"◷"));
-    NSString *compactTitle = timer.phase == MICA_POMODORO_IDLE ? symbol :
-        [NSString stringWithFormat:@"%@ %02ld:%02ld", symbol, (long)(wholeSeconds / 60), (long)(wholeSeconds % 60)];
-    NSString *session = self.pomodoroLabel.length ? [NSString stringWithFormat:@", %@", self.pomodoroLabel] : @"";
-    NSString *completed = [NSString stringWithFormat:@", %llu focus session%@ completed",
-        (unsigned long long)timer.completed_focuses, timer.completed_focuses == 1 ? @"" : @"s"];
-    return @{@"title": title,
-        @"compactTitle": compactTitle,
-        @"accessibilityLabel": [NSString stringWithFormat:@"%@%@, %02ld minutes %02ld seconds remaining%@", phase,
-            session, (long)(wholeSeconds / 60), (long)(wholeSeconds % 60), completed],
-        @"toggle": toggle,
-        @"endEnabled": @(timer.phase != MICA_POMODORO_IDLE),
-        @"endTitle": focus ? @"End Focus & Start Break" : @"End Break & Start Focus"};
+// Band actions always act on the root controller, which owns the shared timer.
+- (MicaAppDelegate *)focusRoot { return MicaControllers().firstObject ?: self; }
+- (void)focusBandStart:(MicaFocusBandView *)band { (void)band; [[self focusRoot] startPomodoro:nil]; }
+- (void)focusBandTogglePause:(MicaFocusBandView *)band { (void)band; [[self focusRoot] togglePomodoroPause:nil]; }
+- (void)focusBandSkip:(MicaFocusBandView *)band { (void)band; [[self focusRoot] skipPomodoroPhase:nil]; }
+- (void)focusBandReset:(MicaFocusBandView *)band { (void)band; [[self focusRoot] resetPomodoro:nil]; }
+- (void)focusBand:(MicaFocusBandView *)band didEditLabel:(NSString *)label {
+    MicaAppDelegate *root = [self focusRoot];
+    if (!MicaPomodoroLabelIsValid(label ?: @"")) {
+        NSBeep();
+        band.labelField.stringValue = root.pomodoroLabel ?: @"";
+        return;
+    }
+    root.pomodoroLabel = label ?: @"";
+    [root savePomodoroState]; [root refreshPomodoroState];
+}
+
+#pragma mark Agent holding during focus
+
+// Posts an agent attention event, or queues it while a focus phase holds non-urgent events. Returns YES if posted.
+- (BOOL)postOrHoldAttentionKind:(MicaAttentionKind)kind tab:(MicaTab *)tab title:(NSString *)title body:(NSString *)body {
+    MicaFocusHold *hold = MicaFocusHoldShared();
+    if ([hold shouldHoldKind:kind]) {
+        [hold queueKind:kind tabID:tab.identifier title:MicaTabDisplayName(tab)];
+        return NO;
+    }
+    [hold forgetTabID:tab.identifier];
+    [MicaAttention() setMuted:tab.muteNotifications tabID:tab.identifier];
+    [MicaAttention() postTabID:tab.identifier kind:kind title:title body:body ?: @"" muted:NO];
+    NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
+    return YES;
+}
+
+// Mirrors the shared timer phase into the hold; releases held events when focus ends.
+- (void)syncFocusHold {
+    MicaFocusHold *hold = MicaFocusHoldShared();
+    BOOL wasHolding = hold.holding;
+    [hold setPhase:self.pomodoro.phase];
+    if (wasHolding && !hold.holding) [self releaseHeldFocusEvents];
+}
+
+- (MicaTab *)focusHeldTabWithID:(uint64_t)tabID {
+    for (MicaAppDelegate *controller in MicaControllers())
+        for (MicaTab *tab in controller.tabs) if (tab.identifier == tabID) return tab;
+    return nil;
+}
+
+- (void)releaseHeldFocusEvents {
+    MicaFocusHoldSummary *summary = [MicaFocusHoldShared() releaseSummary];
+    if (summary.isEmpty) return;
+    // Re-apply markers and the dock badge as if posted now, without per-tab banners; one dock request at most.
+    void (^savedDelivery)(NSDictionary *) = MicaAttention().delivery;
+    MicaAttention().delivery = nil;
+    NSArray *groups = @[summary.finished, summary.waiting, summary.errors];
+    MicaAttentionKind kinds[] = { MicaAttentionDone, MicaAttentionWaitingInput, MicaAttentionError };
+    for (NSUInteger group = 0; group < groups.count; group++) {
+        for (MicaFocusHoldEntry *entry in groups[group]) {
+            MicaTab *tab = [self focusHeldTabWithID:entry.tabID];
+            if (!tab) continue;
+            [MicaAttention() setMuted:tab.muteNotifications tabID:tab.identifier];
+            [MicaAttention() postTabID:tab.identifier kind:kinds[group]
+                title:[self agentNotificationTitleForTab:tab waiting:kinds[group] == MicaAttentionWaitingInput]
+                body:tab.agentLastMessage ?: @"" muted:NO];
+        }
+    }
+    MicaAttention().delivery = savedDelivery;
+    NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
+    if (!NSApp.isActive && self.attentionRequest == 0)
+        self.attentionRequest = [NSApp requestUserAttention:NSInformationalRequest];
+    NSString *notice = [NSString stringWithFormat:@"While you focused: %@", summary.text];
+    for (MicaAppDelegate *controller in MicaControllers()) {
+        controller.terminalView.focusNotice = notice;
+        [controller.terminalView setNeedsDisplayInRect:NSMakeRect(0, 0, controller.terminalView.bounds.size.width, kStatusHeight)];
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kMicaFocusNoticeSeconds * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        for (MicaAppDelegate *controller in MicaControllers()) {
+            if (![controller.terminalView.focusNotice isEqualToString:notice]) continue;
+            controller.terminalView.focusNotice = nil;
+            [controller.terminalView setNeedsDisplayInRect:NSMakeRect(0, 0, controller.terminalView.bounds.size.width, kStatusHeight)];
+        }
+    });
 }
 
 - (void)requestPomodoroNotifications {
@@ -4364,6 +4514,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
             [controller.window makeKeyAndOrderFront:nil];
             [controller selectTabAtIndex:(NSInteger)index];
             [MicaAttention() clearTabID:tabID.unsignedLongLongValue];
+            [MicaFocusHoldShared() forgetTabID:tabID.unsignedLongLongValue];
             NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
             break;
         }
@@ -4571,7 +4722,6 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         [self loadStoredThemePreference];
         [self applyStoredShortcutPreference];
         [self applyStoredScrollbackPreference];
-        [self applyMenuBarTimerPreference];
         [NSApp addObserver:self forKeyPath:@"effectiveAppearance" options:NSKeyValueObservingOptionNew context:NULL];
         self.observesSystemAppearance = YES;
     } else {
@@ -4619,7 +4769,6 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     // explicitly whenever a different project window takes ownership of the menu bar.
     for (NSMenuItem *item in gRecentProjectsMenu.itemArray)
         if (item.action == @selector(openRecentProject:) || item.action == @selector(clearRecentProjects:)) item.target = self;
-    if (gMicaStatusItem) [self updateMenuBarTimer];
 }
 
 - (void)menuNeedsUpdate:(NSMenu *)menu {
@@ -4904,13 +5053,13 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         else {
             hasAttention = NO;
             [MicaAttention() clearTabID:tab.identifier];
+            [MicaFocusHoldShared() forgetTabID:tab.identifier];
             NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
         }
-        if (hasAttention) {
-            [MicaAttention() setMuted:tab.muteNotifications tabID:tab.identifier];
-            [MicaAttention() postTabID:tab.identifier kind:kind title:[self agentNotificationTitleForTab:tab waiting:(kind == MicaAttentionWaitingPermission || kind == MicaAttentionWaitingInput)] body:tab.agentLastMessage ?: @"" muted:NO];
-            NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
-        }
+        if (hasAttention)
+            [self postOrHoldAttentionKind:kind tab:tab
+                title:[self agentNotificationTitleForTab:tab waiting:(kind == MicaAttentionWaitingPermission || kind == MicaAttentionWaitingInput)]
+                body:tab.agentLastMessage];
         [self.terminalView setNeedsDisplay:YES];
     }
 }
@@ -4956,7 +5105,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSMenuItem *focusRoot = [[NSMenuItem alloc] initWithTitle:@"Focus" action:nil keyEquivalent:@""];
     NSMenu *focusMenu = [[NSMenu alloc] initWithTitle:@"Focus"];
     AddMenuItem(focusMenu, @"Start Focus", @selector(startPomodoro:), @"", 0).target = self;
-    AddMenuItem(focusMenu, @"Pause/Resume Focus", @selector(togglePomodoroPause:), @"", 0).target = self;
+    // Also starts the timer when idle, so one shortcut covers start, pause and resume.
+    AddMenuItem(focusMenu, @"Pause/Resume Focus", @selector(togglePomodoroPause:), @"p",
+                NSEventModifierFlagCommand | NSEventModifierFlagOption).target = self;
     AddMenuItem(focusMenu, @"Skip Phase", @selector(skipPomodoroPhase:), @"", 0).target = self;
     AddMenuItem(focusMenu, @"Take Break", @selector(takePomodoroBreak:), @"", 0).target = self;
     NSString *todayKey = [NSDateFormatter localizedStringFromDate:NSDate.date dateStyle:NSDateFormatterShortStyle timeStyle:NSDateFormatterNoStyle];
@@ -5018,6 +5169,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSMenuItem *viewRoot = [[NSMenuItem alloc] initWithTitle:@"View" action:nil keyEquivalent:@""];
     NSMenu *viewMenu = [[NSMenu alloc] initWithTitle:@"View"];
     AddMenuItem(viewMenu, @"Show Sidebar", @selector(toggleSidebar:), @"", 0).target = self;
+    AddMenuItem(viewMenu, @"Show Focus Band", @selector(toggleFocusBand:), @"", 0).target = self;
     [viewMenu addItem:NSMenuItem.separatorItem];
     AddMenuItem(viewMenu, @"Light Terminal Theme", @selector(toggleLightTheme:), @"l",
                 NSEventModifierFlagCommand | NSEventModifierFlagOption).target = self;
@@ -5077,6 +5229,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         @"⌘1–8  Switch to tab",
         @"⌘9  Switch to last tab",
         @"⌘⇧P  Command palette and tab switcher",
+        @"⌥⌘P  Start, pause or resume the focus timer",
         @"⌘⇧S  Browse scrollback",
         @"⌘⇧[ / ⌘⇧]  Previous / next tab",
         @"Drag a tab  Reorder tabs",
@@ -5298,6 +5451,10 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     }
     if (item.action == @selector(clearRecentProjects:))
         return MicaRecentProjectHistory().projects.count > 0;
+    if (item.action == @selector(toggleFocusBand:)) {
+        item.state = [self focusBandVisible] ? NSControlStateValueOn : NSControlStateValueOff;
+        return YES;
+    }
     if (item.action == @selector(skipPomodoroPhase:)) {
         [self refreshPomodoroState];
         MicaPomodoroPhase phase = self.pomodoro.phase;
@@ -5984,6 +6141,7 @@ static BOOL MicaValidBranchName(NSString *name) {
     if (previous.session && NSApp.isActive) mica_session_focus(previous.session, false);
     [self killCompanionForTab:closing];
     [MicaAttention() clearTabID:closing.identifier];
+    [MicaFocusHoldShared() forgetTabID:closing.identifier];
     NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
     self.uiMode = MicaUIModeNormal;
     [self.terminalView clearSelection];
@@ -6021,6 +6179,7 @@ static BOOL MicaValidBranchName(NSString *name) {
                 [controller.window makeKeyAndOrderFront:nil];
                 if (controller != self || (NSInteger)index != controller.activeIndex) [controller selectTabAtIndex:(NSInteger)index];
                 [MicaAttention() clearTabID:targetID];
+                [MicaFocusHoldShared() forgetTabID:targetID];
                 NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
                 return;
             }
@@ -6044,6 +6203,7 @@ static BOOL MicaValidBranchName(NSString *name) {
     tab.needsAttention = NO;
     if (self.window.isKeyWindow) {
         [MicaAttention() clearTabID:tab.identifier];
+        [MicaFocusHoldShared() forgetTabID:tab.identifier];
         NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
     }
     MicaTab *shown = self.activeTab;
@@ -6131,6 +6291,7 @@ static BOOL MicaValidBranchName(NSString *name) {
         controller.preferencesWindow.appearance = controller.window.appearance;
         MicaSyncSettingsBackground(controller.preferencesWindow);
         [controller.terminalView setNeedsDisplay:YES];
+        [controller updateFocusBand];
     }
     NSMenuItem *item = [[NSApp.mainMenu itemWithTitle:@"View"].submenu itemWithTitle:@"Light Terminal Theme"];
     item.state = light ? NSControlStateValueOn : NSControlStateValueOff;
@@ -6247,8 +6408,6 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
         ((NSStepper *)[self.preferencesWindow.contentView viewWithTag:101]).doubleValue = self.terminalView.terminalFont.pointSize;
         ((NSButton *)[self.preferencesWindow.contentView viewWithTag:105]).state =
             [[self micaDefaults] boolForKey:@"MicaGlobalShortcut"] ? NSControlStateValueOn : NSControlStateValueOff;
-        ((NSButton *)[self.preferencesWindow.contentView viewWithTag:109]).state =
-            [[self micaDefaults] boolForKey:@"MicaMenuBarTimer"] ? NSControlStateValueOn : NSControlStateValueOff;
         ((NSButton *)[self.preferencesWindow.contentView viewWithTag:110]).state =
             [[self micaDefaults] boolForKey:@"MicaDiagnosticsEnabled"] ? NSControlStateValueOn : NSControlStateValueOff;
         ((NSButton *)[self.preferencesWindow.contentView viewWithTag:112]).state =
@@ -6318,10 +6477,6 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
         button.tag = tag; button.target = self; button.action = action;
         return button;
     };
-    NSControlStateValue (^on)(NSString *, BOOL) = ^NSControlStateValue(NSString *key, BOOL fallback) {
-        id value = [[self micaDefaults] objectForKey:key];
-        return (value ? [[self micaDefaults] boolForKey:key] : fallback) ? NSControlStateValueOn : NSControlStateValueOff;
-    };
 
     section(@"General", YES);
     NSButton *resumeAgents = [NSButton checkboxWithTitle:@"Resume agents when restoring windows" target:self action:@selector(prefResumeAgentsChanged:)];
@@ -6332,12 +6487,6 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     shortcut.tag = 105;
     shortcut.state = [[self micaDefaults] boolForKey:@"MicaGlobalShortcut"] ? NSControlStateValueOn : NSControlStateValueOff;
     row(@"", shortcut, kRight - kControlX, 20);
-    NSButton *menuBarTimer = [NSButton checkboxWithTitle:@"Show the focus timer in the menu bar" target:self action:@selector(prefMenuBarTimerChanged:)];
-    menuBarTimer.tag = 109;
-    menuBarTimer.state = on(@"MicaMenuBarTimer", YES);
-    row(@"", menuBarTimer, kRight - kControlX, 20);
-    hint(@"Compact countdown; click it for timer controls.");
-
     section(@"Appearance", NO);
     row(@"Theme", popup(@[@"Dark", @"Light", @"System"], gMicaFollowSystemTheme ? 2 : (gMicaLightTheme ? 1 : 0), 102, @selector(prefThemeChanged:)), 200, 26);
     row(@"Cursor", popup(@[@"Block", @"Bar", @"Underline"], gMicaCursorStyle, 103, @selector(prefCursorChanged:)), 200, 26);
@@ -6567,12 +6716,11 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
                         [NSString stringWithFormat:@"%@ update", MicaAgentNameForTab(tab) ?: @"Agent"];
                     MicaAttentionKind kind = waitingPermission ? MicaAttentionWaitingPermission :
                         (waitingInput ? MicaAttentionWaitingInput : MicaAttentionError);
-                    [MicaAttention() setMuted:tab.muteNotifications tabID:tab.identifier];
-                    [MicaAttention() postTabID:tab.identifier kind:kind title:title
-                        body:[NSString stringWithUTF8String:agentWords] muted:NO];
-                    NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
+                    [self postOrHoldAttentionKind:kind tab:tab title:title body:[NSString stringWithUTF8String:agentWords]];
                 }
                 redraw = YES;
+            } else {
+                [MicaFocusHoldShared() forgetTabID:tab.identifier];
             }
             free(agentWords);
         }
@@ -6800,7 +6948,7 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
 
 // A window closed while others stay open: release its shells and timers now.
 - (void)teardownWindow {
-    for (MicaTab *tab in self.tabs) [MicaAttention() clearTabID:tab.identifier];
+    for (MicaTab *tab in self.tabs) { [MicaAttention() clearTabID:tab.identifier]; [MicaFocusHoldShared() forgetTabID:tab.identifier]; }
     NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
     NSArray<NSValue *> *sessions = [self detachSessionsForTermination];
     self.window.delegate = nil;
@@ -6846,6 +6994,7 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     (void)notification;
     self.sessionSavePending = NO;
     [self saveSessionState];
+    [gMicaFocusRecorder flush];
     MicaDiagnosticsLog(@"app", @"application is terminating");
     [MicaHookServer.sharedServer stop];
     unsetenv("MICA_HOOK_SOCK");

@@ -17,7 +17,7 @@ Researched 2026-10-01 from each product's own documentation and current Mac App 
 
 ## Pomodoro timer patterns
 
-Mica already has a computer-wide focus/break timer, a persistent phase and countdown in the status strip, pause/resume and reset controls, configurable focus/break durations, and completion notifications. Comparable focus apps show a few useful directions:
+Mica has a focus band under the tabs in every window, with phase, countdown, editable project and branch label, timer controls, and today's focus total (the session count while a timer runs). Each session is recorded per project and branch; agent notifications are held during focus except permission requests. Comparable focus apps show a few useful directions:
 
 - Flow keeps a minimal timer in the menu bar, supports multiple interval lengths, session titles, statistics, break reminders, and keyboard shortcuts. Its App Store listing also describes calendar sync and fullscreen breaks ([Flow](https://www.flow.app/), [App Store listing](https://apps.apple.com/gb/app/flow-pomodoro-study-timer/id1423210932?platform=mac)).
 - Be Focused treats start, pause and skip as first-class timer actions, with optional auto-start, a daily interval goal, custom durations, and reports ([App Store listing](https://apps.apple.com/gb/app/be-focused-pomodoro-timer/id973134470?mt=12)).
@@ -25,7 +25,7 @@ Mica already has a computer-wide focus/break timer, a persistent phase and count
 - Small menu-bar timers like FocusTimer make the remaining time glanceable without requiring the full app window ([FocusTimer](https://focus.braunf.com/)).
 - Apple exposes named [custom accessibility actions](https://developer.apple.com/documentation/appkit/nsaccessibilitycustomaction) through VoiceOver's Actions rotor. Mica now exposes ending the active phase there and in the Focus menu, alongside its accessible start/pause/resume and reset controls.
 
-For Mica, the useful pattern is glanceable phase and time plus unmistakable primary actions. Be Focused lists start, pause, skip and optional auto-start as direct timer controls; Apple's Focus listing describes seeing remaining focus or break time in the menu bar without opening a window. Mica keeps that quick visibility in its status strip: uppercase FOCUS/BREAK/PAUSED text, phase color, a progress ring, and labeled Start/Pause/Resume actions. Completed-focus count remains in the menu and accessibility label, while users can independently choose whether focus and break intervals start automatically. Task planning, app blocking and gamified rewards add scope and would distract from Mica's terminal-first workflow.
+For Mica, the useful pattern is glanceable phase and time plus unmistakable primary actions. Be Focused lists start, pause, skip and optional auto-start as direct timer controls; Apple's Focus listing describes seeing remaining focus or break time in the menu bar without opening a window. Mica shows its timer in a focus band under each window's tabs, with today's focus total (the session count while a timer runs) that opens per-project time. During focus, agent notifications are held except permission requests; held markers return when focus ends or is paused, with a status-strip summary. Task planning, app blocking and gamified rewards add scope and would distract from Mica's terminal-first workflow.
 
 ## Memory (idle, one window, this Mac)
 
@@ -76,7 +76,7 @@ Method and caveats: [MEMORY-BASELINE.md](MEMORY-BASELINE.md). cmux, Warp, Ghostt
 ## Suggested order
 
 1. **Memory-efficient scrollback** — measure retained rows and bytes, trim blank cells per line, then share attribute storage. Maintain the current hard cap and add latency/memory regression checks.
-2. **Pomodoro timer UI** — the status strip prioritizes a clear phase label and countdown, with focus, break and paused states shown in text as well as color. VoiceOver and the timer menu expose the completed-focus count, and skip is available through the menu and VoiceOver action. Settings offer separate automatic starts for focus and break intervals, both on by default. Be Focused also lists completed intervals and optional auto-start in its [Mac App Store description](https://apps.apple.com/us/app/be-focused-pomodoro-timer/id973134470?mt=12).
+2. **Focus band** — each window shows phase, countdown, label, controls, progress and today's total below the tabs. Sessions are recorded per project and branch, and agent notifications are held during focus except permission requests. Focus and break durations and auto-start settings remain configurable. Be Focused also lists completed intervals and optional auto-start in its [Mac App Store description](https://apps.apple.com/us/app/be-focused-pomodoro-timer/id973134470?mt=12).
 3. **Optional agent/project sidebar** — show project, branch, folder, agent state and unread notification with clear focus/attention styling; use existing state and keep it off when a user prefers the full-width terminal.
 4. **Session restoration quality** — test several restored project windows and ordinary windows end to end; distinguish startup commands from surviving processes. Current implementation restores window metadata and launches fresh sessions; it does not resume the previous PTY process or scrollback.
 5. **Split panes** — design a bounded pane tree and per-pane resource accounting before UI implementation.

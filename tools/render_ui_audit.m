@@ -82,6 +82,9 @@ static void RenderTimerStates(MicaAppDelegate *delegate, NSString *directory, NS
         timer.paused_remaining = states[i].remaining;
         timer.completed_focuses = 3;
         delegate.pomodoro = timer;
+        delegate.pomodoroLabel = @"fieldnote · main";
+        delegate.pomodoroCycleFocusMinutes = 50; delegate.pomodoroCycleBreakMinutes = 10;
+        [delegate updateFocusBand];
         [delegate.terminalView setNeedsDisplay:YES];
         NSString *name = [NSString stringWithFormat:@"timer-%@-%@", theme, states[i].name];
         SaveViewImage(delegate.terminalView, directory, name);
@@ -98,6 +101,7 @@ int main(int argc, const char *argv[]) {
 
         MicaAppDelegate *main = MakeWindow(1100, 440, tabs, @"Fieldnote");
         Scene(main);
+        [main updateFocusBand];
         SaveViewImage(main.terminalView, out, @"01-dark-default");
         [main.terminalView toggleQuickSelect:nil];
         SaveViewImage(main.terminalView, out, @"quick-select-dark");
