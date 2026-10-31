@@ -5800,7 +5800,7 @@ static NSString *MicaLazygitCommand(void) {
         [self killCompanionForTab:tab];
         return;
     }
-    if (!tab.showingCompanion && tab.companionHiddenAt > 0 && now - tab.companionHiddenAt >= kMicaLazygitIdleSeconds)
+    if (!tab.showingCompanion && tab.companionHiddenAt != 0 && now - tab.companionHiddenAt >= kMicaLazygitIdleSeconds)
         [self killCompanionForTab:tab];
 }
 
