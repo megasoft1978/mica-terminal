@@ -326,7 +326,7 @@ static int MicaRunUISelfTest(void) {
             [[projectLabelOwner projectDisplayNameForTab:projectLabelTab] isEqualToString:projectRepo.lastPathComponent] &&
             [MicaGitRootForDirectory(projectNested) isEqualToString:projectRepo] &&
             [[projectLabelOwner windowTitleForTab:projectLabelTab]
-                isEqualToString:[NSString stringWithFormat:@"%@ — Codex", projectRepo.lastPathComponent]];
+                isEqualToString:[NSString stringWithFormat:@"%@ — %@", projectRepo.lastPathComponent, MicaTabDisplayName(projectLabelTab)]];
         projectLabelOwner.projectName = @"Configured Project";
         BOOL configuredLabelWins = [[projectLabelOwner projectDisplayNameForTab:projectLabelTab]
             isEqualToString:@"Configured Project"];
@@ -1543,8 +1543,8 @@ static int MicaRunUISelfTest(void) {
         agentLabelTab.completionLabel = nil;
         MicaUITestRecord(report, &allPassed, delegate.terminalView.terminalFont.pointSize >= 16,
                          @"default terminal font remains at least 16 points");
-        MicaUITestRecord(report, &allPassed, kTabTitleFontSize == 12.0 && kHeaderHeight == 28.0,
-                         @"tab titles use a readable 12-point system font in a 28-point header");
+        MicaUITestRecord(report, &allPassed, kTabTitleFontSize == 12.0 && kHeaderHeight == 36.0,
+                         @"tab titles use a readable 12-point system font in a 36-point two-line header");
         NSDictionary *footerTextAttrs = @{ NSFontAttributeName: [NSFont systemFontOfSize:10.5] };
         NSFont *footerFont = footerTextAttrs[NSFontAttributeName];
         NSFont *tabFont = [NSFont systemFontOfSize:kTabTitleFontSize weight:NSFontWeightMedium];
@@ -1810,7 +1810,7 @@ static int MicaRunUISelfTest(void) {
             BOOL filterFindsTab = delegate.commandPaletteRows.count == 1 &&
                 [delegate.commandPaletteRows.firstObject[@"kind"] isEqualToString:@"tab"];
             MicaPaletteRowView *accessibleTabRow = (MicaPaletteRowView *)[delegate tableView:delegate.commandPaletteTable rowViewForRow:0];
-            BOOL tabRowAccessible = [accessibleTabRow.accessibilityLabel containsString:@"Go to tab Second"];
+            BOOL tabRowAccessible = [accessibleTabRow.accessibilityLabel containsString:@"Go to tab tmp"];
             [delegate runCommandPaletteSelection:nil];
             BOOL paletteSwitchesTab = delegate.activeIndex == 1;
             MicaPaletteSearchField *paletteSearch = (MicaPaletteSearchField *)delegate.commandPaletteSearch;
@@ -2968,6 +2968,35 @@ static int MicaRunUISelfTest(void) {
             unlink(outside.fileSystemRepresentation);
             MicaUITestRecord(report, &allPassed, gitBranchesDetected,
                 @"the git branch is read for a repo, a linked worktree and a detached HEAD, and is absent outside a repo");
+
+            // Tabs are not renameable; identity is folder + branch. Git status feeds the change pill.
+            {
+                MicaTab *labelTab = [[MicaTab alloc] init];
+                labelTab.name = @"Custom"; labelTab.cwd = @"/tmp/alpha-folder"; labelTab.gitBranch = @"feat/x";
+                labelTab.gitChangeCount = 3; labelTab.gitAhead = 2; labelTab.gitBehind = 1;
+                NSInteger parsedChanges = -1, parsedAhead = -1, parsedBehind = -1;
+                MicaParseGitStatus(@"## main...origin/main [ahead 2, behind 1]\n M a.txt\n?? b.txt\n", &parsedChanges, &parsedAhead, &parsedBehind);
+                NSString *tempRepo = [gitRoot stringByAppendingPathComponent:@"status-repo"];
+                [fileManager createDirectoryAtPath:tempRepo withIntermediateDirectories:YES attributes:nil error:nil];
+                NSTask *gitInit = [NSTask new];
+                gitInit.executableURL = MicaGitExecutableURL();
+                gitInit.arguments = @[@"-C", tempRepo, @"init", @"-q"];
+                gitInit.standardOutput = gitInit.standardError = [NSFileHandle fileHandleWithNullDevice];
+                [gitInit launchAndReturnError:nil]; [gitInit waitUntilExit];
+                [@"x" writeToFile:[tempRepo stringByAppendingPathComponent:@"dirty.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                NSInteger repoChanges = -1, repoAhead = -1, repoBehind = -1;
+                BOOL statusRan = MicaGitStatusForRoot(tempRepo, 4.0, &repoChanges, &repoAhead, &repoBehind);
+                MicaUITestRecord(report, &allPassed,
+                    ![delegate respondsToSelector:NSSelectorFromString(@"renameTab:")] &&
+                    [MicaTabDisplayName(labelTab) isEqualToString:@"alpha-folder · feat/x"] &&
+                    [MicaTabFolderName(labelTab) isEqualToString:@"alpha-folder"] &&
+                    [MicaGitChangePillText(3) isEqualToString:@"●3"] && [MicaGitChangePillText(150) isEqualToString:@"●99+"] &&
+                    MicaGitChangePillText(0) == nil && [MicaGitSyncText(2, 1) isEqualToString:@"↑2 ↓1"] &&
+                    [MicaGitStatusAccessibilityText(labelTab) containsString:@"3 changed files"] &&
+                    parsedChanges == 2 && parsedAhead == 2 && parsedBehind == 1 &&
+                    statusRan && repoChanges == 1 && repoAhead == 0 && repoBehind == 0,
+                    @"tabs show folder and branch only (no rename) and git status counts changed files, ahead and behind");
+            }
 
             [delegate selectTabAtIndex:0];
             [delegate.terminalView setNeedsDisplay:YES];

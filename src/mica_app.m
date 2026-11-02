@@ -44,7 +44,9 @@ static NSURL *MicaGitExecutableURL(void) {
     return nil;
 }
 
-static const CGFloat kHeaderHeight = 28.0;
+static const CGFloat kHeaderHeight = 36.0;  // two-line tabs: folder, then branch
+static const CGFloat kSidebarRowTop = 42.0;
+static const CGFloat kSidebarRowHeight = 66.0;
 static const CGFloat kStatusHeight = 32.0;
 static const CGFloat kTerminalPaddingX = 10.0;   // breathing room between the window edge and the first column
 static const CGFloat kTrafficLightInset = 78.0;  // tab strip starts after the window buttons in the merged title bar
@@ -376,7 +378,11 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 @property(nonatomic, assign) BOOL syncHeld;
 @property(nonatomic, assign) BOOL needsAttention;
 @property(nonatomic, assign) BOOL muteNotifications;
-@property(nonatomic, copy) NSString *customName;
+@property(nonatomic, assign) NSInteger gitChangeCount;  // changed files from `git status`; 0 when clean or unknown
+@property(nonatomic, assign) NSInteger gitAhead;
+@property(nonatomic, assign) NSInteger gitBehind;
+@property(nonatomic, assign) NSTimeInterval gitStatusCheckedAt;
+@property(nonatomic, assign) BOOL gitStatusPending;
 @property(nonatomic, assign) uint64_t commandCompletionCount;
 @property(nonatomic, assign) BOOL tracksCompletion;
 @property(nonatomic, assign) BOOL completedCommand;
@@ -393,13 +399,61 @@ static NSFont *MicaTerminalFontWithTraits(NSFont *font, NSFontTraitMask traits) 
 @property(nonatomic, assign) NSTimeInterval companionHiddenAt;
 @end
 
-// Shown in the sidebar: a name the user set, else "folder · branch".
+// A tab is identified by its folder and git branch only; tabs cannot be renamed.
 // tab.name stays the layout name because agent detection and saved layouts depend on it.
-static NSString *MicaTabDisplayName(MicaTab *tab) {
-    if (tab.customName.length) return tab.customName;
+static NSString *MicaTabFolderName(MicaTab *tab) {
     NSString *folder = tab.cwd.lastPathComponent;
-    if (!folder.length) return tab.name.length ? tab.name : @"Terminal";
+    if (folder.length) return folder;
+    return tab.name.length ? tab.name : @"Terminal";
+}
+static NSString *MicaTabDisplayName(MicaTab *tab) {
+    NSString *folder = MicaTabFolderName(tab);
     return tab.gitBranch.length ? [NSString stringWithFormat:@"%@ · %@", folder, tab.gitBranch] : folder;
+}
+static NSString *MicaTruncatedText(NSString *text, CGFloat width, NSDictionary *attributes);
+// "●3" (dirty, capped "99+") for the pill; nil when clean.
+static NSString *MicaGitChangePillText(NSInteger changes) {
+    if (changes <= 0) return nil;
+    return changes > 99 ? @"●99+" : [NSString stringWithFormat:@"●%ld", (long)changes];
+}
+// "↑1 ↓2" when the branch is ahead/behind its upstream; nil otherwise.
+static NSString *MicaGitSyncText(NSInteger ahead, NSInteger behind) {
+    if (ahead <= 0 && behind <= 0) return nil;
+    NSMutableArray *parts = [NSMutableArray array];
+    if (ahead > 0) [parts addObject:[NSString stringWithFormat:@"↑%ld", (long)ahead]];
+    if (behind > 0) [parts addObject:[NSString stringWithFormat:@"↓%ld", (long)behind]];
+    return [parts componentsJoinedByString:@" "];
+}
+static NSString *MicaGitStatusAccessibilityText(MicaTab *tab) {
+    NSMutableArray *parts = [NSMutableArray array];
+    if (tab.gitChangeCount > 0)
+        [parts addObject:[NSString stringWithFormat:@"%ld changed file%@", (long)tab.gitChangeCount, tab.gitChangeCount == 1 ? @"" : @"s"]];
+    if (tab.gitAhead > 0) [parts addObject:[NSString stringWithFormat:@"%ld ahead", (long)tab.gitAhead]];
+    if (tab.gitBehind > 0) [parts addObject:[NSString stringWithFormat:@"%ld behind", (long)tab.gitBehind]];
+    return [parts componentsJoinedByString:@", "];
+}
+// Parses `git status --porcelain=v1 -b` output: the "## branch...upstream [ahead N, behind M]" header
+// plus one line per changed file.
+static void MicaParseGitStatus(NSString *output, NSInteger *changes, NSInteger *ahead, NSInteger *behind) {
+    NSInteger changed = 0, ahd = 0, bhd = 0;
+    for (NSString *line in [output componentsSeparatedByString:@"\n"]) {
+        if (!line.length) continue;
+        if ([line hasPrefix:@"##"]) {
+            NSRange open = [line rangeOfString:@"["], close = [line rangeOfString:@"]" options:NSBackwardsSearch];
+            if (open.location == NSNotFound || close.location == NSNotFound || close.location < open.location) continue;
+            NSString *info = [line substringWithRange:NSMakeRange(open.location + 1, close.location - open.location - 1)];
+            for (NSString *part in [info componentsSeparatedByString:@","]) {
+                NSString *trimmed = [part stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+                if ([trimmed hasPrefix:@"ahead "]) ahd = [[trimmed substringFromIndex:6] integerValue];
+                else if ([trimmed hasPrefix:@"behind "]) bhd = [[trimmed substringFromIndex:7] integerValue];
+            }
+            continue;
+        }
+        changed++;
+    }
+    if (changes) *changes = changed;
+    if (ahead) *ahead = ahd;
+    if (behind) *behind = bhd;
 }
 
 @implementation MicaTab
@@ -678,6 +732,7 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)selectRelativeTab:(NSInteger)delta;
 - (void)jumpToNextWaitingTab:(id)sender;
 - (void)selectTabAtIndex:(NSInteger)index;
+- (void)refreshGitStatusForTab:(MicaTab *)tab force:(BOOL)force;
 - (void)toggleTabPicker;
 - (void)toggleCommandPalette:(id)sender;
 - (void)filterCommandPalette:(id)sender;
@@ -703,7 +758,6 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)newWorktreeTab:(id)sender;
 - (void)toggleMuteNotificationsForTab:(id)sender;
 - (NSMenu *)notificationMenuForTab:(MicaTab *)tab;
-- (void)renameTab:(MicaTab *)tab;
 - (NSString *)agentNotificationTitleForTab:(MicaTab *)tab waiting:(BOOL)waiting;
 - (void)startWindowWithArguments:(NSArray<NSString *> *)arguments;
 - (void)openProjectWindowWithArguments:(NSArray<NSString *> *)arguments;
@@ -769,6 +823,25 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 @property(nonatomic, assign) MicaUIMode uiMode;
 @end
 
+// The small branch glyph used by the sidebar lazygit toggle and the tab branch lines.
+static void MicaDrawGitGlyph(NSRect rect, NSColor *color, BOOL flipped) {
+    CGFloat (^gy)(CGFloat) = ^CGFloat(CGFloat offset) { return flipped ? NSMinY(rect) + offset : NSMaxY(rect) - offset; };
+    NSBezierPath *path = [NSBezierPath bezierPath];
+    path.lineWidth = 1.2;
+    NSPoint top = NSMakePoint(NSMinX(rect) + 3, gy(2)), bottom = NSMakePoint(NSMinX(rect) + 3, gy(10)),
+            side = NSMakePoint(NSMinX(rect) + 10.5, gy(4));
+    [path moveToPoint:top]; [path lineToPoint:bottom];
+    [path moveToPoint:side];
+    [path curveToPoint:NSMakePoint(top.x, gy(7.5)) controlPoint1:NSMakePoint(side.x, gy(7.5))
+         controlPoint2:NSMakePoint(top.x + 3, gy(7.5))];
+    [color setStroke]; [path stroke];
+    [color setFill];
+    for (NSValue *value in @[[NSValue valueWithPoint:top], [NSValue valueWithPoint:bottom], [NSValue valueWithPoint:side]]) {
+        NSPoint center = value.pointValue;
+        [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(center.x - 1.8, center.y - 1.8, 3.6, 3.6)] fill];
+    }
+}
+
 @implementation MicaAgentSidebarView
 - (BOOL)isFlipped { return YES; }
 - (NSString *)stateTextForTab:(MicaTab *)tab {
@@ -793,33 +866,48 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
     return message ?: @"";
 }
 // The small branch glyph that swaps the row's tab to lazygit.
-- (NSRect)gitGlyphRectForRowTop:(CGFloat)y { return NSMakeRect(self.bounds.size.width - 26, y + 33, 14, 12); }
-- (void)drawGitGlyphInRect:(NSRect)rect color:(NSColor *)color {
-    NSBezierPath *path = [NSBezierPath bezierPath];
-    path.lineWidth = 1.2;
-    NSPoint top = NSMakePoint(NSMinX(rect) + 3, NSMinY(rect) + 2), bottom = NSMakePoint(NSMinX(rect) + 3, NSMinY(rect) + 10),
-            side = NSMakePoint(NSMinX(rect) + 10.5, NSMinY(rect) + 4);
-    [path moveToPoint:top]; [path lineToPoint:bottom];
-    [path moveToPoint:side];
-    [path curveToPoint:NSMakePoint(top.x, NSMinY(rect) + 7.5) controlPoint1:NSMakePoint(side.x, NSMinY(rect) + 7.5)
-         controlPoint2:NSMakePoint(top.x + 3, NSMinY(rect) + 7.5)];
-    [color setStroke]; [path stroke];
-    [color setFill];
-    for (NSValue *value in @[[NSValue valueWithPoint:top], [NSValue valueWithPoint:bottom], [NSValue valueWithPoint:side]]) {
-        NSPoint center = value.pointValue;
-        [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(center.x - 1.8, center.y - 1.8, 3.6, 3.6)] fill];
+- (NSRect)gitGlyphRectForRowTop:(CGFloat)y { return NSMakeRect(self.bounds.size.width - 26, y + 17, 14, 12); }
+- (void)drawGitGlyphInRect:(NSRect)rect color:(NSColor *)color { MicaDrawGitGlyph(rect, color, YES); }
+// Branch glyph + branch name + change/sync pill on one line. Returns nothing; clipped to the row.
+- (void)drawBranchLineForTab:(MicaTab *)tab y:(CGFloat)y selected:(BOOL)selected foreground:(NSColor *)fg {
+    NSColor *muted = selected ? [fg colorWithAlphaComponent:0.85] : NSColor.secondaryLabelColor;
+    [self drawGitGlyphInRect:NSMakeRect(11, y + 1, 14, 12) color:muted];
+    CGFloat right = self.bounds.size.width - 30, x = 27;
+    NSString *pill = MicaGitChangePillText(tab.gitChangeCount), *sync = MicaGitSyncText(tab.gitAhead, tab.gitBehind);
+    NSDictionary *pillAttrs = @{NSFontAttributeName:[NSFont systemFontOfSize:9 weight:NSFontWeightBold],
+        NSForegroundColorAttributeName:NSColor.systemOrangeColor};
+    NSDictionary *syncAttrs = @{NSFontAttributeName:[NSFont systemFontOfSize:9 weight:NSFontWeightMedium],
+        NSForegroundColorAttributeName:muted};
+    CGFloat pillWidth = pill ? ceil([pill sizeWithAttributes:pillAttrs].width) + 10 : 0;
+    CGFloat syncWidth = sync ? ceil([sync sizeWithAttributes:syncAttrs].width) + 4 : 0;
+    CGFloat reserved = (pill ? pillWidth + 4 : 0) + (sync ? syncWidth + 2 : 0);
+    NSMutableParagraphStyle *tailStyle = [NSMutableParagraphStyle new];
+    tailStyle.lineBreakMode = NSLineBreakByTruncatingTail;
+    NSDictionary *branchAttrs = @{NSFontAttributeName:[NSFont systemFontOfSize:10], NSForegroundColorAttributeName:muted,
+        NSParagraphStyleAttributeName:tailStyle};
+    NSString *branch = MicaTruncatedText(tab.gitBranch, MAX(20, right - x - reserved), branchAttrs);
+    [branch drawAtPoint:NSMakePoint(x, y) withAttributes:branchAttrs];
+    CGFloat px = x + ceil([branch sizeWithAttributes:branchAttrs].width) + 4;
+    if (pill && px + pillWidth <= right) {
+        NSRect capsule = NSMakeRect(px, y + 1, pillWidth, 12);
+        [[NSColor.systemOrangeColor colorWithAlphaComponent:selected ? 0.35 : 0.2] setFill];
+        [[NSBezierPath bezierPathWithRoundedRect:capsule xRadius:6 yRadius:6] fill];
+        [pill drawAtPoint:NSMakePoint(px + 5, y + 1.5) withAttributes:pillAttrs];
+        px += pillWidth + 2;
     }
+    if (sync && px + syncWidth <= right) [sync drawAtPoint:NSMakePoint(px, y + 1.5) withAttributes:syncAttrs];
 }
 - (void)refreshRows {
     NSMutableArray<NSString *> *rows = [NSMutableArray arrayWithCapacity:self.owner.tabs.count];
     for (NSUInteger i = 0; i < self.owner.tabs.count; i++) {
         MicaTab *tab = self.owner.tabs[i];
-        [rows addObject:[NSString stringWithFormat:@"%llu|%@|%@|%@|%ld|%d|%@|%@|%llu|%d%d",
+        [rows addObject:[NSString stringWithFormat:@"%llu|%@|%@|%@|%ld|%d|%@|%@|%llu|%d%d|%ld,%ld,%ld",
             (unsigned long long)tab.identifier, MicaTabDisplayName(tab),
             tab.cwd.lastPathComponent ?: @"/", tab.gitBranch ?: @"",
             (long)[self.owner.terminalView activityStateForTab:tab], tab.needsAttention,
             MicaAgentStateForTab(tab), tab.agentLastMessage ?: @"", (unsigned long long)tab.agentRSSBytes,
-            tab.showingCompanion, [self.owner canToggleLazygitForTab:tab]]];
+            tab.showingCompanion, [self.owner canToggleLazygitForTab:tab],
+            (long)tab.gitChangeCount, (long)tab.gitAhead, (long)tab.gitBehind]];
     }
     NSString *signature = [NSString stringWithFormat:@"%ld:%@", (long)self.owner.activeIndex,
         [rows componentsJoinedByString:@"\n"]];
@@ -832,23 +920,28 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
     [NSColor.windowBackgroundColor setFill]; NSRectFill(self.bounds);
     NSDictionary *titleAttrs = @{NSFontAttributeName:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold], NSForegroundColorAttributeName:NSColor.secondaryLabelColor};
     [@"TABS" drawAtPoint:NSMakePoint(14, 14) withAttributes:titleAttrs];
-    CGFloat y = 42;
-    for (NSUInteger i = 0; i < self.owner.tabs.count; i++, y += 55) {
+    CGFloat y = kSidebarRowTop;
+    for (NSUInteger i = 0; i < self.owner.tabs.count; i++, y += kSidebarRowHeight) {
         MicaTab *tab = self.owner.tabs[i];
-        NSRect row = NSMakeRect(6, y - 5, self.bounds.size.width - 12, 50);
+        NSRect row = NSMakeRect(6, y - 5, self.bounds.size.width - 12, kSidebarRowHeight - 5);
         BOOL selected = (NSInteger)i == self.owner.activeIndex;
         if (selected) { [NSColor.selectedContentBackgroundColor setFill]; [[NSBezierPath bezierPathWithRoundedRect:row xRadius:6 yRadius:6] fill]; }
         NSColor *fg = selected ? NSColor.selectedMenuItemTextColor : NSColor.labelColor;
         NSDictionary *nameAttrs = @{NSFontAttributeName:[NSFont systemFontOfSize:13 weight:NSFontWeightMedium], NSForegroundColorAttributeName:fg};
         NSDictionary *detailAttrs = @{NSFontAttributeName:[NSFont systemFontOfSize:10], NSForegroundColorAttributeName:selected ? fg : NSColor.secondaryLabelColor};
-        NSString *name = MicaTabDisplayName(tab);
-        [name drawInRect:NSMakeRect(14, y, self.bounds.size.width - 42, 17) withAttributes:nameAttrs];
+        BOOL hasBranch = tab.gitBranch.length > 0;
+        NSMutableParagraphStyle *tailStyle = [NSMutableParagraphStyle new];
+        tailStyle.lineBreakMode = NSLineBreakByTruncatingTail;
+        NSMutableDictionary *folderAttrs = [nameAttrs mutableCopy];
+        folderAttrs[NSParagraphStyleAttributeName] = tailStyle;
+        [MicaTabFolderName(tab) drawInRect:NSMakeRect(14, y + (hasBranch ? 0 : 8), self.bounds.size.width - 42, 17) withAttributes:folderAttrs];
+        if (hasBranch) [self drawBranchLineForTab:tab y:y + 17 selected:selected foreground:fg];
         MicaTabActivityState state = [self.owner.terminalView activityStateForTab:tab];
         NSString *stateText = [self stateTextForTab:tab];
         NSColor *stateColor = state == MicaTabActivityStateWaiting ? NSColor.systemOrangeColor :
             state == MicaTabActivityStateNeedsAttention ? NSColor.systemRedColor : NSColor.secondaryLabelColor;
         CGFloat stateWidth = tab.agentRSSBytes ? self.bounds.size.width - 82 : self.bounds.size.width - 28;
-        [stateText drawInRect:NSMakeRect(14, y + 20, stateWidth, 13)
+        [stateText drawInRect:NSMakeRect(14, y + 33, stateWidth, 13)
             withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:9], NSForegroundColorAttributeName:selected ? fg : stateColor}];
         NSString *symbol = [stateText isEqualToString:@"Needs permission"] ? @"!" :
             [stateText isEqualToString:@"Needs input"] ? @"?" :
@@ -867,11 +960,11 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
         NSColor *glyphBase = selected ? fg : NSColor.secondaryLabelColor;
         [self drawGitGlyphInRect:glyph color:lazygitOn ? NSColor.whiteColor
             : [glyphBase colorWithAlphaComponent:lazygitAvailable ? 0.75 : 0.28]];
-        if (preview.length) [preview drawInRect:NSMakeRect(14, y + 34, self.bounds.size.width - 46, 12)
+        if (preview.length) [preview drawInRect:NSMakeRect(14, y + 47, self.bounds.size.width - 46, 12)
             withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:9], NSForegroundColorAttributeName:NSColor.secondaryLabelColor}];
         if (tab.agentRSSBytes) {
             NSString *rss = [NSString stringWithFormat:@"%.1f GB", (double)tab.agentRSSBytes / (1024.0 * 1024.0 * 1024.0)];
-            [rss drawInRect:NSMakeRect(self.bounds.size.width - 58, y + 20, 48, 13)
+            [rss drawInRect:NSMakeRect(self.bounds.size.width - 58, y + 33, 48, 13)
                 withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:9], NSForegroundColorAttributeName:selected ? fg : NSColor.secondaryLabelColor}];
         }
     }
@@ -879,10 +972,10 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
 - (void)mouseDown:(NSEvent *)event {
     [self.window makeFirstResponder:self];
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
-    NSInteger index = (NSInteger)floor((point.y - 42) / 55.0);
+    NSInteger index = (NSInteger)floor((point.y - kSidebarRowTop) / kSidebarRowHeight);
     if (index >= 0 && index < (NSInteger)self.owner.tabs.count) {
         MicaTab *clicked = self.owner.tabs[(NSUInteger)index];
-        NSRect glyph = NSInsetRect([self gitGlyphRectForRowTop:42 + index * 55.0], -4, -4);
+        NSRect glyph = NSInsetRect([self gitGlyphRectForRowTop:kSidebarRowTop + index * kSidebarRowHeight], -4, -4);
         if (NSPointInRect(point, glyph)) {
             if ([self.owner canToggleLazygitForTab:clicked]) {
                 [self.owner selectTabAtIndex:index];
@@ -891,12 +984,11 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
             return;
         }
         [self.owner selectTabAtIndex:index];
-        if (event.clickCount == 2) [self.owner renameTab:self.owner.tabs[(NSUInteger)index]];
     }
 }
 - (void)rightMouseDown:(NSEvent *)event {
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
-    NSInteger index = (NSInteger)floor((point.y - 42) / 55.0);
+    NSInteger index = (NSInteger)floor((point.y - kSidebarRowTop) / kSidebarRowHeight);
     if (index < 0 || index >= (NSInteger)self.owner.tabs.count) { [super rightMouseDown:event]; return; }
     [self.owner selectTabAtIndex:index];
     [NSMenu popUpContextMenu:[self.owner notificationMenuForTab:self.owner.tabs[(NSUInteger)index]] withEvent:event forView:self];
@@ -916,8 +1008,9 @@ static NSString *MicaAgentActivityForSession(MicaSession *session, NSString **de
         NSString *state = [self stateTextForTab:tab];
         NSString *preview = [self previewForTab:tab];
         NSString *rss = tab.agentRSSBytes ? [NSString stringWithFormat:@", %.1f GB memory", (double)tab.agentRSSBytes / (1024.0 * 1024.0 * 1024.0)] : @"";
-        NSString *label = [NSString stringWithFormat:@"%@%@, folder %@, branch %@, %@%@%@%@", MicaTabDisplayName(tab), (NSInteger)i == self.owner.activeIndex ? @", selected" : @"", tab.cwd.lastPathComponent ?: @"/", tab.gitBranch ?: @"no branch", state, tab.needsAttention ? @", unread attention" : @"", rss, preview.length ? [@", message " stringByAppendingString:preview] : @""];
-        MicaTabAccessibilityElement *element = [MicaTabAccessibilityElement accessibilityElementWithRole:NSAccessibilityButtonRole frame:[self.window convertRectToScreen:[self convertRect:NSMakeRect(6, 37 + i * 55, self.bounds.size.width - 12, 50) toView:nil]] label:label parent:self];
+        NSString *gitStatus = MicaGitStatusAccessibilityText(tab);
+        NSString *label = [NSString stringWithFormat:@"%@%@, folder %@, branch %@%@, %@%@%@%@", MicaTabDisplayName(tab), (NSInteger)i == self.owner.activeIndex ? @", selected" : @"", tab.cwd.lastPathComponent ?: @"/", tab.gitBranch ?: @"no branch", gitStatus.length ? [@", " stringByAppendingString:gitStatus] : @"", state, tab.needsAttention ? @", unread attention" : @"", rss, preview.length ? [@", message " stringByAppendingString:preview] : @""];
+        MicaTabAccessibilityElement *element = [MicaTabAccessibilityElement accessibilityElementWithRole:NSAccessibilityButtonRole frame:[self.window convertRectToScreen:[self convertRect:NSMakeRect(6, kSidebarRowTop - 5 + i * kSidebarRowHeight, self.bounds.size.width - 12, kSidebarRowHeight - 5) toView:nil]] label:label parent:self];
         uint64_t tabID = tab.identifier;
         __weak typeof(self) weakSelf = self; element.pressHandler = ^BOOL {
             for (NSUInteger index = 0; index < weakSelf.owner.tabs.count; index++)
@@ -1248,6 +1341,36 @@ static NSString *MicaGitRootForDirectory(NSString *directory) {
     return nil;
 }
 
+// Runs `git status --porcelain=v1 -b` for a repository root. Call off the main thread: it blocks up to `timeout`.
+static BOOL MicaGitStatusForRoot(NSString *root, NSTimeInterval timeout, NSInteger *changes, NSInteger *ahead, NSInteger *behind) {
+    NSURL *git = MicaGitExecutableURL();
+    if (!git || !root.length) return NO;
+    NSTask *task = [NSTask new];
+    task.executableURL = git;
+    task.arguments = @[@"--no-optional-locks", @"-C", root, @"status", @"--porcelain=v1", @"-b"];
+    NSPipe *pipe = [NSPipe pipe];
+    task.standardOutput = pipe;
+    task.standardError = [NSFileHandle fileHandleWithNullDevice];
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    task.terminationHandler = ^(NSTask *finished) { (void)finished; dispatch_semaphore_signal(done); };
+    if (![task launchAndReturnError:nil]) return NO;
+    __block NSData *data = nil;
+    dispatch_semaphore_t read = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        data = [pipe.fileHandleForReading readDataToEndOfFile];
+        dispatch_semaphore_signal(read);
+    });
+    if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout * NSEC_PER_SEC))) != 0) {
+        [task terminate];
+        return NO;
+    }
+    if (dispatch_semaphore_wait(read, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC)) != 0) return NO;
+    if (task.terminationStatus != 0) return NO;
+    NSString *output = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"";
+    MicaParseGitStatus(output, changes, ahead, behind);
+    return YES;
+}
+
 // A plain http(s) address at `index` in a line of terminal text, with trailing punctuation removed.
 // Agents print bare URLs constantly; OSC 8 links are the only ones terminals get for free.
 static NSURL *MicaBareURLInLine(NSString *line, NSUInteger index) {
@@ -1424,7 +1547,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
         __weak typeof(self) weakSelf = self;
         MicaTabAccessibilityElement *element = [MicaTabAccessibilityElement accessibilityElementWithRole:NSAccessibilityButtonRole
             frame:[self.window convertRectToScreen:[self convertRect:[self tabRectAtIndex:index] toView:nil]]
-            label:[self labelForTab:tab] parent:self];
+            label:[MicaTabDisplayName(tab) stringByAppendingString:MicaGitStatusAccessibilityText(tab).length ? [@", " stringByAppendingString:MicaGitStatusAccessibilityText(tab)] : @""] parent:self];
         uint64_t tabID = tab.identifier;
         element.pressHandler = ^BOOL{
             for (NSUInteger current = 0; current < weakSelf.owner.tabs.count; current++)
@@ -1778,7 +1901,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
 }
 
 - (NSString *)labelForTab:(MicaTab *)tab {
-    return tab.customName.length ? tab.customName : tab.name.length ? tab.name : @"Terminal";
+    return tab.name.length ? tab.name : @"Terminal";
 }
 
 - (NSString *)agentStatusForTab:(MicaTab *)tab {
@@ -1953,7 +2076,7 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
     for (NSUInteger index = 0; index < self.owner.tabs.count; index++) {
         if (NSLocationInRange(index, visible)) continue;
         MicaTab *tab = self.owner.tabs[index];
-        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:[self labelForTab:tab]
+        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:MicaTabDisplayName(tab)
             action:@selector(selectOverflowTab:) keyEquivalent:@""];
         item.target = self;
         item.representedObject = @(index);
@@ -2336,7 +2459,6 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
             if (NSIsEmptyRect([self tabRectAtIndex:i])) continue;
             MicaTab *candidate = self.owner.tabs[i];
             BOOL active = i == (NSUInteger)self.owner.activeIndex;
-            NSString *label = [self displayLabelForTab:candidate];
             NSRect tabRect = [self tabRectAtIndex:i];
             NSRect textRect = NSMakeRect(NSMinX(tabRect) + 28, NSMinY(tabRect) + 2,
                                          MAX(0, tabRect.size.width - 36), tabRect.size.height - 4);
@@ -2354,10 +2476,40 @@ static MicaStatusBarLayout MicaComputeStatusBarLayout(CGFloat width, CGFloat con
                 NSParagraphStyleAttributeName: tabParagraphStyle
             };
             if (textRect.size.width > 0) {
-                NSString *shortLabel = MicaTruncatedText(label, textRect.size.width, tabAttrs);
-                [shortLabel drawAtPoint:NSMakePoint(NSMinX(textRect),
-                    NSMinY(tabRect) + MicaCenteredTextBaseline(tabFont, tabRect.size.height))
-                    withAttributes:tabAttrs];
+                BOOL hasBranch = candidate.gitBranch.length > 0;
+                NSString *shortLabel = MicaTruncatedText(MicaTabFolderName(candidate), textRect.size.width, tabAttrs);
+                CGFloat folderY = hasBranch ? NSMinY(tabRect) + 17.5
+                    : NSMinY(tabRect) + MicaCenteredTextBaseline(tabFont, tabRect.size.height);
+                [shortLabel drawAtPoint:NSMakePoint(NSMinX(textRect), folderY) withAttributes:tabAttrs];
+                if (hasBranch) {
+                    CGFloat alpha = [self windowIsActive] ? (active ? 0.8 : 0.6) : (active ? 0.5 : 0.36);
+                    NSColor *muted = [NSColor.secondaryLabelColor colorWithAlphaComponent:alpha];
+                    NSString *pill = MicaGitChangePillText(candidate.gitChangeCount);
+                    NSString *sync = MicaGitSyncText(candidate.gitAhead, candidate.gitBehind);
+                    NSDictionary *pillAttrs = @{NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
+                        NSForegroundColorAttributeName: NSColor.systemOrangeColor};
+                    NSDictionary *syncAttrs = @{NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightMedium],
+                        NSForegroundColorAttributeName: muted};
+                    CGFloat pillWidth = pill ? ceil([pill sizeWithAttributes:pillAttrs].width) + 8 : 0;
+                    CGFloat syncWidth = sync ? ceil([sync sizeWithAttributes:syncAttrs].width) + 2 : 0;
+                    CGFloat reserved = (pill ? pillWidth + 3 : 0) + (sync ? syncWidth + 2 : 0);
+                    MicaDrawGitGlyph(NSMakeRect(NSMinX(textRect) - 3, NSMinY(tabRect) + 4.5, 14, 12), muted, NO);
+                    NSDictionary *branchAttrs = @{NSFontAttributeName: [NSFont systemFontOfSize:9.5],
+                        NSForegroundColorAttributeName: muted, NSParagraphStyleAttributeName: tabParagraphStyle};
+                    CGFloat branchX = NSMinX(textRect) + 11, branchRight = NSMaxX(textRect);
+                    NSString *branch = MicaTruncatedText(candidate.gitBranch, MAX(12, branchRight - branchX - reserved), branchAttrs);
+                    [branch drawAtPoint:NSMakePoint(branchX, NSMinY(tabRect) + 4.5) withAttributes:branchAttrs];
+                    CGFloat px = branchX + ceil([branch sizeWithAttributes:branchAttrs].width) + 3;
+                    if (pill && px + pillWidth <= branchRight) {
+                        NSRect capsule = NSMakeRect(px, NSMinY(tabRect) + 5, pillWidth, 11);
+                        [[NSColor.systemOrangeColor colorWithAlphaComponent:0.2] setFill];
+                        [[NSBezierPath bezierPathWithRoundedRect:capsule xRadius:5.5 yRadius:5.5] fill];
+                        [pill drawAtPoint:NSMakePoint(px + 4, NSMinY(tabRect) + 5.5) withAttributes:pillAttrs];
+                        px += pillWidth + 2;
+                    }
+                    if (sync && px + syncWidth <= branchRight)
+                        [sync drawAtPoint:NSMakePoint(px, NSMinY(tabRect) + 5.5) withAttributes:syncAttrs];
+                }
             }
         }
         [MicaSeparatorColor() setStroke];
@@ -3822,7 +3974,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *MicaNormalizedSSHProfile
 }
 
 - (NSString *)windowTitleForTab:(MicaTab *)tab {
-    NSString *tabName = tab.customName.length ? tab.customName : tab.name.length ? tab.name : @"Terminal";
+    NSString *tabName = MicaTabDisplayName(tab);
     NSString *projectName = [self projectDisplayNameForTab:tab];
     if (projectName.length) return [NSString stringWithFormat:@"%@ — %@", projectName, tabName];
     return @"Mica Terminal";
@@ -4129,7 +4281,7 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
         for (MicaAppDelegate *controller in MicaControllers()) for (MicaTab *tab in controller.tabs) {
             if (tab.identifier != tabID.unsignedLongLongValue) continue;
             double gigabytes = (double)tab.agentRSSBytes / (1024.0 * 1024.0 * 1024.0);
-            NSString *title = [NSString stringWithFormat:@"%@ is using %.1f GB", tab.name ?: @"Agent", gigabytes];
+            NSString *title = [NSString stringWithFormat:@"%@ is using %.1f GB", MicaTabDisplayName(tab), gigabytes];
             BOOL posted = [MicaAttention() postTabID:tab.identifier kind:MicaAttentionHighMemory
                 title:title body:@"The agent process group exceeded your memory warning level." muted:NO];
             if (posted) NSApp.dockTile.badgeLabel = MicaAttention().dockBadge;
@@ -4410,39 +4562,7 @@ static BOOL MicaPomodoroLabelIsValid(id value) {
     mute.representedObject = @(tab.identifier);
     mute.state = tab.muteNotifications ? NSControlStateValueOn : NSControlStateValueOff;
     [menu addItem:mute];
-    NSMenuItem *rename = [[NSMenuItem alloc] initWithTitle:@"Rename Tab…" action:@selector(renameTabFromMenu:) keyEquivalent:@""];
-    rename.target = self;
-    rename.representedObject = @(tab.identifier);
-    [menu addItem:rename];
     return menu;
-}
-
-- (void)renameTabFromMenu:(NSMenuItem *)sender {
-    for (MicaTab *tab in self.tabs)
-        if ([sender.representedObject isKindOfClass:NSNumber.class] &&
-            tab.identifier == [sender.representedObject unsignedLongLongValue]) { [self renameTab:tab]; return; }
-}
-
-// An empty name goes back to the automatic "folder · branch" name.
-- (void)renameTab:(MicaTab *)tab {
-    if (![tab isKindOfClass:MicaTab.class]) return;
-    NSAlert *alert = [NSAlert new];
-    alert.messageText = @"Rename Tab";
-    alert.informativeText = @"Leave empty to use the folder and branch name.";
-    [alert addButtonWithTitle:@"Rename"];
-    [alert addButtonWithTitle:@"Cancel"];
-    NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
-    field.stringValue = tab.customName ?: @"";
-    field.placeholderString = MicaTabDisplayName(tab);
-    alert.accessoryView = field;
-    alert.window.initialFirstResponder = field;
-    if ([alert runModal] != NSAlertFirstButtonReturn) return;
-    NSString *name = [field.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    if (name.length > 64) name = [name substringToIndex:64];
-    tab.customName = name.length ? name : nil;
-    [self updateWindowTitle];
-    [self.windowContentView.sidebarView refreshRows];
-    [self saveSessionState];
 }
 
 - (NSString *)agentNotificationTitleForTab:(MicaTab *)tab waiting:(BOOL)waiting {
@@ -4834,7 +4954,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSMutableArray *rows = [NSMutableArray array];
     [self collectPaletteItemsFromMenu:NSApp.mainMenu into:rows];
     for (MicaTab *tab in self.tabs) {
-        [rows addObject:@{@"title":[NSString stringWithFormat:@"%@ notifications for %@", tab.muteNotifications ? @"Unmute" : @"Mute", tab.name ?: @"Terminal"],
+        [rows addObject:@{@"title":[NSString stringWithFormat:@"%@ notifications for %@", tab.muteNotifications ? @"Unmute" : @"Mute", MicaTabDisplayName(tab)],
                           @"detail":@"Per-tab notification setting", @"tabID":@(tab.identifier),
                           @"kind":@"mute"}];
     }
@@ -4851,10 +4971,10 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
             activity == MicaTabActivityStateRunning ? @"Running" : @"Idle";
         NSString *detail = [NSString stringWithFormat:@"%@  ·  %@  ·  %@",
             tab.cwd.lastPathComponent ?: @"", tab.gitBranch.length ? tab.gitBranch : @"no branch", state];
-        [rows addObject:@{@"title": tab.name.length ? tab.name : @"Terminal", @"detail": detail,
+        [rows addObject:@{@"title": MicaTabDisplayName(tab), @"detail": detail, @"search": tab.name ?: @"",
                           @"tabID": @(tab.identifier), @"kind": @"tab", @"accessibility":
                           [NSString stringWithFormat:@"Go to tab %@, folder %@, branch %@, agent state %@",
-                           tab.name ?: @"Terminal", tab.cwd.lastPathComponent ?: @"", tab.gitBranch ?: @"none", state]}];
+                           MicaTabDisplayName(tab), tab.cwd.lastPathComponent ?: @"", tab.gitBranch ?: @"none", state]}];
     }
     return rows;
 }
@@ -4933,7 +5053,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSArray *all = [self paletteRows];
     if (!query.length) self.commandPaletteRows = all;
     else self.commandPaletteRows = [all filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSDictionary *entry, NSDictionary *bindings) {
-        (void)bindings; NSString *text = [[NSString stringWithFormat:@"%@ %@", entry[@"title"], entry[@"detail"]] lowercaseString];
+        (void)bindings; NSString *text = [[NSString stringWithFormat:@"%@ %@ %@", entry[@"title"], entry[@"detail"], entry[@"search"] ?: @""] lowercaseString];
         NSArray<NSString *> *tokens = [query componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
         BOOL allTokens = YES;
         for (NSString *token in tokens) if (token.length && [text rangeOfString:token].location == NSNotFound) { allTokens = NO; break; }
@@ -5397,8 +5517,6 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
                 [self openSSHProfile:profile];
                 if (self.tabs.count == before + 1 && [spec[@"muteNotifications"] isKindOfClass:NSNumber.class])
                     self.activeTab.muteNotifications = [spec[@"muteNotifications"] boolValue];
-                if (self.tabs.count == before + 1 && [spec[@"customName"] isKindOfClass:NSString.class])
-                    self.activeTab.customName = spec[@"customName"];
             } else {
                 MicaDiagnosticsLog(@"ssh", @"saved SSH profile is missing; skipping restored connection");
             }
@@ -5422,8 +5540,6 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
                    prefilled:resumeCommand ? !resumeEnabled : ([spec[@"prefilled"] boolValue] || (restoringSession && command.length > 0))];
         if (self.tabs.count && [spec[@"muteNotifications"] isKindOfClass:NSNumber.class])
             self.tabs.lastObject.muteNotifications = [spec[@"muteNotifications"] boolValue];
-        if (self.tabs.count && [spec[@"customName"] isKindOfClass:NSString.class])
-            self.tabs.lastObject.customName = spec[@"customName"];
     }
     if (self.tabs.count == 0) {
         NSString *cwd = configuration[@"cwd"] ?: NSFileManager.defaultManager.currentDirectoryPath;
@@ -5515,9 +5631,6 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
                 (tab[@"muteNotifications"] &&
                     (![tab[@"muteNotifications"] isKindOfClass:NSNumber.class] ||
                      CFGetTypeID((__bridge CFTypeRef)tab[@"muteNotifications"]) != CFBooleanGetTypeID())) ||
-                (tab[@"customName"] && (![tab[@"customName"] isKindOfClass:NSString.class] ||
-                    [tab[@"customName"] length] > 64 ||
-                    [tab[@"customName"] rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound)) ||
                 (tab[@"command"] && (![tab[@"command"] isKindOfClass:NSString.class] ||
                     [tab[@"command"] length] > 4096))) continue;
             NSString *name = tab[@"name"], *cwd = tab[@"cwd"];
@@ -5633,7 +5746,6 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
             }
             NSMutableDictionary *savedTab = [@{@"name":name, @"cwd":cwd,
                 @"muteNotifications":@(tab.muteNotifications)} mutableCopy];
-            if (tab.customName.length) savedTab[@"customName"] = tab.customName;
             if (tab.remoteProfile && [[NSUUID alloc] initWithUUIDString:tab.remoteProfile[@"id"]])
                 savedTab[@"sshProfileID"] = tab.remoteProfile[@"id"];
             else if (tab.command.length && tab.command.length <= 4096)
@@ -5811,6 +5923,7 @@ static NSString *MicaLazygitCommand(void) {
     tab.gitBranchLookupPath = tabPath;
     tab.gitBranch = nil;
     tab.projectRoot = nil;
+    tab.gitChangeCount = 0; tab.gitAhead = 0; tab.gitBehind = 0; tab.gitStatusCheckedAt = 0;
     __weak MicaTab *weakTab = tab;
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
@@ -5823,9 +5936,39 @@ static NSString *MicaLazygitCommand(void) {
                 ![strongSelf.tabs containsObject:strongTab] || ![strongTab.cwd isEqualToString:tabPath]) return;
             strongTab.gitBranch = branch;
             strongTab.projectRoot = projectRoot;
+            [strongSelf refreshGitStatusForTab:strongTab force:YES];
             if (strongTab == strongSelf.activeTab) [strongSelf updateWindowTitle];
             [strongSelf.terminalView setNeedsDisplayInRect:NSMakeRect(0, 0,
                 strongSelf.terminalView.bounds.size.width, kStatusHeight)];
+            [strongSelf.windowContentView.sidebarView refreshRows];
+        });
+    });
+}
+
+// Changed-file count and ahead/behind for local tabs, read off the main thread with a timeout.
+- (void)refreshGitStatusForTab:(MicaTab *)tab force:(BOOL)force {
+    if (!tab || tab.remoteProfile || tab.isCompanion || !tab.projectRoot.length || tab.gitStatusPending) return;
+    NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
+    if (!force && now - tab.gitStatusCheckedAt < 5.0) return;
+    tab.gitStatusPending = YES;
+    tab.gitStatusCheckedAt = now;
+    NSString *root = tab.projectRoot;
+    __weak MicaTab *weakTab = tab;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSInteger changes = 0, ahead = 0, behind = 0;
+        BOOL ok = MicaGitStatusForRoot(root, 4.0, &changes, &ahead, &behind);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            MicaTab *strongTab = weakTab;
+            MicaAppDelegate *strongSelf = weakSelf;
+            if (!strongTab) return;
+            strongTab.gitStatusPending = NO;
+            if (!ok || !strongSelf || ![strongSelf.tabs containsObject:strongTab] ||
+                ![strongTab.projectRoot isEqualToString:root]) return;
+            if (strongTab.gitChangeCount == changes && strongTab.gitAhead == ahead && strongTab.gitBehind == behind) return;
+            strongTab.gitChangeCount = changes; strongTab.gitAhead = ahead; strongTab.gitBehind = behind;
+            [strongSelf.terminalView setNeedsDisplayInRect:NSMakeRect(0,
+                NSMaxY(strongSelf.terminalView.bounds) - kHeaderHeight, strongSelf.terminalView.bounds.size.width, kHeaderHeight)];
             [strongSelf.windowContentView.sidebarView refreshRows];
         });
     });
@@ -6199,6 +6342,7 @@ static BOOL MicaValidBranchName(NSString *name) {
     MicaTab *tab = [self selectedTab];
     [self refreshProcessAgentForTab:tab];
     [self requestWorkingDirectoryForTab:tab];
+    [self refreshGitStatusForTab:tab force:YES];
     tab.lastSelectedAt = NSProcessInfo.processInfo.systemUptime;
     tab.needsAttention = NO;
     if (self.window.isKeyWindow) {
@@ -6615,6 +6759,7 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
     }
     // Idle backoff: after ~5 s without output, poll at 50 ms instead of 15 ms.
     NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
+    if (self.window.isVisible) [self refreshGitStatusForTab:self.activeTab force:NO];
     NSTimeInterval pollStartedAt = now;
     if (self.lastPollTimerTickAt > 0 && now - self.lastPollTimerTickAt >= 0.150 &&
         now - self.lastSlowPollLogAt >= 1.0) {
@@ -6728,6 +6873,7 @@ static const NSInteger kScrollbackChoices[] = { 0, 2000, 5000, 20000 };
         if (completionCount != tab.cwdLookupCompletionCount) {
             tab.cwdLookupCompletionCount = completionCount;
             [self requestWorkingDirectoryForTab:tab];
+            [self refreshGitStatusForTab:tab force:YES];
         }
         if (tab.tracksCompletion && completionCount > tab.commandCompletionCount) {
             tab.commandCompletionCount = completionCount;

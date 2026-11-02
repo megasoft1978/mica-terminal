@@ -6,25 +6,25 @@
 @implementation MicaFocusBandPalette
 + (instancetype)darkPalette {
     MicaFocusBandPalette *p = [MicaFocusBandPalette new];
-    p.background = [NSColor colorWithSRGBRed:0.105 green:0.108 blue:0.115 alpha:1];
-    p.foreground = [NSColor colorWithWhite:0.93 alpha:1];
-    p.secondary = [NSColor colorWithWhite:0.66 alpha:1];
+    p.background = [NSColor colorWithSRGBRed:0.092 green:0.096 blue:0.108 alpha:1];
+    p.foreground = [NSColor colorWithWhite:0.95 alpha:1];
+    p.secondary = [NSColor colorWithWhite:0.70 alpha:1];
     p.separator = [NSColor colorWithWhite:1 alpha:0.10];
-    p.focusColor = [NSColor colorWithSRGBRed:1.0 green:0.45 blue:0.38 alpha:1];
-    p.breakColor = [NSColor colorWithSRGBRed:0.40 green:0.82 blue:0.55 alpha:1];
-    p.pausedColor = [NSColor colorWithWhite:0.60 alpha:1];
+    p.focusColor = [NSColor colorWithSRGBRed:1.0 green:0.42 blue:0.36 alpha:1];
+    p.breakColor = [NSColor colorWithSRGBRed:0.36 green:0.84 blue:0.62 alpha:1];
+    p.pausedColor = [NSColor colorWithSRGBRed:0.96 green:0.74 blue:0.30 alpha:1];
     p.trackColor = [NSColor colorWithWhite:1 alpha:0.10];
     return p;
 }
 + (instancetype)lightPalette {
     MicaFocusBandPalette *p = [MicaFocusBandPalette new];
-    p.background = [NSColor colorWithSRGBRed:0.945 green:0.948 blue:0.955 alpha:1];
-    p.foreground = [NSColor colorWithWhite:0.10 alpha:1];
-    p.secondary = [NSColor colorWithWhite:0.38 alpha:1];
+    p.background = [NSColor colorWithSRGBRed:0.955 green:0.958 blue:0.968 alpha:1];
+    p.foreground = [NSColor colorWithWhite:0.09 alpha:1];
+    p.secondary = [NSColor colorWithWhite:0.36 alpha:1];
     p.separator = [NSColor colorWithWhite:0 alpha:0.12];
-    p.focusColor = [NSColor colorWithSRGBRed:0.80 green:0.22 blue:0.17 alpha:1];
-    p.breakColor = [NSColor colorWithSRGBRed:0.08 green:0.50 blue:0.27 alpha:1];
-    p.pausedColor = [NSColor colorWithWhite:0.42 alpha:1];
+    p.focusColor = [NSColor colorWithSRGBRed:0.82 green:0.20 blue:0.16 alpha:1];
+    p.breakColor = [NSColor colorWithSRGBRed:0.06 green:0.50 blue:0.34 alpha:1];
+    p.pausedColor = [NSColor colorWithSRGBRed:0.70 green:0.44 blue:0.02 alpha:1];
     p.trackColor = [NSColor colorWithWhite:0 alpha:0.10];
     return p;
 }
@@ -47,6 +47,42 @@ static NSTextField *MicaBandField(NSFont *font) {
     return f;
 }
 
+// Borderless pill/circle button with a hover fill (no timers; tracking area only).
+@interface MicaPillButton : NSButton
+@property(nonatomic, strong) NSColor *restFill, *hoverFill;
+@end
+@implementation MicaPillButton {
+    NSTrackingArea *_area;
+    BOOL _hover;
+}
+- (instancetype)initWithFrame:(NSRect)f {
+    if (!(self = [super initWithFrame:f])) return nil;
+    self.bordered = NO; self.wantsLayer = YES;
+    self.focusRingType = NSFocusRingTypeNone;
+    return self;
+}
+- (void)syncFill {
+    NSColor *c = _hover ? (self.hoverFill ?: self.restFill) : self.restFill;
+    self.layer.backgroundColor = c ? c.CGColor : NULL;
+}
+- (void)setRestFill:(NSColor *)c { _restFill = c; [self syncFill]; }
+- (void)setHoverFill:(NSColor *)c { _hoverFill = c; [self syncFill]; }
+- (void)layout {
+    [super layout];
+    self.layer.cornerRadius = self.bounds.size.height / 2;
+}
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    if (_area) [self removeTrackingArea:_area];
+    _area = [[NSTrackingArea alloc] initWithRect:self.bounds
+        options:NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect
+        owner:self userInfo:nil];
+    [self addTrackingArea:_area];
+}
+- (void)mouseEntered:(NSEvent *)e { _hover = YES; [self syncFill]; }
+- (void)mouseExited:(NSEvent *)e { _hover = NO; [self syncFill]; }
+@end
+
 @interface MicaFocusFlippedView : NSView @end
 @implementation MicaFocusFlippedView - (BOOL)isFlipped { return YES; } @end
 
@@ -61,6 +97,7 @@ static NSTextField *MicaBandField(NSFont *font) {
     NSButton *_pauseButton, *_skipButton, *_resetButton, *_todayButton, *_startButton;
     NSPopover *_popover;
     double _progress;
+    int _phaseSeen;
 }
 
 @synthesize phaseField = _phaseField, countdownField = _countdownField, labelField = _labelField,
@@ -86,23 +123,23 @@ static NSTextField *MicaBandField(NSFont *font) {
 - (BOOL)isFlipped { return YES; }
 
 - (NSButton *)symbolButton:(NSString *)symbol action:(SEL)action {
-    NSButton *b = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, kButton, kButton)];
-    b.bordered = NO;
+    NSButton *b = [[MicaPillButton alloc] initWithFrame:NSMakeRect(0, 0, kButton, kButton)];
     b.imagePosition = NSImageOnly;
     b.imageScaling = NSImageScaleProportionallyDown;
     b.image = [NSImage imageWithSystemSymbolName:symbol accessibilityDescription:nil];
     b.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:12 weight:NSFontWeightSemibold];
     b.target = self; b.action = action;
-    b.focusRingType = NSFocusRingTypeNone;
     return b;
 }
 
 - (instancetype)initWithFrame:(NSRect)frame {
     if (!(self = [super initWithFrame:frame])) return nil;
+    self.wantsLayer = YES;
+    _phaseSeen = -1;
     self.accessibilityElement = YES;
     self.accessibilityRole = NSAccessibilityGroupRole;
-    _phaseField = MicaBandField([NSFont systemFontOfSize:10.5 weight:NSFontWeightBold]);
-    _countdownField = MicaBandField([NSFont monospacedDigitSystemFontOfSize:24 weight:NSFontWeightSemibold]);
+    _phaseField = MicaBandField([NSFont systemFontOfSize:10 weight:NSFontWeightHeavy]);
+    _countdownField = MicaBandField([NSFont monospacedDigitSystemFontOfSize:26 weight:NSFontWeightSemibold]);
     _labelField = MicaBandField([NSFont systemFontOfSize:12.5]);
     _labelField.editable = YES; _labelField.selectable = YES;
     _labelField.delegate = self;
@@ -113,15 +150,12 @@ static NSTextField *MicaBandField(NSFont *font) {
     _resetButton = [self symbolButton:@"arrow.counterclockwise" action:@selector(pressedReset:)];
     _skipButton.toolTip = @"Skip to next phase"; _skipButton.accessibilityLabel = @"Skip";
     _resetButton.toolTip = @"Reset timer"; _resetButton.accessibilityLabel = @"Reset";
-    _todayButton = [[NSButton alloc] initWithFrame:NSZeroRect];
-    _todayButton.bordered = NO; _todayButton.target = self; _todayButton.action = @selector(pressedToday:);
-    _todayButton.focusRingType = NSFocusRingTypeNone;
+    _todayButton = [[MicaPillButton alloc] initWithFrame:NSZeroRect];
+    _todayButton.target = self; _todayButton.action = @selector(pressedToday:);
     _todayButton.toolTip = @"Today's focus time by project";
     _todayButton.accessibilityLabel = @"Today's focus sessions";
-    _startButton = [[NSButton alloc] initWithFrame:NSZeroRect];
-    _startButton.bordered = NO; _startButton.target = self; _startButton.action = @selector(pressedStart:);
-    _startButton.focusRingType = NSFocusRingTypeNone;
-    _startButton.wantsLayer = YES; _startButton.layer.cornerRadius = 9;
+    _startButton = [[MicaPillButton alloc] initWithFrame:NSZeroRect];
+    _startButton.target = self; _startButton.action = @selector(pressedStart:);
     _startButton.toolTip = @"Start a focus session"; _startButton.accessibilityLabel = @"Start focus";
     for (NSView *v in @[_phaseField, _countdownField, _labelField, _hintField, _pauseButton, _skipButton,
                         _resetButton, _todayButton, _startButton]) [self addSubview:v];
@@ -171,6 +205,17 @@ static BOOL MicaColorsEqual(NSColor *a, NSColor *b) { return a == b || [a isEqua
     NSString *signature = [NSString stringWithFormat:@"%d|%@|%@|%ld|%ld|%d|%d", (int)s.phase, label, hint,
         (long)s.completedToday, (long)s.goalToday, (int)llround(s.todayTotalSeconds / 60.0), (int)s.projectRows.count];
     BOOL structural = ![signature isEqualToString:_signature];
+    BOOL phaseChanged = _phaseSeen != (int)s.phase;
+    _phaseSeen = (int)s.phase;
+    if (structural && phaseChanged && self.window && self.layer) {
+        // One short fade on phase change only (AppKit animator, no timers).
+        for (NSView *v in @[_phaseField, _countdownField]) v.alphaValue = 0.25;
+        [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
+            ctx.duration = 0.3;
+            self->_phaseField.animator.alphaValue = 1;
+            self->_countdownField.animator.alphaValue = 1;
+        }];
+    }
     _signature = signature;
 
     double total = s.totalSeconds;
@@ -206,8 +251,8 @@ static BOOL MicaColorsEqual(NSColor *a, NSColor *b) { return a == b || [a isEqua
         attributes:@{NSFontAttributeName: [NSFont systemFontOfSize:8], NSForegroundColorAttributeName: accent,
                      NSBaselineOffsetAttributeName: @1.5}];
     [phase appendAttributedString:[[NSAttributedString alloc] initWithString:[self phaseName] attributes:@{
-        NSFontAttributeName: [NSFont systemFontOfSize:10.5 weight:NSFontWeightBold],
-        NSForegroundColorAttributeName: accent, NSKernAttributeName: @0.9}]];
+        NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightHeavy],
+        NSForegroundColorAttributeName: accent, NSKernAttributeName: @1.2}]];
     _phaseField.attributedStringValue = phase;
     _countdownField.textColor = paused ? p.secondary : p.foreground;
     _labelField.textColor = p.secondary;
@@ -220,14 +265,24 @@ static BOOL MicaColorsEqual(NSColor *a, NSColor *b) { return a == b || [a isEqua
     _startButton.attributedTitle = [[NSAttributedString alloc] initWithString:@"▶  Start focus" attributes:@{
         NSFontAttributeName: [NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold],
         NSForegroundColorAttributeName: p.focusColor}];
-    _startButton.layer.backgroundColor = [[p.focusColor colorWithAlphaComponent:0.14] CGColor];
+    ((MicaPillButton *)_startButton).restFill = [p.focusColor colorWithAlphaComponent:0.14];
+    ((MicaPillButton *)_startButton).hoverFill = [p.focusColor colorWithAlphaComponent:0.26];
+    ((MicaPillButton *)_todayButton).restFill = [p.secondary colorWithAlphaComponent:0.12];
+    ((MicaPillButton *)_todayButton).hoverFill = [p.secondary colorWithAlphaComponent:0.22];
 
     NSString *pauseSymbol = paused ? @"play.fill" : @"pause.fill";
     NSString *pauseName = paused ? @"Resume" : @"Pause";
     _pauseButton.image = [NSImage imageWithSystemSymbolName:pauseSymbol accessibilityDescription:nil];
     _pauseButton.toolTip = pauseName; _pauseButton.accessibilityLabel = pauseName;
-    for (NSButton *b in @[_pauseButton, _skipButton, _resetButton]) b.contentTintColor = p.secondary;
-    _pauseButton.contentTintColor = p.foreground;
+    for (NSButton *b in @[_pauseButton, _skipButton, _resetButton]) {
+        b.contentTintColor = p.secondary;
+        ((MicaPillButton *)b).restFill = nil;
+        ((MicaPillButton *)b).hoverFill = [p.secondary colorWithAlphaComponent:0.18];
+    }
+    // Primary control carries the phase tint.
+    _pauseButton.contentTintColor = accent;
+    ((MicaPillButton *)_pauseButton).restFill = [accent colorWithAlphaComponent:0.16];
+    ((MicaPillButton *)_pauseButton).hoverFill = [accent colorWithAlphaComponent:0.30];
     self.needsLayout = YES;
     self.needsDisplay = YES;
 }
@@ -326,25 +381,43 @@ static CGFloat MicaFieldHeight(NSTextField *f) { return ceil(f.intrinsicContentS
 
 - (NSRect)progressTrackRect {
     if (_state.phase == MICA_POMODORO_IDLE) return NSZeroRect;
-    return NSMakeRect(kPad, 42, MAX(0, self.bounds.size.width - 2 * kPad), 4);
+    return NSMakeRect(kPad, 41, MAX(0, self.bounds.size.width - 2 * kPad), 5);
 }
 
 - (void)drawRect:(NSRect)dirty {
     if (!_palette) return;
+    NSRect b = self.bounds;
     [_palette.background setFill];
-    NSRectFill(self.bounds);
+    NSRectFill(b);
+    if (_state.phase != MICA_POMODORO_IDLE) {
+        // Subtle phase-tinted wash, strongest at the left where the phase caption sits.
+        NSColor *c = [self phaseColor];
+        NSGradient *wash = [[NSGradient alloc] initWithStartingColor:[c colorWithAlphaComponent:0.10]
+                                                         endingColor:[c colorWithAlphaComponent:0.02]];
+        [wash drawInRect:b angle:0];
+    }
     [_palette.separator setFill];
-    NSRectFill(NSMakeRect(0, self.bounds.size.height - 1, self.bounds.size.width, 1));
+    NSRectFill(NSMakeRect(0, b.size.height - 1, b.size.width, 1));
     NSRect track = [self progressTrackRect];
     if (NSIsEmptyRect(track)) return;
+    CGFloat r = track.size.height / 2;
     [_palette.trackColor setFill];
-    [[NSBezierPath bezierPathWithRoundedRect:track xRadius:2 yRadius:2] fill];
+    [[NSBezierPath bezierPathWithRoundedRect:track xRadius:r yRadius:r] fill];
     CGFloat w = floor(track.size.width * _progress);
-    if (w > 0) {
-        NSRect fill = NSMakeRect(track.origin.x, track.origin.y, MAX(w, 4), track.size.height);
-        [[self phaseColor] setFill];
-        [[NSBezierPath bezierPathWithRoundedRect:fill xRadius:2 yRadius:2] fill];
-    }
+    if (w <= 0) return;
+    NSColor *accent = [self phaseColor];
+    NSRect fill = NSMakeRect(track.origin.x, track.origin.y, MAX(w, track.size.height), track.size.height);
+    NSGradient *g = [[NSGradient alloc] initWithStartingColor:[accent colorWithAlphaComponent:0.55] endingColor:accent];
+    [NSGraphicsContext saveGraphicsState];
+    [[NSBezierPath bezierPathWithRoundedRect:fill xRadius:r yRadius:r] addClip];
+    [g drawInRect:fill angle:0];
+    [NSGraphicsContext restoreGraphicsState];
+    // Glowing leading edge.
+    NSPoint tip = NSMakePoint(NSMaxX(fill) - r, NSMidY(fill));
+    NSGradient *glow = [[NSGradient alloc] initWithColors:@[[accent colorWithAlphaComponent:0.55], [accent colorWithAlphaComponent:0]]];
+    [glow drawFromCenter:tip radius:0 toCenter:tip radius:9 options:0];
+    [[NSColor.whiteColor colorWithAlphaComponent:0.85] setFill];
+    [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(tip.x - 1.5, tip.y - 1.5, 3, 3)] fill];
 }
 
 #pragma mark Actions
