@@ -3619,7 +3619,7 @@ static int MicaRunUISelfTest(void) {
                 [focusRow[@"seconds"] doubleValue] < 135 && [focusRow[@"sessions"] integerValue] == 1;
             BOOL popoverShowsProject = [[bandA popoverRowsForTesting].description containsString:@"focus-proj"] &&
                 [[bandB popoverRowsForTesting].description containsString:@"focus-proj"];
-            BOOL goalShown = [bandA.todayButton.attributedTitle.string isEqualToString:@"1/4 today"];
+            BOOL goalShown = [bandA.todayButton.attributedTitle.string hasPrefix:@"●○○○"];
             [MicaFocusRecorderShared() flush];
             NSString *savedLog = [NSString stringWithContentsOfFile:focusLogPath encoding:NSUTF8StringEncoding error:nil];
             BOOL logPersisted = [savedLog containsString:@"focus-proj"] && [savedLog containsString:focusDay];

@@ -188,12 +188,36 @@ static BOOL MicaColorsEqual(NSColor *a, NSColor *b) { return a == b || [a isEqua
     return p == MICA_POMODORO_BREAK ? @"BREAK" : @"FOCUS";
 }
 
+static const NSInteger kMaxGoalDots = 8;
+
+// Plain-text form of the chip (layout gating, tests, fallback beyond kMaxGoalDots).
 - (NSString *)todayTitle {
     MicaFocusBandState *s = _state;
-    if (s.phase == MICA_POMODORO_IDLE)
-        return s.todayTotalSeconds >= 1 ? [NSString stringWithFormat:@"Today %@", [MicaFocusBandView formatDuration:s.todayTotalSeconds]] : @"";
-    if (s.goalToday > 0) return [NSString stringWithFormat:@"%ld/%ld today", (long)s.completedToday, (long)s.goalToday];
-    return [NSString stringWithFormat:@"%ld today", (long)s.completedToday];
+    NSString *dur = s.todayTotalSeconds >= 1 ? [MicaFocusBandView formatDuration:s.todayTotalSeconds] : nil;
+    if (s.phase == MICA_POMODORO_IDLE) return dur ? [NSString stringWithFormat:@"Today %@", dur] : @"";
+    NSString *count = s.goalToday > 0 ? [NSString stringWithFormat:@"%ld/%ld today", (long)s.completedToday, (long)s.goalToday]
+                                      : [NSString stringWithFormat:@"%ld today", (long)s.completedToday];
+    return dur ? [NSString stringWithFormat:@"%@ \u00b7 %@", count, dur] : count;
+}
+
+- (NSAttributedString *)todayAttributedTitle {
+    MicaFocusBandState *s = _state;
+    NSFont *font = [NSFont systemFontOfSize:11.5 weight:NSFontWeightMedium];
+    NSDictionary *textAttrs = @{NSFontAttributeName: font, NSForegroundColorAttributeName: _palette.secondary};
+    BOOL dots = s.phase != MICA_POMODORO_IDLE && s.goalToday > 0 && s.goalToday <= kMaxGoalDots;
+    if (!dots) return [[NSAttributedString alloc] initWithString:[self todayTitle] attributes:textAttrs];
+    NSInteger filled = MAX(0, MIN(s.completedToday, s.goalToday));
+    NSColor *accent = [self phaseColor];
+    NSDictionary *dotAttrs = @{NSFontAttributeName: [NSFont systemFontOfSize:8], NSForegroundColorAttributeName: accent,
+                               NSKernAttributeName: @1.5, NSBaselineOffsetAttributeName: @1};
+    NSMutableAttributedString *out = [NSMutableAttributedString new];
+    NSMutableString *glyphs = [NSMutableString string];
+    for (NSInteger i = 0; i < s.goalToday; i++) [glyphs appendString:i < filled ? @"\u25CF" : @"\u25CB"];
+    [out appendAttributedString:[[NSAttributedString alloc] initWithString:glyphs attributes:dotAttrs]];
+    if (s.todayTotalSeconds >= 1)
+        [out appendAttributedString:[[NSAttributedString alloc] initWithString:
+            [@"  " stringByAppendingString:[MicaFocusBandView formatDuration:s.todayTotalSeconds]] attributes:textAttrs]];
+    return out;
 }
 
 - (void)applyState:(MicaFocusBandState *)s palette:(MicaFocusBandPalette *)p {
@@ -239,13 +263,14 @@ static BOOL MicaColorsEqual(NSColor *a, NSColor *b) { return a == b || [a isEqua
         v.hidden = idle;
     _startButton.hidden = !idle; _hintField.hidden = !idle || !s.startHint.length;
 
-    NSString *today = [self todayTitle];
-    NSFont *todayFont = [NSFont systemFontOfSize:11.5 weight:NSFontWeightMedium];
-    _todayButton.attributedTitle = [[NSAttributedString alloc] initWithString:today attributes:@{
-        NSFontAttributeName: todayFont, NSForegroundColorAttributeName: p.secondary}];
+    _todayButton.attributedTitle = [self todayAttributedTitle];
     if (idle) _todayButton.accessibilityLabel = @"Today's total focus time";
-    else if (s.goalToday > 0) _todayButton.accessibilityLabel = [NSString stringWithFormat:@"%ld of %ld focus sessions today", (long)s.completedToday, (long)s.goalToday];
-    else _todayButton.accessibilityLabel = [NSString stringWithFormat:@"%ld focus sessions today", (long)s.completedToday];
+    else {
+        NSString *count = s.goalToday > 0 ? [NSString stringWithFormat:@"%ld of %ld sessions today", (long)s.completedToday, (long)s.goalToday]
+                                          : [NSString stringWithFormat:@"%ld sessions today", (long)s.completedToday];
+        _todayButton.accessibilityLabel = s.todayTotalSeconds >= 1
+            ? [NSString stringWithFormat:@"%@, %@", count, [MicaFocusBandView formatDuration:s.todayTotalSeconds]] : count;
+    }
 
     NSMutableAttributedString *phase = [[NSMutableAttributedString alloc] initWithString:@"●  "
         attributes:@{NSFontAttributeName: [NSFont systemFontOfSize:8], NSForegroundColorAttributeName: accent,

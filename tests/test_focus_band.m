@@ -88,7 +88,16 @@ int main(void) {
         MicaFocusBandView *v = Band(800, State(MICA_POMODORO_FOCUS, 2538, 3000, @"csc · main"));
         CHECK([v.countdownField.stringValue isEqualToString:@"42:18"]);
         CHECK([v.phaseField.stringValue containsString:@"FOCUS"]);
-        CHECK([v.todayButton.attributedTitle.string isEqualToString:@"3/4 today"]);
+        CHECK([v.todayButton.attributedTitle.string isEqualToString:@"\u25CF\u25CF\u25CF\u25CB  2h 40m"]);
+        {
+            MicaFocusBandState *big = State(MICA_POMODORO_FOCUS, 2538, 3000, @"x");
+            big.goalToday = 10; big.completedToday = 3;
+            CHECK([Band(800, big).todayButton.attributedTitle.string isEqualToString:@"3/10 today \u00b7 2h 40m"]);
+            big.goalToday = 0;
+            CHECK([Band(800, big).todayButton.attributedTitle.string isEqualToString:@"3 today \u00b7 2h 40m"]);
+            big.goalToday = 2; big.completedToday = 5;
+            CHECK([Band(800, big).todayButton.attributedTitle.string isEqualToString:@"\u25CF\u25CF  2h 40m"]);
+        }
         CHECK(fabs(v.progressFraction - (1 - 2538.0 / 3000)) < 1e-9);
         CHECK([v.pauseButton.toolTip isEqualToString:@"Pause"]);
         MicaFocusBandState *brk = State(MICA_POMODORO_BREAK, 300, 300, @"");
@@ -161,8 +170,8 @@ int main(void) {
         CHECK([ig.todayButton.accessibilityLabel isEqualToString:@"Today's total focus time"]);
         MicaFocusBandState *focusNoGoal = State(MICA_POMODORO_FOCUS, 2538, 3000, @"csc · main");
         focusNoGoal.goalToday = 0;
-        CHECK([Band(800, focusNoGoal).todayButton.accessibilityLabel isEqualToString:@"3 focus sessions today"]);
-        CHECK([Band(800, State(MICA_POMODORO_FOCUS, 2538, 3000, @"csc · main")).todayButton.accessibilityLabel isEqualToString:@"3 of 4 focus sessions today"]);
+        CHECK([Band(800, focusNoGoal).todayButton.accessibilityLabel isEqualToString:@"3 sessions today, 2h 40m"]);
+        CHECK([Band(800, State(MICA_POMODORO_FOCUS, 2538, 3000, @"csc · main")).todayButton.accessibilityLabel isEqualToString:@"3 of 4 sessions today, 2h 40m"]);
 
         // Popover rows and empty state.
         NSArray *rows = [a popoverRowsForTesting];
